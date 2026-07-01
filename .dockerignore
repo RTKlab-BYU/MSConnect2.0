@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+data
+incoming
+media
+raw-storage
+staticfiles
+db.sqlite3
+.env
+
