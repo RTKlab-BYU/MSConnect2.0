@@ -1,0 +1,234 @@
+from rest_framework import permissions, serializers, viewsets
+
+from .models import (
+    Experiment,
+    Facility,
+    Instrument,
+    InstrumentConfiguration,
+    Lab,
+    LabMembership,
+    Peptide,
+    PeptideIdentification,
+    PeptideQuant,
+    ProcessingJob,
+    ProcessingPipeline,
+    Project,
+    Protein,
+    ProteinIdentification,
+    ProteinQuant,
+    RawFile,
+    Run,
+    Sample,
+    University,
+    UserProfile,
+)
+
+
+class BaseSerializer(serializers.ModelSerializer):
+    class Meta:
+        fields = "__all__"
+
+
+class UniversitySerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = University
+
+
+class FacilitySerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = Facility
+
+
+class LabSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = Lab
+
+
+class UserProfileSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = UserProfile
+
+
+class LabMembershipSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = LabMembership
+
+
+class InstrumentSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = Instrument
+
+
+class InstrumentConfigurationSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = InstrumentConfiguration
+
+
+class ProjectSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = Project
+
+
+class ExperimentSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = Experiment
+
+
+class SampleSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = Sample
+
+
+class RunSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = Run
+
+
+class RawFileSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = RawFile
+
+
+class ProcessingPipelineSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = ProcessingPipeline
+
+
+class ProcessingJobSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = ProcessingJob
+
+
+class ProteinSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = Protein
+
+
+class PeptideSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = Peptide
+
+
+class ProteinIdentificationSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = ProteinIdentification
+
+
+class PeptideIdentificationSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = PeptideIdentification
+
+
+class ProteinQuantSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = ProteinQuant
+
+
+class PeptideQuantSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = PeptideQuant
+
+
+class AuthenticatedModelViewSet(viewsets.ModelViewSet):
+    permission_classes = (permissions.IsAuthenticated,)
+
+
+class UniversityViewSet(AuthenticatedModelViewSet):
+    queryset = University.objects.all()
+    serializer_class = UniversitySerializer
+
+
+class FacilityViewSet(AuthenticatedModelViewSet):
+    queryset = Facility.objects.select_related("university")
+    serializer_class = FacilitySerializer
+
+
+class LabViewSet(AuthenticatedModelViewSet):
+    queryset = Lab.objects.select_related("facility", "pi")
+    serializer_class = LabSerializer
+
+
+class UserProfileViewSet(AuthenticatedModelViewSet):
+    queryset = UserProfile.objects.select_related("user")
+    serializer_class = UserProfileSerializer
+
+
+class LabMembershipViewSet(AuthenticatedModelViewSet):
+    queryset = LabMembership.objects.select_related("user", "lab")
+    serializer_class = LabMembershipSerializer
+
+
+class InstrumentViewSet(AuthenticatedModelViewSet):
+    queryset = Instrument.objects.select_related("facility")
+    serializer_class = InstrumentSerializer
+
+
+class InstrumentConfigurationViewSet(AuthenticatedModelViewSet):
+    queryset = InstrumentConfiguration.objects.select_related("facility", "lc_instrument", "ms_instrument")
+    serializer_class = InstrumentConfigurationSerializer
+
+
+class ProjectViewSet(AuthenticatedModelViewSet):
+    queryset = Project.objects.select_related("lab", "pi")
+    serializer_class = ProjectSerializer
+
+
+class ExperimentViewSet(AuthenticatedModelViewSet):
+    queryset = Experiment.objects.select_related("project", "created_by")
+    serializer_class = ExperimentSerializer
+
+
+class SampleViewSet(AuthenticatedModelViewSet):
+    queryset = Sample.objects.select_related("experiment", "submitted_by")
+    serializer_class = SampleSerializer
+
+
+class RunViewSet(AuthenticatedModelViewSet):
+    queryset = Run.objects.select_related("sample", "configuration", "acquired_by")
+    serializer_class = RunSerializer
+
+
+class RawFileViewSet(AuthenticatedModelViewSet):
+    queryset = RawFile.objects.select_related("run")
+    serializer_class = RawFileSerializer
+
+
+class ProcessingPipelineViewSet(AuthenticatedModelViewSet):
+    queryset = ProcessingPipeline.objects.all()
+    serializer_class = ProcessingPipelineSerializer
+
+
+class ProcessingJobViewSet(AuthenticatedModelViewSet):
+    queryset = ProcessingJob.objects.select_related("run", "pipeline", "raw_file")
+    serializer_class = ProcessingJobSerializer
+
+
+class ProteinViewSet(AuthenticatedModelViewSet):
+    queryset = Protein.objects.all()
+    serializer_class = ProteinSerializer
+
+
+class PeptideViewSet(AuthenticatedModelViewSet):
+    queryset = Peptide.objects.all()
+    serializer_class = PeptideSerializer
+
+
+class ProteinIdentificationViewSet(AuthenticatedModelViewSet):
+    queryset = ProteinIdentification.objects.select_related("job", "protein")
+    serializer_class = ProteinIdentificationSerializer
+
+
+class PeptideIdentificationViewSet(AuthenticatedModelViewSet):
+    queryset = PeptideIdentification.objects.select_related("job", "peptide")
+    serializer_class = PeptideIdentificationSerializer
+
+
+class ProteinQuantViewSet(AuthenticatedModelViewSet):
+    queryset = ProteinQuant.objects.select_related("job", "protein")
+    serializer_class = ProteinQuantSerializer
+
+
+class PeptideQuantViewSet(AuthenticatedModelViewSet):
+    queryset = PeptideQuant.objects.select_related("job", "peptide")
+    serializer_class = PeptideQuantSerializer
+
