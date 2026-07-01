@@ -3,6 +3,7 @@ from django.contrib import admin
 from .models import (
     Experiment,
     Facility,
+    IngestionFailure,
     Instrument,
     InstrumentConfiguration,
     Lab,
@@ -109,6 +110,13 @@ class RawFileAdmin(admin.ModelAdmin):
     readonly_fields = ("checksum_sha256", "size_bytes", "imported_at")
 
 
+@admin.register(IngestionFailure)
+class IngestionFailureAdmin(admin.ModelAdmin):
+    list_display = ("filename", "failure_reason", "seen_count", "last_seen_at")
+    search_fields = ("filename", "source_path", "failure_reason")
+    readonly_fields = ("source_path", "filename", "seen_count", "last_seen_at", "created_at", "updated_at")
+
+
 @admin.register(ProcessingPipeline)
 class ProcessingPipelineAdmin(admin.ModelAdmin):
     list_display = ("name", "version", "container_image")
@@ -138,4 +146,3 @@ admin.site.register(ProteinIdentification)
 admin.site.register(PeptideIdentification)
 admin.site.register(ProteinQuant)
 admin.site.register(PeptideQuant)
-

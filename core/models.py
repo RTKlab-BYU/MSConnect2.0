@@ -316,6 +316,21 @@ class RawFile(TimestampedModel):
         return self.filename
 
 
+class IngestionFailure(TimestampedModel):
+    source_path = models.TextField(unique=True, db_index=True)
+    filename = models.CharField(max_length=255)
+    failure_reason = models.TextField()
+    seen_count = models.PositiveIntegerField(default=1)
+    metadata = models.JSONField(default=dict, blank=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-last_seen_at",)
+
+    def __str__(self) -> str:
+        return f"{self.filename}: {self.failure_reason}"
+
+
 class ProcessingPipeline(TimestampedModel):
     name = models.CharField(max_length=128)
     version = models.CharField(max_length=128)
@@ -449,4 +464,3 @@ class PeptideQuant(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.peptide} {self.label}={self.value}"
-

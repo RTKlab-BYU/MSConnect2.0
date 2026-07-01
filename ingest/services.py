@@ -1,12 +1,14 @@
 import hashlib
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 
-from core.models import RawFile, RawFileStatus
+from core.models import IngestionFailure, RawFile, RawFileStatus, Run
 
 DEFAULT_RAW_SUFFIXES = (".raw", ".RAW", ".mzML", ".mzXML", ".wiff", ".scan", ".d")
 
@@ -45,7 +47,14 @@ def discover_raw_paths(source_root: Path, *, suffixes=DEFAULT_RAW_SUFFIXES, recu
                 yield path
 
 
-def import_raw_path(source_path: Path, *, storage_root: Path, run=None, dry_run: bool = False) -> RawFileImportResult:
+def import_raw_path(
+    source_path: Path,
+    *,
+    storage_root: Path,
+    run=None,
+    dry_run: bool = False,
+    match_run_by_name: bool = False,
+) -> RawFileImportResult:
     source_path = Path(source_path)
     storage_root = Path(storage_root)
 
@@ -53,6 +62,10 @@ def import_raw_path(source_path: Path, *, storage_root: Path, run=None, dry_run:
         raise FileNotFoundError(source_path)
 
     checksum, size_bytes = hash_path(source_path)
+    filename_metadata = parse_filename_metadata(source_path)
+    matched_run = run
+    if matched_run is None and match_run_by_name:
+        matched_run = find_run_for_path(source_path)
 
     existing = RawFile.objects.filter(checksum_sha256=checksum, size_bytes=size_bytes).first()
     if existing:
@@ -72,7 +85,7 @@ def import_raw_path(source_path: Path, *, storage_root: Path, run=None, dry_run:
 
     with transaction.atomic():
         raw_file = RawFile.objects.create(
-            run=run,
+            run=matched_run,
             source_path=str(source_path.resolve()),
             storage_path=str(destination.resolve()),
             filename=source_path.name,
@@ -80,7 +93,7 @@ def import_raw_path(source_path: Path, *, storage_root: Path, run=None, dry_run:
             size_bytes=size_bytes,
             imported_at=timezone.now(),
             status=RawFileStatus.IMPORTED,
-            metadata={"importer": "ingest_raw_files"},
+            metadata={"importer": "ingest_raw_files", "filename_metadata": filename_metadata},
         )
 
     return RawFileImportResult(
@@ -90,6 +103,67 @@ def import_raw_path(source_path: Path, *, storage_root: Path, run=None, dry_run:
         raw_file=raw_file,
         created=True,
     )
+
+
+def parse_filename_metadata(source_path: Path) -> dict:
+    stem = source_path.stem
+    tokens = [token for token in re.split(r"[_\-.]+", stem) if token]
+    metadata = {"tokens": tokens}
+
+    for token in tokens:
+        lowered = token.lower()
+        if lowered.startswith(("run", "r")) and len(token) > 1:
+            metadata.setdefault("run_token", token)
+            metadata.setdefault("run_name", token)
+        if lowered.startswith(("sample", "s")) and len(token) > 1:
+            metadata.setdefault("sample_token", token)
+
+    date_match = re.search(r"(20\d{2}[01]\d[0-3]\d)", stem)
+    if date_match:
+        metadata["acquisition_date"] = date_match.group(1)
+
+    return metadata
+
+
+def find_run_for_path(source_path: Path):
+    metadata = parse_filename_metadata(source_path)
+    run_name = metadata.get("run_name")
+    if not run_name:
+        return None
+
+    candidates = Run.objects.filter(run_name__iexact=run_name).order_by("id")
+    if candidates.count() == 1:
+        return candidates.first()
+    return None
+
+
+def record_ingestion_failure(
+    source_path: Path,
+    failure_reason: str,
+    *,
+    metadata: dict | None = None,
+) -> IngestionFailure:
+    source_path = Path(source_path)
+    resolved = str(source_path.resolve(strict=False))
+
+    failure, created = IngestionFailure.objects.get_or_create(
+        source_path=resolved,
+        defaults={
+            "filename": source_path.name,
+            "failure_reason": failure_reason,
+            "metadata": metadata or {},
+        },
+    )
+    if created:
+        return failure
+
+    IngestionFailure.objects.filter(pk=failure.pk).update(
+        filename=source_path.name,
+        failure_reason=failure_reason,
+        metadata=metadata or {},
+        seen_count=F("seen_count") + 1,
+    )
+    return IngestionFailure.objects.get(pk=failure.pk)
 
 
 def hash_path(path: Path) -> tuple[str, int]:
@@ -148,4 +222,3 @@ def _walk_source(source_root: Path, *, recursive: bool):
 
 def _is_raw_directory(path: Path, suffixes: set[str]) -> bool:
     return path.is_dir() and path.suffix.lower() in suffixes
-

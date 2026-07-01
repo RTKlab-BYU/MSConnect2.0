@@ -58,7 +58,15 @@ Run a watcher loop:
 docker compose run --rm ingest python manage.py ingest_raw_files --watch --recursive --interval 60
 ```
 
+Try run-name matching from filename tokens (for example `SampleA_run07_20260701.raw`):
+
+```sh
+docker compose run --rm ingest python manage.py ingest_raw_files --recursive --match-run-by-name
+```
+
 Supported raw-like extensions are `.raw`, `.RAW`, `.mzML`, `.mzXML`, `.wiff`, `.scan`, and vendor directory suffixes such as `.d`.
+
+Ingestion failures are persisted in the `IngestionFailure` model (visible in Django admin) with source path, reason, and repeat count.
 
 ## Core Workflow
 
@@ -75,4 +83,3 @@ Back up these paths together so database records and raw files stay consistent:
 - SQLite database: `MSCONNECT_DATA_HOST_PATH`
 - raw file storage: `RAW_STORAGE_HOST_PATH`
 - media uploads: `MSCONNECT_MEDIA_HOST_PATH`
-
