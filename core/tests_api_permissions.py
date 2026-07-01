@@ -82,3 +82,39 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["user"], self.researcher.id)
+
+    def test_researcher_cannot_create_project_in_non_member_lab(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.post(
+            "/api/projects/",
+            data={
+                "lab": self.lab_b.id,
+                "title": "Cross-lab Project",
+                "code": "P-X",
+                "pi": self.pi_user.id,
+                "status": "active",
+                "description": "",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_researcher_cannot_move_project_to_non_member_lab(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.patch(
+            f"/api/projects/{self.project_a.id}/",
+            data={"lab": self.lab_b.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_researcher_can_update_project_in_member_lab(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.patch(
+            f"/api/projects/{self.project_a.id}/",
+            data={"title": "Project A Updated"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.project_a.refresh_from_db()
+        self.assertEqual(self.project_a.title, "Project A Updated")
