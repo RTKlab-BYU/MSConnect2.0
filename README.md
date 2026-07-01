@@ -68,6 +68,22 @@ Supported raw-like extensions are `.raw`, `.RAW`, `.mzML`, `.mzXML`, `.wiff`, `.
 
 Ingestion failures are persisted in the `IngestionFailure` model (visible in Django admin) with source path, reason, and repeat count.
 
+## Result Table Import
+
+Import protein and peptide result tables and attach them to a `ProcessingJob`:
+
+```sh
+docker compose run --rm web python manage.py import_result_tables \
+  --job-id 1 \
+  --protein-table /app/media/results/proteins.csv \
+  --peptide-table /app/media/results/peptides.tsv
+```
+
+Expected columns:
+
+- Protein table: `accession` and a quant column (`value`/`abundance`/`intensity`/`quantity`), plus optional `label`, `unit`, `score`, `q_value`, `coverage_percent`, `peptide_count`, `organism`.
+- Peptide table: `sequence` and a quant column (`value`/`abundance`/`intensity`/`quantity`), plus optional `modified_sequence`, `charge`, `label`, `unit`, `score`, `q_value`, `retention_time_seconds`, `mz`.
+
 ## Core Workflow
 
 1. Configure University, Facility, Lab, Instruments, and Instrument Configurations.
