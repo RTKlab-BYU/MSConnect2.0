@@ -12,6 +12,7 @@ router.register("lab-memberships", api.LabMembershipViewSet)
 router.register("instruments", api.InstrumentViewSet)
 router.register("instrument-configurations", api.InstrumentConfigurationViewSet)
 router.register("projects", api.ProjectViewSet)
+router.register("intake-requests", api.ProjectIntakeRequestViewSet, basename="intake-request")
 router.register("experiments", api.ExperimentViewSet)
 router.register("samples", api.SampleViewSet)
 router.register("runs", api.RunViewSet)
@@ -28,4 +29,3 @@ router.register("peptide-quants", api.PeptideQuantViewSet)
 urlpatterns = [
     path("", include(router.urls)),
 ]
-

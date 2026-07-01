@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Intake {{ intake.id }}</title>
+  <link rel="stylesheet" href="/static/ui/ui.css">
+</head>
+<body>
+  <main class="container">
+    <h1>Intake Request #{{ intake.id }}</h1>
+    <p>
+      <a href="/ui/intake">Back to queue</a> |
+      <a href="/ui/projects/pre-acq">Pre-acq board</a>
+    </p>
+
+    {% if messages %}
+      {% for message in messages %}
+      <div class="flash {{ message.tags }}">{{ message }}</div>
+      {% endfor %}
+    {% endif %}
+
+    <section class="card">
+      <h2>Request Summary</h2>
+      <dl>
+        <dt>Title</dt><dd>{{ intake.requested_title }}</dd>
+        <dt>Code</dt><dd>{{ intake.requested_code|default:'-' }}</dd>
+        <dt>Status</dt><dd>{{ intake.get_status_display }}</dd>
+        <dt>Lab</dt><dd>{{ intake.lab.name }}</dd>
+        <dt>Submitted By</dt><dd>{{ intake.submitted_by.username }}</dd>
+        <dt>Objective</dt><dd>{{ intake.objective|default:'-' }}</dd>
+        <dt>Sample Estimate</dt><dd>{{ intake.sample_count_estimate|default:'-' }}</dd>
+        <dt>Deadline</dt><dd>{{ intake.acquisition_deadline|default:'-' }}</dd>
+      </dl>
+    </section>
+
+    <section class="card">
+      <h2>Timeline</h2>
+      <ul>
+        <li>Created: {{ intake.created_at }}</li>
+        <li>Updated: {{ intake.updated_at }}</li>
+        <li>Reviewed By: {% if intake.reviewed_by %}{{ intake.reviewed_by.username }} at {{ intake.reviewed_at }}{% else %}not reviewed yet{% endif %}</li>
+        <li>Review Note: {{ intake.review_note|default:'-' }}</li>
+        <li>Promoted Project: {% if intake.promoted_project %}{{ intake.promoted_project.code }} ({{ intake.promoted_project.title }}){% else %}not promoted{% endif %}</li>
+      </ul>
+    </section>
+
+    {% if can_review %}
+    <section class="card">
+      <h2>Review Actions</h2>
+      <form method="post" action="/ui/intake/{{ intake.id }}/review">
+        {% csrf_token %}
+        {{ review_form.as_p }}
+        <button type="submit">Apply Review State</button>
+      </form>
+
+      <form method="post" action="/ui/intake/{{ intake.id }}/review">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="promote">
+        <button type="submit" {% if intake.promoted_project %}disabled{% endif %}>Promote to Project</button>
+      </form>
+    </section>
+    {% endif %}
+  </main>
+</body>
+</html>

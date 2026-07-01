@@ -1,11 +1,14 @@
-from rest_framework import serializers, viewsets
-from rest_framework.exceptions import PermissionDenied
+from rest_framework import permissions, serializers, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.response import Response
 
 from .models import (
     Experiment,
     Facility,
     Instrument,
     InstrumentConfiguration,
+    IntakeRequestStatus,
     Lab,
     LabMembership,
     Peptide,
@@ -14,6 +17,7 @@ from .models import (
     ProcessingJob,
     ProcessingPipeline,
     Project,
+    ProjectIntakeRequest,
     Protein,
     ProteinIdentification,
     ProteinQuant,
@@ -22,8 +26,9 @@ from .models import (
     Sample,
     University,
     UserProfile,
+    UserRole,
 )
-from .permissions import RoleScopedWritePermission, active_lab_ids, is_admin
+from .permissions import RoleScopedWritePermission, active_lab_ids, is_admin, user_role
 
 
 class BaseSerializer(serializers.ModelSerializer):
@@ -69,6 +74,35 @@ class InstrumentConfigurationSerializer(BaseSerializer):
 class ProjectSerializer(BaseSerializer):
     class Meta(BaseSerializer.Meta):
         model = Project
+
+
+class ProjectIntakeQueueSerializer(BaseSerializer):
+    lab_name = serializers.CharField(source="lab.name", read_only=True)
+    submitted_by_username = serializers.CharField(source="submitted_by.username", read_only=True)
+    reviewed_by_username = serializers.CharField(source="reviewed_by.username", read_only=True)
+
+    class Meta(BaseSerializer.Meta):
+        model = ProjectIntakeRequest
+        fields = (
+            "id",
+            "requested_title",
+            "requested_code",
+            "status",
+            "lab",
+            "lab_name",
+            "submitted_by",
+            "submitted_by_username",
+            "updated_at",
+            "reviewed_by",
+            "reviewed_by_username",
+            "promoted_project",
+        )
+
+
+class ProjectIntakeRequestSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = ProjectIntakeRequest
+        read_only_fields = ("submitted_by", "reviewed_by", "reviewed_at", "promoted_project")
 
 
 class ExperimentSerializer(BaseSerializer):
@@ -272,6 +306,149 @@ class ProjectViewSet(AuthenticatedModelViewSet):
     serializer_class = ProjectSerializer
     scope_lab_lookup = "lab_id"
     write_scope_lab_path = "lab"
+
+
+class ProjectIntakeRequestViewSet(viewsets.ModelViewSet):
+    serializer_class = ProjectIntakeRequestSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get_queryset(self):
+        base_queryset = ProjectIntakeRequest.objects.select_related(
+            "lab",
+            "submitted_by",
+            "reviewed_by",
+            "promoted_project",
+        )
+
+        user = self.request.user
+        if is_admin(user):
+            queryset = base_queryset
+        else:
+            lab_ids = active_lab_ids(user)
+            if not lab_ids:
+                return base_queryset.none()
+            queryset = base_queryset.filter(lab_id__in=lab_ids)
+
+        status_filter = self.request.query_params.get("status")
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
+        lab_filter = self.request.query_params.get("lab")
+        if lab_filter:
+            queryset = queryset.filter(lab_id=lab_filter)
+
+        submitter_filter = self.request.query_params.get("submitter")
+        if submitter_filter:
+            queryset = queryset.filter(submitted_by_id=submitter_filter)
+
+        start_date = self.request.query_params.get("start_date")
+        if start_date:
+            queryset = queryset.filter(created_at__date__gte=start_date)
+
+        end_date = self.request.query_params.get("end_date")
+        if end_date:
+            queryset = queryset.filter(created_at__date__lte=end_date)
+
+        ordering = self.request.query_params.get("ordering", "-updated_at")
+        allowed_ordering = {
+            "updated_at",
+            "-updated_at",
+            "created_at",
+            "-created_at",
+            "requested_title",
+            "-requested_title",
+        }
+        if ordering not in allowed_ordering:
+            ordering = "-updated_at"
+
+        return queryset.order_by(ordering, "-id")
+
+    def get_serializer_class(self):
+        if self.action == "list":
+            return ProjectIntakeQueueSerializer
+        return ProjectIntakeRequestSerializer
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        lab = serializer.validated_data["lab"]
+        self._enforce_lab_scope(user=user, lab_id=lab.id)
+        serializer.save(submitted_by=user)
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        intake = self.get_object()
+        target_lab = serializer.validated_data.get("lab", intake.lab)
+        self._enforce_lab_scope(user=user, lab_id=target_lab.id)
+
+        if is_admin(user):
+            serializer.save()
+            return
+
+        if intake.submitted_by_id != user.id:
+            raise PermissionDenied("Only the submitter or an admin can edit this intake request.")
+        if intake.status != IntakeRequestStatus.SUBMITTED:
+            raise PermissionDenied("Submitted requests can only be edited while in submitted state.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+        if is_admin(user) or (instance.submitted_by_id == user.id and instance.status == IntakeRequestStatus.SUBMITTED):
+            instance.delete()
+            return
+        raise PermissionDenied("Only the submitter can delete submitted requests.")
+
+    @action(detail=True, methods=["post"])
+    def review(self, request, pk=None):
+        intake = self.get_object()
+        self._enforce_review_permission(user=request.user, lab_id=intake.lab_id)
+
+        new_status = request.data.get("status")
+        note = request.data.get("review_note", "")
+        if new_status not in (
+            IntakeRequestStatus.IN_REVIEW,
+            IntakeRequestStatus.APPROVED,
+            IntakeRequestStatus.REJECTED,
+        ):
+            raise ValidationError({"status": "Status must be one of in_review, approved, rejected."})
+
+        intake.transition_to(new_status=new_status, reviewer=request.user, note=note)
+        serializer = self.get_serializer(intake)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"])
+    def promote(self, request, pk=None):
+        intake = self.get_object()
+        self._enforce_review_permission(user=request.user, lab_id=intake.lab_id)
+        project = intake.promote_to_project()
+        intake.refresh_from_db()
+        return Response(
+            {
+                "intake_request": self.get_serializer(intake).data,
+                "project_id": project.id,
+                "project_code": project.code,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def _enforce_lab_scope(self, *, user, lab_id: int):
+        if is_admin(user):
+            return
+        if lab_id not in set(active_lab_ids(user)):
+            raise PermissionDenied("This action targets a lab outside your membership scope.")
+
+    def _enforce_review_permission(self, *, user, lab_id: int):
+        if is_admin(user):
+            return
+        if lab_id not in set(active_lab_ids(user)):
+            raise PermissionDenied("You do not have access to this intake request's lab.")
+        is_lab_pi = LabMembership.objects.filter(
+            user=user,
+            lab_id=lab_id,
+            active=True,
+            role=UserRole.PI,
+        ).exists() or Lab.objects.filter(id=lab_id, pi=user).exists()
+        if not is_lab_pi and user_role(user) != UserRole.PI:
+            raise PermissionDenied("Only PI or admin users can review intake requests.")
 
 
 class ExperimentViewSet(AuthenticatedModelViewSet):

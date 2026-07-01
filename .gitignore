@@ -13,3 +13,5 @@ media/
 raw-storage/
 staticfiles/
 
+# Local session notes (do not commit)
+DAILY_WORKLOG.md

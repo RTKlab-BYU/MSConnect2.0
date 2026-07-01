@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
+from django.utils import timezone
 
 
 class TimestampedModel(models.Model):
@@ -23,6 +24,13 @@ class ProjectStatus(models.TextChoices):
     PAUSED = "paused", "Paused"
     COMPLETE = "complete", "Complete"
     ARCHIVED = "archived", "Archived"
+
+
+class IntakeRequestStatus(models.TextChoices):
+    SUBMITTED = "submitted", "Submitted"
+    IN_REVIEW = "in_review", "In Review"
+    APPROVED = "approved", "Approved"
+    REJECTED = "rejected", "Rejected"
 
 
 class InstrumentType(models.TextChoices):
@@ -210,6 +218,103 @@ class Project(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.code}: {self.title}"
+
+
+class ProjectIntakeRequest(TimestampedModel):
+    lab = models.ForeignKey(Lab, on_delete=models.PROTECT, related_name="intake_requests")
+    requested_title = models.CharField(max_length=255)
+    requested_code = models.CharField(max_length=80, blank=True)
+    requested_pi = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="requested_intakes",
+        blank=True,
+        null=True,
+    )
+    objective = models.TextField(blank=True)
+    sample_count_estimate = models.PositiveIntegerField(blank=True, null=True)
+    acquisition_deadline = models.DateField(blank=True, null=True)
+    status = models.CharField(max_length=32, choices=IntakeRequestStatus.choices, default=IntakeRequestStatus.SUBMITTED)
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="submitted_intake_requests",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="reviewed_intake_requests",
+        blank=True,
+        null=True,
+    )
+    review_note = models.TextField(blank=True)
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+    promoted_project = models.OneToOneField(
+        Project,
+        on_delete=models.PROTECT,
+        related_name="source_intake_request",
+        blank=True,
+        null=True,
+    )
+
+    class Meta:
+        ordering = ("-updated_at", "-created_at")
+
+    def __str__(self) -> str:
+        return f"Intake {self.id}: {self.requested_title}"
+
+    @property
+    def allowed_review_transitions(self):
+        return {
+            IntakeRequestStatus.SUBMITTED: {IntakeRequestStatus.IN_REVIEW, IntakeRequestStatus.REJECTED},
+            IntakeRequestStatus.IN_REVIEW: {IntakeRequestStatus.APPROVED, IntakeRequestStatus.REJECTED},
+            IntakeRequestStatus.APPROVED: set(),
+            IntakeRequestStatus.REJECTED: set(),
+        }
+
+    def can_transition_to(self, new_status: str) -> bool:
+        return new_status in self.allowed_review_transitions.get(self.status, set())
+
+    def transition_to(self, *, new_status: str, reviewer, note: str = "") -> None:
+        if not self.can_transition_to(new_status):
+            raise ValidationError(f"Invalid transition from {self.status} to {new_status}.")
+        self.status = new_status
+        self.reviewed_by = reviewer
+        self.review_note = note
+        self.reviewed_at = timezone.now()
+        self.save(update_fields=["status", "reviewed_by", "review_note", "reviewed_at", "updated_at"])
+
+    def promote_to_project(self):
+        if self.promoted_project_id:
+            return self.promoted_project
+        if self.status != IntakeRequestStatus.APPROVED:
+            raise ValidationError("Only approved intake requests can be promoted to a project.")
+
+        with transaction.atomic():
+            intake = ProjectIntakeRequest.objects.select_for_update().select_related("lab").get(pk=self.pk)
+            if intake.promoted_project_id:
+                return intake.promoted_project
+
+            preferred_pi = intake.requested_pi or intake.lab.pi or intake.reviewed_by or intake.submitted_by
+            candidate_code = intake.requested_code or f"INTAKE-{intake.id}"
+            unique_code = candidate_code
+            suffix = 1
+            while Project.objects.filter(lab_id=intake.lab_id, code=unique_code).exists():
+                suffix += 1
+                unique_code = f"{candidate_code}-{suffix}"
+
+            project = Project.objects.create(
+                lab=intake.lab,
+                title=intake.requested_title,
+                code=unique_code,
+                pi=preferred_pi,
+                status=ProjectStatus.ACTIVE,
+                description=intake.objective,
+            )
+            intake.promoted_project = project
+            intake.save(update_fields=["promoted_project", "updated_at"])
+            self.promoted_project = project
+            return project
 
 
 class Experiment(TimestampedModel):

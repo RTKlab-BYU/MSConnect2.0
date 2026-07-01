@@ -14,6 +14,7 @@ from .models import (
     ProcessingJob,
     ProcessingPipeline,
     Project,
+    ProjectIntakeRequest,
     Protein,
     ProteinIdentification,
     ProteinQuant,
@@ -78,6 +79,13 @@ class InstrumentConfigurationAdmin(admin.ModelAdmin):
 class ProjectAdmin(admin.ModelAdmin):
     list_display = ("code", "title", "lab", "pi", "status")
     search_fields = ("code", "title", "lab__name", "pi__username")
+    list_filter = ("status", "lab")
+
+
+@admin.register(ProjectIntakeRequest)
+class ProjectIntakeRequestAdmin(admin.ModelAdmin):
+    list_display = ("id", "requested_title", "lab", "status", "submitted_by", "reviewed_by", "promoted_project")
+    search_fields = ("requested_title", "requested_code", "submitted_by__username", "lab__name")
     list_filter = ("status", "lab")
 
 

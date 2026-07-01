@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "core",
     "ingest",
+    "ui",
 ]
 
 MIDDLEWARE = [
@@ -107,4 +108,3 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ],
 }
-

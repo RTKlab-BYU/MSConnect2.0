@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>New Intake Request</title>
+  <link rel="stylesheet" href="/static/ui/ui.css">
+</head>
+<body>
+  <main class="container">
+    <h1>Project Intake: New Request</h1>
+    <p><a href="/ui/intake">Back to queue</a></p>
+    <form method="post" class="card">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button type="submit">Submit Intake Request</button>
+    </form>
+  </main>
+</body>
+</html>

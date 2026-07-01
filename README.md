@@ -87,10 +87,20 @@ Expected columns:
 ## Core Workflow
 
 1. Configure University, Facility, Lab, Instruments, and Instrument Configurations.
-2. Create a Project, Experiment, Sample, and Run.
+2. Submit pre-acquisition project intake requests in the placeholder UI (`/ui/intake/new`), review in queue (`/ui/intake`), and promote approved requests to canonical `Project` records.
 3. Import raw files from the watched share.
 4. Link raw files to Runs.
 5. Register processing pipelines and store peptide/protein IDs and quantification outputs.
+
+## Placeholder UI Routes
+
+- `/ui/intake/new`: create intake request
+- `/ui/intake`: pre-acquisition queue with filters
+- `/ui/intake/<id>`: intake detail and timeline
+- `/ui/intake/<id>/review`: review transitions and promotion action
+- `/ui/projects/pre-acq`: approved intake planning list
+
+See handoff contract in `docs/ui-handoff.md`.
 
 ## Backups
 
