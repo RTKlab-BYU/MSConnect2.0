@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MSConnect Login</title>
+  <link rel="stylesheet" href="/static/ui/ui.css">
+</head>
+<body>
+  <main class="container">
+    <section class="page-header">
+      <div>
+        <p class="eyebrow">Secure workspace</p>
+        <h1>MSConnect Login</h1>
+        <p class="lede">Access project, sample, acquisition, and raw-file records.</p>
+      </div>
+    </section>
+
+    {% if form.errors %}
+    <div class="flash error">Invalid username or password.</div>
+    {% endif %}
+
+    <form method="post" class="card">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <input type="hidden" name="next" value="{{ next }}">
+      <button type="submit">Log In</button>
+    </form>
+  </main>
+</body>
+</html>

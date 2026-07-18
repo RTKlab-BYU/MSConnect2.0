@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 214 24% 97%;
+    --foreground: 216 34% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 216 34% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 216 34% 12%;
+    --primary: 213 49% 29%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 211 28% 93%;
+    --secondary-foreground: 216 34% 18%;
+    --muted: 213 24% 92%;
+    --muted-foreground: 215 16% 43%;
+    --accent: 172 66% 28%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 356 58% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 151 62% 28%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 95% 34%;
+    --warning-foreground: 30 100% 10%;
+    --info: 209 72% 39%;
+    --info-foreground: 0 0% 100%;
+    --border: 214 23% 84%;
+    --input: 214 23% 78%;
+    --ring: 213 49% 36%;
+    --radius: 0.5rem;
+    --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.06);
+    --shadow-md: 0 12px 28px rgb(15 23 42 / 0.08);
+    --shadow-lg: 0 20px 48px rgb(15 23 42 / 0.12);
+  }
+
+  .dark {
+    --background: 216 30% 8%;
+    --foreground: 214 24% 92%;
+    --card: 216 28% 11%;
+    --card-foreground: 214 24% 92%;
+    --popover: 216 28% 11%;
+    --popover-foreground: 214 24% 92%;
+    --primary: 210 58% 60%;
+    --primary-foreground: 216 34% 10%;
+    --secondary: 216 24% 16%;
+    --secondary-foreground: 214 24% 92%;
+    --muted: 216 22% 18%;
+    --muted-foreground: 214 16% 68%;
+    --accent: 172 54% 44%;
+    --accent-foreground: 216 34% 9%;
+    --destructive: 356 66% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 151 53% 46%;
+    --success-foreground: 216 34% 9%;
+    --warning: 42 87% 58%;
+    --warning-foreground: 30 100% 10%;
+    --info: 207 82% 62%;
+    --info-foreground: 216 34% 9%;
+    --border: 216 20% 22%;
+    --input: 216 20% 26%;
+    --ring: 210 58% 60%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings:
+      "rlig" 1,
+      "calt" 1;
+  }
+
+  a {
+    @apply text-primary underline-offset-4 hover:underline;
+  }
+}
