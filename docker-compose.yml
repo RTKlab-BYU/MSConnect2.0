@@ -1,5 +1,6 @@
 services:
   web:
+    image: ${MSCONNECT_IMAGE:-msconnect:local}
     build: .
     command: >
       sh -c "python manage.py migrate &&
@@ -13,21 +14,46 @@ services:
       - ${MSCONNECT_MEDIA_HOST_PATH:-./media}:/app/media
       - ${MSCONNECT_STATIC_HOST_PATH:-./staticfiles}:/app/staticfiles
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+    ports:
+      - "${MSCONNECT_WEB_PORT:-8000}:8000"
     expose:
       - "8000"
 
-  ingest:
+  watcher:
+    image: ${MSCONNECT_IMAGE:-msconnect:local}
     build: .
     command: >
-      sh -c "python manage.py migrate &&
-             python manage.py ingest_raw_files --watch --recursive --interval 60"
+      sh -c "python manage.py run_watcher_agent --match-run-by-name"
     env_file:
       - path: .env
         required: false
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_WATCHER_TOKEN:-watcher-token}
+      MSCONNECT_AGENT_NAME: ${WATCHER_AGENT_NAME:-watcher-1}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming:ro
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+    depends_on:
+      - web
+
+  processor:
+    image: ${MSCONNECT_IMAGE:-msconnect:local}
+    build: .
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${PROCESSOR_AGENT_NAME:-processor-1}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
     depends_on:
       - web
 

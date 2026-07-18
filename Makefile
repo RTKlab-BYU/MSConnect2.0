@@ -1,4 +1,4 @@
-.PHONY: build up down logs migrate test lint shell createsuperuser ingest
+.PHONY: build up down logs migrate test lint shell createsuperuser watcher processor deploy-tag
 
 build:
 	docker compose build
@@ -27,6 +27,12 @@ shell:
 createsuperuser:
 	docker compose run --rm web python manage.py createsuperuser
 
-ingest:
-	docker compose run --rm ingest python manage.py ingest_raw_files --recursive
+watcher:
+	docker compose run --rm watcher python manage.py run_watcher_agent --once --match-run-by-name
 
+processor:
+	docker compose run --rm processor python manage.py run_processor_agent --once
+
+deploy-tag:
+	docker compose pull
+	docker compose up -d

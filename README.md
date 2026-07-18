@@ -9,6 +9,7 @@ MSConnect is an on-prem SDMS/LIMS scaffold for LC-MS proteomics. The MVP tracks 
 - Docker Compose
 - nginx
 - Watched-share raw file ingestion
+- Repo-embedded watcher and processor agents
 
 ## Local On-Prem Run
 
@@ -36,9 +37,19 @@ docker compose run --rm web python manage.py createsuperuser
 http://localhost/admin/
 ```
 
+## Agent Services
+
+The deployment now runs three repo-embedded application services from the same image:
+
+- `web`: Django API/UI server
+- `watcher`: watched-share raw-file ingestion agent
+- `processor`: queued processing command runner
+
+All three services stay in the same repo and can be deployed together from one tag and one image.
+
 ## Raw File Ingestion
 
-The `ingest` service polls `INCOMING_RAW_ROOT` and imports recognized raw file paths into `RAW_FILE_STORAGE_ROOT`.
+The `watcher` service polls `INCOMING_RAW_ROOT`, copies recognized raw file paths into `RAW_FILE_STORAGE_ROOT`, and reports imports back to the main API.
 
 Default host paths are:
 
@@ -49,20 +60,47 @@ Default host paths are:
 Run one import pass manually:
 
 ```sh
-docker compose run --rm ingest python manage.py ingest_raw_files --recursive
+docker compose run --rm watcher python manage.py run_watcher_agent --once --match-run-by-name
 ```
 
 Run a watcher loop:
 
 ```sh
-docker compose run --rm ingest python manage.py ingest_raw_files --watch --recursive --interval 60
+docker compose run --rm watcher python manage.py run_watcher_agent --match-run-by-name
 ```
 
-Try run-name matching from filename tokens (for example `SampleA_run07_20260701.raw`):
+The watcher can link files to runs by filename tokens (for example `SampleA_run07_20260701.raw`) when `--match-run-by-name` is enabled.
+
+## Processing Agent
+
+The `processor` service claims queued `ProcessingJob` records from the main API, runs the configured local command, writes logs under `RESULTS_ROOT`, and reports completion or failure back to the API.
+
+V1 pipeline execution is driven by `ProcessingPipeline.parameters`:
+
+```json
+{
+  "command": ["my-tool", "--input", "{raw_file_path}", "--out", "{results_dir}"],
+  "env": {"PROJECT_CODE": "{run_name}"},
+  "working_dir": "{results_dir}",
+  "result_files": {
+    "protein_table": "proteins.csv",
+    "peptide_table": "peptides.tsv"
+  }
+}
+```
+
+Run one processor pass manually:
 
 ```sh
-docker compose run --rm ingest python manage.py ingest_raw_files --recursive --match-run-by-name
+docker compose run --rm processor python manage.py run_processor_agent --once
 ```
+
+## Agent Auth
+
+Watcher and processor containers authenticate to the main API with static bearer tokens:
+
+- `MSCONNECT_WATCHER_TOKEN`
+- `MSCONNECT_PROCESSOR_TOKEN`
 
 Supported raw-like extensions are `.raw`, `.RAW`, `.mzML`, `.mzXML`, `.wiff`, `.scan`, and vendor directory suffixes such as `.d`.
 
@@ -87,12 +125,24 @@ Expected columns:
 ## Core Workflow
 
 1. Configure University, Facility, Lab, Instruments, and Instrument Configurations.
-2. Submit pre-acquisition project intake requests in the placeholder UI (`/ui/intake/new`), review in queue (`/ui/intake`), and promote approved requests to canonical `Project` records.
+2. Submit pre-acquisition project intake requests, review them, and promote approved requests to canonical `Project` records.
 3. Import raw files from the watched share.
 4. Link raw files to Runs.
 5. Register processing pipelines and store peptide/protein IDs and quantification outputs.
 
-## Placeholder UI Routes
+## React App Review
+
+The new React application is mounted at `/app/*` while the legacy Django-template UI remains available at `/ui/*`.
+
+Start review at:
+
+```text
+http://localhost/app/projects
+```
+
+Use `docs/app-review-guide.md` for the full review flow, demo data setup, acceptance criteria, and the planned migration steps for making `/app/` the only user-facing interface.
+
+## Legacy UI Routes
 
 - `/ui/intake/new`: create intake request
 - `/ui/intake`: pre-acquisition queue with filters
@@ -108,4 +158,22 @@ Back up these paths together so database records and raw files stay consistent:
 
 - SQLite database: `MSCONNECT_DATA_HOST_PATH`
 - raw file storage: `RAW_STORAGE_HOST_PATH`
+- processing logs and results: `RESULTS_HOST_PATH`
 - media uploads: `MSCONNECT_MEDIA_HOST_PATH`
+
+## Tagged Deployments
+
+Git tags matching `v*.*.*` publish the shared application image to Docker Hub.
+
+Deploy a tagged release by setting:
+
+```sh
+MSCONNECT_IMAGE=docker.io/<your-dockerhub-user>/msconnect:vX.Y.Z
+```
+
+Then run:
+
+```sh
+docker compose pull
+docker compose up -d
+```

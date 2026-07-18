@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . /app/
 
-RUN mkdir -p /app/data /app/media /app/staticfiles /data/incoming /data/raw \
+RUN mkdir -p /app/data /app/media /app/staticfiles /data/incoming /data/raw /data/results \
     && chown -R appuser:appuser /app /data
 
 USER appuser
@@ -21,4 +21,3 @@ USER appuser
 EXPOSE 8000
 
 CMD ["gunicorn", "msconnect.wsgi:application", "--bind", "0.0.0.0:8000"]
-
