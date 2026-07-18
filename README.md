@@ -25,6 +25,8 @@ cp .env.example .env
 docker compose up --build
 ```
 
+The direct Django app is published at `http://localhost:8000/` by default. The nginx reverse proxy is published at `http://localhost:8080/` by default so local machines that already use port 80 do not block the stack.
+
 3. Create an admin user:
 
 ```sh
@@ -46,6 +48,8 @@ The deployment now runs three repo-embedded application services from the same i
 - `processor`: queued processing command runner
 
 All three services stay in the same repo and can be deployed together from one tag and one image.
+
+`watcher` and `processor` wait for the `web` healthcheck before starting, and their API client retries transient connection and HTTP 5xx errors. This keeps local three-container simulations from failing during Django migration/startup races.
 
 ## Raw File Ingestion
 
@@ -88,6 +92,8 @@ V1 pipeline execution is driven by `ProcessingPipeline.parameters`:
   }
 }
 ```
+
+The demo showcase seeds a local executable pipeline command that writes small protein and peptide CSV artifacts under `RESULTS_ROOT`, so the `processor` container can exercise claim/start/complete/result-import behavior without a DIA-NN installation.
 
 Run one processor pass manually:
 

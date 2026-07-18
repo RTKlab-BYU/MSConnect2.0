@@ -127,6 +127,17 @@ def parse_filename_metadata(source_path: Path) -> dict:
 
 def find_run_for_path(source_path: Path):
     metadata = parse_filename_metadata(source_path)
+    filename = source_path.name
+    stem = source_path.stem
+
+    candidates = Run.objects.filter(expected_filename__iexact=filename).order_by("id")
+    if candidates.count() == 1:
+        return candidates.first()
+
+    candidates = Run.objects.filter(run_name__iexact=stem).order_by("id")
+    if candidates.count() == 1:
+        return candidates.first()
+
     run_name = metadata.get("run_name")
     if not run_name:
         return None

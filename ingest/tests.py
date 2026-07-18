@@ -105,6 +105,30 @@ class RawFileIngestTests(TestCase):
             raw_file = RawFile.objects.get()
             self.assertEqual(raw_file.run_id, run.id)
 
+    def test_import_can_match_run_by_expected_filename(self):
+        with TemporaryDirectory() as source_dir, TemporaryDirectory() as storage_dir:
+            user = User.objects.create_user(username="pi", password="password123")
+            university = University.objects.create(name="BYU")
+            facility = Facility.objects.create(university=university, name="Core", slug="core")
+            lab = Lab.objects.create(facility=facility, name="Lab A", slug="lab-a")
+            project = Project.objects.create(lab=lab, title="Project A", code="P-A", pi=user)
+            experiment = Experiment.objects.create(project=project, name="Exp 1")
+            sample = Sample.objects.create(experiment=experiment, name="Blank")
+            run = Run.objects.create(
+                sample=sample,
+                run_name="HYE_DIA_DEMO_001_BLANK",
+                expected_filename="HYE_DIA_DEMO_001_BLANK.raw",
+            )
+
+            source = Path(source_dir) / "HYE_DIA_DEMO_001_BLANK.raw"
+            source.write_bytes(b"raw-data")
+
+            result = import_raw_path(source, storage_root=Path(storage_dir), match_run_by_name=True)
+
+            self.assertTrue(result.created)
+            raw_file = RawFile.objects.get()
+            self.assertEqual(raw_file.run_id, run.id)
+
     def test_record_ingestion_failure_creates_and_increments_seen_count(self):
         missing = Path("/tmp/nonexistent-file.raw")
 

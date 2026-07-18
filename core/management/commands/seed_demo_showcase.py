@@ -1,5 +1,6 @@
 import hashlib
 from datetime import timedelta
+from pathlib import Path
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
@@ -44,13 +45,43 @@ from core.models import (
 class Command(BaseCommand):
     help = "Seed a complete MSConnect showcase with HYE A/B QC, worklist, raw-file matching, and DIA-NN jobs."
 
+    def add_arguments(self, parser):
+        parser.add_argument("--write-job-results", nargs=2, metavar=("JOB_ID", "RESULTS_DIR"))
+
     def handle(self, *args, **options):
+        if options.get("write_job_results"):
+            job_id, results_dir = options["write_job_results"]
+            self._write_job_results(job_id=job_id, results_dir=results_dir)
+            return
+
         with transaction.atomic():
             context = self._seed()
         self.stdout.write(self.style.SUCCESS("Demo showcase seeded."))
         self.stdout.write(f"Project: {context['project'].code} - {context['project'].title}")
         self.stdout.write(f"Worklist: {context['worklist'].name}")
         self.stdout.write("Open: http://127.0.0.1:8000/ui/showcase")
+
+    def _write_job_results(self, *, job_id, results_dir):
+        results_path = Path(results_dir)
+        results_path.mkdir(parents=True, exist_ok=True)
+        protein_path = results_path / "proteins.csv"
+        peptide_path = results_path / "peptides.csv"
+
+        job_number = int(job_id)
+        protein_rows = [
+            ("accession,label,value,unit,score,q_value,coverage_percent,peptide_count,organism"),
+            f"P00533,abundance,{1000000 + job_number * 1000},area,92,0.001,48,12,Homo sapiens",
+            f"P00924,abundance,{420000 + job_number * 700},area,89,0.002,36,9,Saccharomyces cerevisiae",
+            f"P0A6F5,abundance,{180000 + job_number * 400},area,87,0.003,31,7,Escherichia coli",
+        ]
+        peptide_rows = [
+            ("sequence,modified_sequence,charge,label,value,unit,score,q_value,retention_time_seconds,mz"),
+            f"LVNELTEFAK,LVNELTEFAK,2,abundance,{250000 + job_number * 500},area,94,0.001,1450,593.312",
+        ]
+
+        protein_path.write_text("\n".join(protein_rows) + "\n", encoding="utf-8")
+        peptide_path.write_text("\n".join(peptide_rows) + "\n", encoding="utf-8")
+        self.stdout.write(self.style.SUCCESS(f"Wrote demo job results for job {job_id} to {results_path}"))
 
     def _seed(self):
         User = get_user_model()
@@ -275,6 +306,20 @@ class Command(BaseCommand):
             defaults={
                 "container_image": "ghcr.io/msconnect/diann-node:demo",
                 "parameters": {
+                    "command": [
+                        "python",
+                        "manage.py",
+                        "seed_demo_showcase",
+                        "--write-job-results",
+                        "{job_id}",
+                        "{results_dir}",
+                    ],
+                    "working_dir": "/app",
+                    "result_files": {
+                        "protein_table": "proteins.csv",
+                        "peptide_table": "peptides.csv",
+                        "delimiter": ",",
+                    },
                     "library_strategy": "library-free with optional HYE library refinement",
                     "fasta": "/data/reference/hye_human_yeast_ecoli.fasta",
                     "enzyme": "Trypsin/P",
