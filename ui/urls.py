@@ -10,11 +10,23 @@ urlpatterns = [
     path("projects/<int:pk>", RedirectView.as_view(url="/app/projects/%(pk)s", permanent=True), name="project_detail"),
     path("showcase", RedirectView.as_view(url="/app/projects", permanent=True), name="showcase_dashboard"),
     path("showcase/design", RedirectView.as_view(url="/app/projects", permanent=True), name="showcase_design"),
-    path("showcase/acquisition", RedirectView.as_view(url="/app/monitoring", permanent=True), name="showcase_acquisition"),
+    path(
+        "showcase/acquisition",
+        RedirectView.as_view(url="/app/monitoring", permanent=True),
+        name="showcase_acquisition",
+    ),
     path("showcase/results", RedirectView.as_view(url="/app/projects", permanent=True), name="showcase_results"),
-    path("showcase/processing", RedirectView.as_view(url="/app/processing", permanent=True), name="showcase_processing_default"),
+    path(
+        "showcase/processing",
+        RedirectView.as_view(url="/app/processing", permanent=True),
+        name="showcase_processing_default",
+    ),
     path("showcase/qc", RedirectView.as_view(url="/app/qc", permanent=True), name="showcase_qc_default"),
-    path("showcase/worklists/<int:pk>", RedirectView.as_view(url="/app/monitoring", permanent=True), name="showcase_worklist"),
+    path(
+        "showcase/worklists/<int:pk>",
+        RedirectView.as_view(url="/app/monitoring", permanent=True),
+        name="showcase_worklist",
+    ),
     path(
         "showcase/worklists/<int:pk>/acquisition",
         RedirectView.as_view(url="/app/monitoring", permanent=True),
