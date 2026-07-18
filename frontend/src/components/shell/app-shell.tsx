@@ -71,9 +71,6 @@ export function AppShell() {
             <span className="ml-auto rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px]">⌘K</span>
           </Button>
           <div className="ml-auto flex items-center gap-2">
-            <a className="text-sm font-semibold text-muted-foreground" href="/ui/projects">
-              Legacy UI
-            </a>
             <Button
               variant="ghost"
               size="icon"

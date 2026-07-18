@@ -136,27 +136,21 @@ Expected columns:
 4. Link raw files to Runs.
 5. Register processing pipelines and store peptide/protein IDs and quantification outputs.
 
-## React App Review
+## React App
 
-The new React application is mounted at `/app/*` while the legacy Django-template UI remains available at `/ui/*`.
+The React application is the user-facing UI and is mounted at `/app/*`.
 
-Start review at:
+Open the app at:
 
 ```text
-http://localhost/app/projects
+http://localhost:8000/app/projects
 ```
 
-Use `docs/app-review-guide.md` for the full review flow, demo data setup, acceptance criteria, and the planned migration steps for making `/app/` the only user-facing interface.
+Legacy `/ui/*` URLs now redirect to their closest `/app/*` route for bookmark compatibility.
 
-## Legacy UI Routes
+## Retired Legacy UI
 
-- `/ui/intake/new`: create intake request
-- `/ui/intake`: pre-acquisition queue with filters
-- `/ui/intake/<id>`: intake detail and timeline
-- `/ui/intake/<id>/review`: review transitions and promotion action
-- `/ui/projects/pre-acq`: approved intake planning list
-
-See handoff contract in `docs/ui-handoff.md`.
+The old Django-template UI under `ui/templates/ui/**` and `ui/static/ui/**` has been removed. Django admin, API routes, auth routes, and `/app/*` remain available.
 
 ## Backups
 

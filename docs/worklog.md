@@ -59,11 +59,10 @@
 - `/app/qc` is ready for HYE pseudo-project review now.
 - `/app/processing` is ready for node and queue review now.
 - `/app/monitoring` remains the compact global operations summary.
-- `/ui/*` still remains available and is not yet retired.
+- `/ui/*` is retired as a rendered interface and now redirects to `/app/*`.
 
 ### Deferred / next session
 
-- Replace the legacy root redirect and remove the `Legacy UI` link only after `/app` signoff.
-- Decide whether intake/review/promotion should move into `/app` before `/ui/*` is shut off.
+- Add first-class intake/review/promotion flows to `/app` when that workflow becomes active again.
 - Add real PRTC data contracts and acceptance thresholds.
 - Replace placeholder signed upload targets with the real object-storage signing implementation in the target environment.

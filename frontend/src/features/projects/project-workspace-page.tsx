@@ -132,9 +132,6 @@ export default function ProjectWorkspacePage() {
             <Button asChild variant="secondary" size="sm">
               <Link to={`/processing?project=${projectId}`}>View Processing</Link>
             </Button>
-            <a className="text-sm font-semibold text-muted-foreground" href={`/ui/projects/${projectId}`}>
-              Legacy project view
-            </a>
           </div>
         </div>
       </section>

@@ -1,8 +1,8 @@
 # MSConnect `/app/` Review Guide
 
-Use this guide to review the React MSConnect application before we retire the legacy Django-template UI under `/ui/*`.
+Use this guide to review the React MSConnect application.
 
-The React app is intentionally mounted at `/app/*` for now so it can coexist with the existing `/ui/*` pages while we validate the workflows with real lab users.
+The React app is mounted at `/app/*` and is the only user-facing interface. Legacy `/ui/*` URLs redirect to their closest `/app/*` route for bookmark compatibility.
 
 ## Current Review Scope
 
@@ -16,7 +16,7 @@ Review these React routes:
 - `/app/uploads` - direct-to-object-storage upload manager using Django-issued signed upload URLs.
 - `/app/settings` - administrative/settings placeholder for users, instruments, protocols, and pipelines.
 
-The current root URL still redirects to `/ui/projects`, and the React shell still exposes a "Legacy UI" link. Keep those during review. Remove or redirect them only after the `/app/` experience is accepted.
+The root URL redirects to `/app/projects`. `/admin/`, `/api/`, `/accounts/`, and `/api-auth/` remain available.
 
 ## Local Review Setup
 
@@ -86,7 +86,7 @@ http://127.0.0.1:8000/app/projects
    - Confirm nodeless queued jobs and node-assigned jobs are visually distinct enough for troubleshooting throughput.
 
 5. Review `/app/processing`.
-   - Confirm node inventory, queue state, retries, and failed jobs are understandable without falling back to `/ui/*`.
+   - Confirm node inventory, queue state, retries, and failed jobs are understandable in `/app/*`.
    - Confirm project-scoped drill-down from `/app/projects/<project_id>` lands in the right filtered processing view.
 
 6. Review `/app/uploads`.
@@ -99,28 +99,27 @@ http://127.0.0.1:8000/app/projects
    - Use `Cmd-K` or `Ctrl-K` for fast project/navigation search.
    - Toggle light/dark mode and confirm status badges, tables, and charts remain legible.
 
-## Acceptance Criteria Before Retiring `/ui/*`
+## Acceptance Criteria
 
-The `/app/` interface can become the only user-facing UI when these are true:
+The `/app/` interface is the only user-facing UI and should continue to satisfy these criteria:
 
 - Project workspace covers the daily lab workflow: raw files, processing jobs, samples, runs, and acquisitions.
 - Raw-file and processing-job tables remain responsive with realistic record counts.
 - Intake, review, and promotion workflows either exist in `/app/` or have an approved replacement path.
 - Direct upload behavior is validated against the real object-storage provider.
 - Job/node state is validated with realistic assigned, retrying, failed, and completed jobs.
-- Lab users can complete common tasks without needing the "Legacy UI" link.
+- Lab users can complete common tasks without legacy Django-template pages.
 - Admin-only work remains available through Django admin or a dedicated `/app/settings` screen.
 
-## Planned Migration Away From `/ui/*`
+## Completed Migration Away From `/ui/*`
 
-After signoff, migrate in small, reversible steps:
+Completed migration steps:
 
-1. Change the root redirect in `msconnect/urls.py` from `/ui/projects` to `/app/projects`.
-2. Remove the "Legacy UI" link from `frontend/src/components/shell/app-shell.tsx`.
-3. Add redirects from old `/ui/*` routes to their `/app/*` equivalents where a direct equivalent exists.
-4. Keep `/admin/`, `/api/`, `/accounts/`, and `/api-auth/` available.
-5. Remove obsolete templates and static files under `ui/templates/ui/**` and `ui/static/ui/**` only after the redirected routes are verified.
-6. Update internal docs, bookmarks, and lab workstation shortcuts to use `/app/projects`.
+1. Root redirects to `/app/projects`.
+2. The React shell no longer exposes a legacy UI link.
+3. Old `/ui/*` routes redirect to `/app/*` equivalents.
+4. `/admin/`, `/api/`, `/accounts/`, and `/api-auth/` remain available.
+5. Obsolete templates and static files under `ui/templates/ui/**` and `ui/static/ui/**` were removed.
 
 ## Notes For Phase 2 Data Work
 

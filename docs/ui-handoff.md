@@ -1,16 +1,16 @@
-# Placeholder UI Handoff Contract
+# Retired UI Handoff Contract
 
-This document defines what can be replaced by the undergrad UI rewrite and what is fixed backend contract.
+The Django-template UI has been retired. This document records the former replacement boundary and the backend contracts that remain active.
 
 ## Replaceable Surfaces
 
-- `ui/templates/ui/**`
-- `ui/static/ui/**`
-- Presentation-only template logic in `ui/views.py` context shaping
+- `ui/templates/ui/**` removed
+- `ui/static/ui/**` removed
+- `/ui/*` URL contracts now redirect to `/app/*`
 
 ## Non-Replaceable Surfaces
 
-- URL contracts:
+- Redirect compatibility:
   - `/ui/intake/new`
   - `/ui/intake`
   - `/ui/intake/<id>`

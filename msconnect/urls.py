@@ -17,7 +17,7 @@ def app_shell(_request, _path=""):
 
 
 urlpatterns = [
-    path("", RedirectView.as_view(url="/ui/projects", permanent=False)),
+    path("", RedirectView.as_view(url="/app/projects", permanent=False)),
     path("app/", app_shell),
     re_path(r"^app/(?P<_path>.*)$", app_shell),
     path("admin/", admin.site.urls),
