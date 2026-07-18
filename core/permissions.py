@@ -45,3 +45,18 @@ class RoleScopedWritePermission(permissions.BasePermission):
 
         return user_role(request.user) != UserRole.COLLABORATOR
 
+
+class AgentRolePermission(permissions.BasePermission):
+    message = "You do not have permission for this agent action."
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not getattr(user, "is_authenticated", False):
+            return False
+
+        agent_role = getattr(user, "agent_role", None)
+        if not agent_role:
+            return False
+
+        allowed_roles = getattr(view, "agent_roles", ())
+        return agent_role in allowed_roles

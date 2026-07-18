@@ -96,11 +96,25 @@ MEDIA_ROOT = os.environ.get("MEDIA_ROOT", str(BASE_DIR / "media"))
 
 RAW_FILE_STORAGE_ROOT = os.environ.get("RAW_FILE_STORAGE_ROOT", str(BASE_DIR / "raw-storage"))
 INCOMING_RAW_ROOT = os.environ.get("INCOMING_RAW_ROOT", str(BASE_DIR / "incoming"))
+RESULTS_ROOT = os.environ.get("RESULTS_ROOT", "/data/results")
+OBJECT_STORAGE_UPLOAD_BASE_URL = os.environ.get("OBJECT_STORAGE_UPLOAD_BASE_URL", "https://object-storage.invalid/msconnect")
+OBJECT_STORAGE_SIGNED_URL_TTL_SECONDS = int(os.environ.get("OBJECT_STORAGE_SIGNED_URL_TTL_SECONDS", "3600"))
+
+MSCONNECT_WATCHER_TOKEN = os.environ.get("MSCONNECT_WATCHER_TOKEN", "")
+MSCONNECT_PROCESSOR_TOKEN = os.environ.get("MSCONNECT_PROCESSOR_TOKEN", "")
+MSCONNECT_API_BASE_URL = os.environ.get("MSCONNECT_API_BASE_URL", "http://web:8000/api")
+MSCONNECT_AGENT_NAME = os.environ.get("MSCONNECT_AGENT_NAME", "")
+MSCONNECT_AGENT_TOKEN = os.environ.get("MSCONNECT_AGENT_TOKEN", "")
+MSCONNECT_AGENT_HEARTBEAT_SECONDS = int(os.environ.get("MSCONNECT_AGENT_HEARTBEAT_SECONDS", "30"))
+WATCHER_INTERVAL_SECONDS = int(os.environ.get("WATCHER_INTERVAL_SECONDS", "60"))
+PROCESSOR_POLL_INTERVAL_SECONDS = int(os.environ.get("PROCESSOR_POLL_INTERVAL_SECONDS", "15"))
+MSCONNECT_IMAGE = os.environ.get("MSCONNECT_IMAGE", "msconnect:local")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "core.agent_auth.AgentTokenAuthentication",
         "rest_framework.authentication.SessionAuthentication",
         "rest_framework.authentication.BasicAuthentication",
     ],

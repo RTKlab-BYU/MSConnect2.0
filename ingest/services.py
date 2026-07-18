@@ -201,6 +201,14 @@ def copy_raw_path(source_path: Path, destination: Path) -> None:
         shutil.copy2(source_path, destination)
 
 
+def ensure_copied_raw_path(source_path: Path, destination: Path) -> bool:
+    if destination.exists():
+        return False
+
+    copy_raw_path(source_path, destination)
+    return True
+
+
 def _hash_file(path: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0

@@ -1,6 +1,8 @@
 from django.contrib import admin
 
 from .models import (
+    AcquisitionWorklist,
+    DirectUploadSession,
     Experiment,
     Facility,
     IngestionFailure,
@@ -12,6 +14,7 @@ from .models import (
     PeptideIdentification,
     PeptideQuant,
     ProcessingJob,
+    ProcessingNode,
     ProcessingPipeline,
     Project,
     ProjectIntakeRequest,
@@ -23,6 +26,7 @@ from .models import (
     Sample,
     University,
     UserProfile,
+    WorklistEntry,
 )
 
 
@@ -105,16 +109,16 @@ class SampleAdmin(admin.ModelAdmin):
 
 @admin.register(Run)
 class RunAdmin(admin.ModelAdmin):
-    list_display = ("run_name", "sample", "configuration", "status", "acquisition_started_at")
-    search_fields = ("run_name", "sample__name", "configuration__name")
-    list_filter = ("status", "configuration", "sample__experiment__project__lab")
+    list_display = ("worklist_position", "run_name", "sample", "file_role", "configuration", "status")
+    search_fields = ("run_name", "expected_filename", "sample__name", "configuration__name")
+    list_filter = ("status", "file_role", "configuration", "sample__experiment__project__lab")
 
 
 @admin.register(RawFile)
 class RawFileAdmin(admin.ModelAdmin):
-    list_display = ("filename", "run", "status", "size_bytes", "imported_at")
+    list_display = ("filename", "run", "file_role", "status", "match_confidence", "size_bytes", "imported_at")
     search_fields = ("filename", "checksum_sha256", "source_path", "storage_path")
-    list_filter = ("status", "run__sample__experiment__project__lab")
+    list_filter = ("status", "file_role", "run__sample__experiment__project__lab")
     readonly_fields = ("checksum_sha256", "size_bytes", "imported_at")
 
 
@@ -125,17 +129,46 @@ class IngestionFailureAdmin(admin.ModelAdmin):
     readonly_fields = ("source_path", "filename", "seen_count", "last_seen_at", "created_at", "updated_at")
 
 
+@admin.register(DirectUploadSession)
+class DirectUploadSessionAdmin(admin.ModelAdmin):
+    list_display = ("filename", "project", "status", "file_role", "size_bytes", "completed_raw_file", "updated_at")
+    search_fields = ("filename", "storage_key", "checksum_sha256", "project__code", "run__run_name")
+    list_filter = ("status", "file_role", "project__lab")
+    readonly_fields = ("upload_id", "storage_key", "chunk_count", "completed_raw_file", "created_at", "updated_at")
+
+
 @admin.register(ProcessingPipeline)
 class ProcessingPipelineAdmin(admin.ModelAdmin):
     list_display = ("name", "version", "container_image")
     search_fields = ("name", "version", "container_image")
 
 
+@admin.register(ProcessingNode)
+class ProcessingNodeAdmin(admin.ModelAdmin):
+    list_display = ("name", "node_type", "status", "container_image", "last_heartbeat_at")
+    search_fields = ("name", "node_type", "container_image", "endpoint_url")
+    list_filter = ("node_type", "status")
+
+
 @admin.register(ProcessingJob)
 class ProcessingJobAdmin(admin.ModelAdmin):
-    list_display = ("run", "pipeline", "raw_file", "status", "started_at", "finished_at")
-    search_fields = ("run__run_name", "pipeline__name", "raw_file__filename")
-    list_filter = ("status", "pipeline")
+    list_display = ("run", "pipeline", "raw_file", "node", "status", "started_at", "finished_at")
+    search_fields = ("run__run_name", "pipeline__name", "raw_file__filename", "node__name")
+    list_filter = ("status", "pipeline", "node")
+
+
+@admin.register(AcquisitionWorklist)
+class AcquisitionWorklistAdmin(admin.ModelAdmin):
+    list_display = ("name", "experiment", "configuration", "status", "generated_by", "updated_at")
+    search_fields = ("name", "experiment__name", "experiment__project__code")
+    list_filter = ("status", "configuration", "experiment__project__lab")
+
+
+@admin.register(WorklistEntry)
+class WorklistEntryAdmin(admin.ModelAdmin):
+    list_display = ("worklist", "position", "expected_filename", "file_role", "run", "hye_pair_label")
+    search_fields = ("expected_filename", "run__run_name", "run__sample__name")
+    list_filter = ("file_role", "worklist__experiment__project__lab")
 
 
 @admin.register(Protein)

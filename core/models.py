@@ -1,3 +1,5 @@
+import uuid
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
@@ -58,9 +60,41 @@ class RawFileStatus(models.TextChoices):
 
 class ProcessingStatus(models.TextChoices):
     QUEUED = "queued", "Queued"
+    ASSIGNED = "assigned", "Assigned"
     RUNNING = "running", "Running"
-    SUCCEEDED = "succeeded", "Succeeded"
+    COMPLETE = "complete", "Complete"
     FAILED = "failed", "Failed"
+    RETRYING = "retrying", "Retrying"
+
+
+class DirectUploadStatus(models.TextChoices):
+    CREATED = "created", "Created"
+    UPLOADING = "uploading", "Uploading"
+    COMPLETE = "complete", "Complete"
+    FAILED = "failed", "Failed"
+
+
+class RunFileRole(models.TextChoices):
+    SAMPLE = "sample", "Sample"
+    QC = "qc", "QC"
+    LIBRARY = "library", "Library"
+    BLANK = "blank", "Blank"
+    WASH = "wash", "Wash"
+    CALIBRATION = "calibration", "Calibration"
+
+
+class WorklistStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    READY = "ready", "Ready"
+    ACQUIRING = "acquiring", "Acquiring"
+    COMPLETE = "complete", "Complete"
+
+
+class ProcessingNodeStatus(models.TextChoices):
+    OFFLINE = "offline", "Offline"
+    IDLE = "idle", "Idle"
+    BUSY = "busy", "Busy"
+    ERROR = "error", "Error"
 
 
 class University(TimestampedModel):
@@ -389,6 +423,10 @@ class Run(TimestampedModel):
     acquisition_started_at = models.DateTimeField(blank=True, null=True)
     acquisition_ended_at = models.DateTimeField(blank=True, null=True)
     status = models.CharField(max_length=32, choices=RunStatus.choices, default=RunStatus.PLANNED)
+    file_role = models.CharField(max_length=32, choices=RunFileRole.choices, default=RunFileRole.SAMPLE)
+    expected_filename = models.CharField(max_length=255, blank=True)
+    worklist_position = models.PositiveIntegerField(blank=True, null=True)
+    hye_pair_label = models.CharField(max_length=64, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:
@@ -411,6 +449,8 @@ class RawFile(TimestampedModel):
     acquired_at = models.DateTimeField(blank=True, null=True)
     imported_at = models.DateTimeField(blank=True, null=True)
     status = models.CharField(max_length=32, choices=RawFileStatus.choices, default=RawFileStatus.DISCOVERED)
+    file_role = models.CharField(max_length=32, choices=RunFileRole.choices, default=RunFileRole.SAMPLE)
+    match_confidence = models.FloatField(blank=True, null=True)
     failure_reason = models.TextField(blank=True)
     metadata = models.JSONField(default=dict, blank=True)
 
@@ -436,6 +476,103 @@ class IngestionFailure(TimestampedModel):
         return f"{self.filename}: {self.failure_reason}"
 
 
+class DirectUploadSession(TimestampedModel):
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name="direct_upload_sessions")
+    run = models.ForeignKey(Run, on_delete=models.PROTECT, related_name="direct_upload_sessions", blank=True, null=True)
+    upload_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    filename = models.CharField(max_length=255)
+    storage_key = models.TextField(unique=True)
+    content_type = models.CharField(max_length=255, blank=True)
+    size_bytes = models.PositiveBigIntegerField()
+    chunk_size_bytes = models.PositiveIntegerField(default=8 * 1024 * 1024)
+    chunk_count = models.PositiveIntegerField(default=1)
+    checksum_sha256 = models.CharField(max_length=64, blank=True)
+    status = models.CharField(max_length=32, choices=DirectUploadStatus.choices, default=DirectUploadStatus.CREATED)
+    file_role = models.CharField(max_length=32, choices=RunFileRole.choices, default=RunFileRole.SAMPLE)
+    completed_raw_file = models.OneToOneField(
+        RawFile,
+        on_delete=models.PROTECT,
+        related_name="direct_upload_session",
+        blank=True,
+        null=True,
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("-updated_at", "filename")
+
+    def __str__(self) -> str:
+        return f"{self.filename} ({self.status})"
+
+
+class AcquisitionWorklist(TimestampedModel):
+    experiment = models.ForeignKey(Experiment, on_delete=models.PROTECT, related_name="worklists")
+    name = models.CharField(max_length=255)
+    configuration = models.ForeignKey(
+        InstrumentConfiguration,
+        on_delete=models.PROTECT,
+        related_name="worklists",
+        blank=True,
+        null=True,
+    )
+    status = models.CharField(max_length=32, choices=WorklistStatus.choices, default=WorklistStatus.DRAFT)
+    generated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="generated_worklists",
+        blank=True,
+        null=True,
+    )
+    notes = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("-updated_at", "name")
+        constraints = (
+            models.UniqueConstraint(fields=("experiment", "name"), name="uniq_worklist_name_per_experiment"),
+        )
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class WorklistEntry(TimestampedModel):
+    worklist = models.ForeignKey(AcquisitionWorklist, on_delete=models.CASCADE, related_name="entries")
+    run = models.OneToOneField(Run, on_delete=models.PROTECT, related_name="worklist_entry")
+    position = models.PositiveIntegerField()
+    file_role = models.CharField(max_length=32, choices=RunFileRole.choices, default=RunFileRole.SAMPLE)
+    expected_filename = models.CharField(max_length=255)
+    injection_volume_ul = models.FloatField(blank=True, null=True)
+    hye_pair_label = models.CharField(max_length=64, blank=True)
+    block_label = models.CharField(max_length=64, blank=True)
+    notes = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("worklist", "position")
+        constraints = (
+            models.UniqueConstraint(fields=("worklist", "position"), name="uniq_worklist_position"),
+            models.UniqueConstraint(fields=("worklist", "expected_filename"), name="uniq_worklist_expected_filename"),
+        )
+
+    def save(self, *args, **kwargs):
+        self.run.file_role = self.file_role
+        self.run.expected_filename = self.expected_filename
+        self.run.worklist_position = self.position
+        self.run.hye_pair_label = self.hye_pair_label
+        self.run.save(
+            update_fields=["file_role", "expected_filename", "worklist_position", "hye_pair_label", "updated_at"]
+        )
+        super().save(*args, **kwargs)
+
+    @property
+    def matched_raw_file(self):
+        return self.run.raw_files.order_by("-imported_at", "filename").first()
+
+    def __str__(self) -> str:
+        return f"{self.worklist} #{self.position}: {self.expected_filename}"
+
+
 class ProcessingPipeline(TimestampedModel):
     name = models.CharField(max_length=128)
     version = models.CharField(max_length=128)
@@ -452,10 +589,34 @@ class ProcessingPipeline(TimestampedModel):
         return f"{self.name} {self.version}"
 
 
+class ProcessingNode(TimestampedModel):
+    name = models.CharField(max_length=128, unique=True)
+    node_type = models.CharField(max_length=64, default="diann")
+    status = models.CharField(max_length=32, choices=ProcessingNodeStatus.choices, default=ProcessingNodeStatus.OFFLINE)
+    container_image = models.CharField(max_length=255, blank=True)
+    endpoint_url = models.URLField(blank=True)
+    last_heartbeat_at = models.DateTimeField(blank=True, null=True)
+    settings = models.JSONField(default=dict, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("name",)
+
+    def __str__(self) -> str:
+        return self.name
+
+
 class ProcessingJob(TimestampedModel):
     run = models.ForeignKey(Run, on_delete=models.PROTECT, related_name="processing_jobs")
     pipeline = models.ForeignKey(ProcessingPipeline, on_delete=models.PROTECT, related_name="jobs")
     raw_file = models.ForeignKey(RawFile, on_delete=models.PROTECT, related_name="processing_jobs")
+    node = models.ForeignKey(
+        ProcessingNode,
+        on_delete=models.SET_NULL,
+        related_name="processing_jobs",
+        blank=True,
+        null=True,
+    )
     status = models.CharField(max_length=32, choices=ProcessingStatus.choices, default=ProcessingStatus.QUEUED)
     started_at = models.DateTimeField(blank=True, null=True)
     finished_at = models.DateTimeField(blank=True, null=True)
