@@ -91,6 +91,30 @@ export const processingJobColumns: ColumnDef<ProcessingJob>[] = [
 export const sampleColumns: ColumnDef<Sample>[] = [
   { accessorKey: "name", header: "Sample" },
   { accessorKey: "external_id", header: "External ID" },
+  {
+    id: "condition",
+    header: "Condition",
+    cell: ({ row }) => String(row.original.metadata.condition ?? row.original.metadata.qc_material ?? "-"),
+  },
+  {
+    id: "subject",
+    header: "Subject",
+    cell: ({ row }) => String(row.original.metadata.subject_id ?? row.original.metadata.pseudo_project_key ?? "-"),
+  },
+  {
+    id: "age_sex",
+    header: "Age / Sex",
+    cell: ({ row }) => {
+      const age = row.original.metadata.age;
+      const sex = row.original.metadata.sex;
+      return age || sex ? `${age ?? "-"} / ${sex ?? "-"}` : "-";
+    },
+  },
+  {
+    id: "collection",
+    header: "Collection",
+    cell: ({ row }) => String(row.original.metadata.collection_site ?? row.original.metadata.mix ?? "-"),
+  },
   { accessorKey: "species", header: "Species" },
   { accessorKey: "matrix", header: "Matrix" },
   { accessorKey: "digestion_protocol", header: "Digestion" },
@@ -104,6 +128,11 @@ export const sampleColumns: ColumnDef<Sample>[] = [
 export const runColumns: ColumnDef<Run>[] = [
   { accessorKey: "worklist_position", header: "Order" },
   { accessorKey: "run_name", header: "Run" },
+  {
+    id: "condition",
+    header: "Condition / QC",
+    cell: ({ row }) => String(row.original.metadata.sample_condition ?? row.original.metadata.qc_material ?? "-"),
+  },
   {
     accessorKey: "status",
     header: "Status",

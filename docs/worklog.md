@@ -37,7 +37,7 @@
 ### Completed
 
 - Added top-level React navigation and routes for `/app/qc` and `/app/processing`.
-- Built a dedicated QC workspace for HYE system suitability with project/worklist filtering and pair-level pass, warning, and failed states.
+- Built a dedicated QC workspace where HYE system-suitability injections are grouped as a derived pseudo-project with project/worklist filtering and pair-level pass, warning, and failed states.
 - Scaffolded a PRTC tab in the QC workspace so standards can be added without changing navigation or layout.
 - Added read-only QC aggregate APIs at `/api/qc/overview/` and `/api/qc/details/`.
 - Expanded processing jobs with read-only project, run, raw-file, and pipeline display fields needed for global queue views.
@@ -56,7 +56,7 @@
 ### Current review state
 
 - `/app/projects` remains the primary record-centric workspace.
-- `/app/qc` is ready for HYE review now.
+- `/app/qc` is ready for HYE pseudo-project review now.
 - `/app/processing` is ready for node and queue review now.
 - `/app/monitoring` remains the compact global operations summary.
 - `/ui/*` still remains available and is not yet retired.

@@ -9,7 +9,7 @@ The React app is intentionally mounted at `/app/*` for now so it can coexist wit
 Review these React routes:
 
 - `/app/projects` - top-level project list and project search.
-- `/app/qc` - scientist-facing QC workspace for HYE system suitability now, with PRTC scaffolded as the next QC program.
+- `/app/qc` - scientist-facing QC workspace where HYE A/B injections form a derived pseudo-project for system suitability and longitudinal trend review, with PRTC scaffolded as the next QC program.
 - `/app/projects/<project_id>` - primary project workspace. This is the main SDMS/LIMS view for raw files, processing jobs, analysis visualization, samples, runs, and acquisitions.
 - `/app/monitoring` - run, job, node, and raw-file operations dashboard.
 - `/app/processing` - detailed node, queue, retry, and pipeline processing console.
@@ -77,7 +77,7 @@ http://127.0.0.1:8000/app/projects
    - Review `Analysis Viz` as a Phase 2 prototype. The current chromatogram is demo-backed; production trace data should come from signed object-storage URLs.
 
 3. Review `/app/qc`.
-   - Confirm HYE A/B pair health is readable without opening project pages one by one.
+   - Confirm HYE A/B pair health is readable as a derived QC pseudo-project without making HYE a standalone project.
    - Confirm project and worklist filters narrow the QC results correctly.
    - Confirm PRTC is visibly planned but does not imply production readiness yet.
 

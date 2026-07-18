@@ -214,7 +214,7 @@ class ShowcaseScopeMixin(IntakeLabScopeMixin):
         queryset = self.scoped_worklists()
         if pk:
             return queryset.filter(pk=pk).first()
-        return queryset.filter(experiment__project__code="HYE-DIA-DEMO").first() or queryset.first()
+        return queryset.filter(experiment__project__code="COHORT-DIA-100").first() or queryset.first()
 
     def workflow_context(self, worklist):
         entries = (
@@ -461,6 +461,8 @@ class ExperimentalDesignView(LoginRequiredMixin, ShowcaseScopeMixin, TemplateVie
                 "library_entries": entries.filter(file_role=RunFileRole.LIBRARY),
                 "blank_entries": entries.filter(file_role__in=(RunFileRole.BLANK, RunFileRole.WASH)),
                 "qc_pairs": self.qc_pair_stats(worklist),
+                "healthy_sample_count": entries.filter(run__sample__metadata__condition="healthy").count(),
+                "diseased_sample_count": entries.filter(run__sample__metadata__condition="diseased").count(),
             }
         )
         return context

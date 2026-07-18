@@ -36,8 +36,9 @@
         <dl class="settings-list">
           <dt>Project</dt><dd>{{ project.code }}</dd>
           <dt>Experiment</dt><dd>{{ worklist.experiment.name }}</dd>
-          <dt>Conditions</dt><dd>Control vs treated biological samples</dd>
-          <dt>QC Strategy</dt><dd>HYE A/B paired controls before, during, and after sample blocks</dd>
+          <dt>Conditions</dt><dd>{{ healthy_sample_count }} healthy / {{ diseased_sample_count }} diseased biological samples</dd>
+          <dt>QC Strategy</dt><dd>HYE A/B paired controls before the batch and every {{ worklist.metadata.hye_interval_biological_samples }} biological samples</dd>
+          <dt>HYE Model</dt><dd>Pseudo-project derived from HYE-tagged QC injections, not a standalone Project record</dd>
           <dt>Reference Mix</dt><dd>Human, Yeast, and E. coli proteomes</dd>
         </dl>
       </div>
@@ -56,7 +57,7 @@
     </section>
 
     <section class="metric-grid">
-      <div class="metric-card"><span class="metric-label">Biological Samples</span><strong>{{ sample_entries.count }}</strong><span>balanced order</span></div>
+      <div class="metric-card"><span class="metric-label">Biological Samples</span><strong>{{ sample_entries.count }}</strong><span>50 healthy / 50 diseased</span></div>
       <div class="metric-card"><span class="metric-label">QC Injections</span><strong>{{ qc_entries.count }}</strong><span>HYE A/B controls</span></div>
       <div class="metric-card"><span class="metric-label">Libraries</span><strong>{{ library_entries.count }}</strong><span>search/reference prep</span></div>
       <div class="metric-card"><span class="metric-label">Blanks/Washes</span><strong>{{ blank_entries.count }}</strong><span>carryover controls</span></div>
@@ -65,7 +66,7 @@
     <section class="card">
       <h2>Samples and Metadata Captured Before Acquisition</h2>
       <table>
-        <thead><tr><th>Sample</th><th>Role</th><th>Condition / Mix</th><th>Protocol</th><th>Run Filename</th></tr></thead>
+        <thead><tr><th>Sample</th><th>Role</th><th>Condition / Mix</th><th>Subject</th><th>Age / Sex</th><th>Collection</th><th>Protocol</th><th>Run Filename</th></tr></thead>
         <tbody>
         {% for entry in entries %}
           <tr>
@@ -76,6 +77,13 @@
               {% elif entry.run.sample.metadata.mix %}{{ entry.run.sample.metadata.mix }}
               {% else %}-{% endif %}
             </td>
+            <td>{{ entry.run.sample.metadata.subject_id|default:"-" }}</td>
+            <td>
+              {% if entry.run.sample.metadata.age or entry.run.sample.metadata.sex %}
+                {{ entry.run.sample.metadata.age|default:"-" }} / {{ entry.run.sample.metadata.sex|default:"-" }}
+              {% else %}-{% endif %}
+            </td>
+            <td>{{ entry.run.sample.metadata.collection_site|default:"-" }}</td>
             <td>{{ entry.run.sample.digestion_protocol|default:"-" }}</td>
             <td><code>{{ entry.expected_filename }}</code></td>
           </tr>

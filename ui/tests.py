@@ -89,7 +89,7 @@ class UiIntakeIntegrationTests(TestCase):
     def test_seeded_showcase_pages_render(self):
         call_command("seed_demo_showcase", verbosity=0)
         demo_user = User.objects.get(username="parkerreyes")
-        project = Project.objects.get(code="HYE-DIA-DEMO")
+        project = Project.objects.get(code="COHORT-DIA-100")
         worklist = AcquisitionWorklist.objects.get(name="Plate 1 DIA acquisition order")
         self.client.force_login(demo_user)
 
@@ -112,11 +112,11 @@ class UiIntakeIntegrationTests(TestCase):
         project_response = self.client.get(f"/ui/projects/{project.id}")
         self.assertContains(project_response, "Sample Registry")
         self.assertContains(project_response, "Worklists and Raw File State")
-        self.assertContains(project_response, "S06-Treated")
+        self.assertContains(project_response, "DISEASED-050")
 
         response = self.client.get(f"/ui/showcase/worklists/{worklist.id}")
         self.assertContains(response, "Run File Order vs Uploaded Raw Files")
-        self.assertContains(response, "HYE_DIA_DEMO_012_S06-Treated.raw")
+        self.assertContains(response, "COHORT_DIA_100_064_HYE-B.raw")
         self.assertContains(response, "Missing upload")
 
         qc_response = self.client.get("/ui/showcase/qc")

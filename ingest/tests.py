@@ -116,11 +116,11 @@ class RawFileIngestTests(TestCase):
             sample = Sample.objects.create(experiment=experiment, name="Blank")
             run = Run.objects.create(
                 sample=sample,
-                run_name="HYE_DIA_DEMO_001_BLANK",
-                expected_filename="HYE_DIA_DEMO_001_BLANK.raw",
+                run_name="COHORT_DIA_100_001_BLANK",
+                expected_filename="COHORT_DIA_100_001_BLANK.raw",
             )
 
-            source = Path(source_dir) / "HYE_DIA_DEMO_001_BLANK.raw"
+            source = Path(source_dir) / "COHORT_DIA_100_001_BLANK.raw"
             source.write_bytes(b"raw-data")
 
             result = import_raw_path(source, storage_root=Path(storage_dir), match_run_by_name=True)

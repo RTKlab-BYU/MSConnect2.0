@@ -26,8 +26,8 @@
         <p class="eyebrow">Step 05 · QC Dashboard</p>
         <h1>HYE A/B Human, Yeast, and E. coli statistics</h1>
         <p>
-          Each pair shows the A and B file identifiers, total shared protein N,
-          median log2 intensities, observed B/A, and expected HYE composition.
+          HYE is not a standalone project. These pairs are derived from HYE-tagged QC injections
+          in cohort worklists, then grouped for longitudinal system-suitability statistics.
         </p>
       </div>
     </section>
@@ -92,7 +92,7 @@
     {% empty %}
     <section class="card">
       <h2>No QC pairs found</h2>
-      <p>Seed or acquire HYE A/B QC runs to populate this dashboard.</p>
+      <p>Seed or acquire HYE A/B QC runs inside a project worklist to populate this pseudo-project dashboard.</p>
     </section>
     {% endfor %}
   </main>

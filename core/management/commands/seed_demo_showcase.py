@@ -43,7 +43,10 @@ from core.models import (
 
 
 class Command(BaseCommand):
-    help = "Seed a complete MSConnect showcase with HYE A/B QC, worklist, raw-file matching, and DIA-NN jobs."
+    help = "Seed a complete MSConnect cohort showcase with embedded HYE A/B QC and DIA-NN jobs."
+
+    project_code = "COHORT-DIA-100"
+    legacy_project_codes = ("HYE-DIA-DEMO",)
 
     def add_arguments(self, parser):
         parser.add_argument("--write-job-results", nargs=2, metavar=("JOB_ID", "RESULTS_DIR"))
@@ -161,30 +164,65 @@ class Command(BaseCommand):
             },
         )
 
-        project, _ = Project.objects.get_or_create(
+        self._remove_legacy_demo_projects(lab=lab)
+
+        project, _ = Project.objects.update_or_create(
             lab=lab,
-            code="HYE-DIA-DEMO",
+            code=self.project_code,
             defaults={
-                "title": "HYE A/B DIA-MS Showcase",
+                "title": "Healthy vs Diseased Plasma Proteome Cohort",
                 "pi": pi_user,
                 "description": (
-                    "End-to-end showcase for design, worklist generation, raw-file matching, and DIA-NN processing."
+                    "End-to-end DIA-MS study with 100 biological samples, balanced healthy/diseased arms, "
+                    "interspersed HYE A/B QC controls, raw-file custody, and DIA-NN processing."
                 ),
             },
         )
-        experiment, _ = Experiment.objects.get_or_create(
+        experiment, _ = Experiment.objects.update_or_create(
             project=project,
-            name="HYE A/B balanced DIA design",
+            name="Plasma cohort DIA discovery batch 1",
             defaults={
                 "hypothesis": (
-                    "HYE A/B QC pairs should remain stable across the batch "
-                    "while biological samples cluster by condition."
+                    "Healthy and diseased plasma samples should separate by inflammatory and metabolic protein "
+                    "signatures while interspersed HYE controls provide longitudinal system-suitability tracking."
                 ),
                 "created_by": researcher,
                 "metadata": {
-                    "factors": {"condition": ["control", "treated"], "qc_pair": ["HYE-A", "HYE-B"]},
+                    "study_type": "case-control plasma proteomics",
+                    "biological_sample_count": 100,
+                    "factors": {
+                        "condition": ["healthy", "diseased"],
+                        "sex": ["female", "male"],
+                        "collection_site": ["BYU-Core-A", "BYU-Core-B"],
+                        "qc_material": ["HYE-A", "HYE-B"],
+                    },
+                    "primary_endpoint": "Differential protein abundance between healthy and diseased cohorts.",
+                    "metadata_capture": [
+                        "subject_id",
+                        "condition",
+                        "age",
+                        "sex",
+                        "bmi",
+                        "collection_site",
+                        "collection_date",
+                        "fasting_state",
+                        "sample_type",
+                        "digestion_protocol",
+                        "randomization_block",
+                        "worklist_position",
+                        "expected_filename",
+                    ],
+                    "hye_pseudo_project": {
+                        "description": (
+                            "HYE is not seeded as its own Project. HYE A/B runs are tagged QC injections; "
+                            "the QC workspace groups them as a pseudo-project for system-suitability and "
+                            "longitudinal trend analysis once HYE material is identified."
+                        ),
+                        "pair_interval_biological_samples": 10,
+                    },
                     "design_summary": (
-                        "Balanced acquisition with blanks, libraries, HYE A/B QC pairs, and biological samples."
+                        "Balanced healthy/diseased acquisition with HYE A/B pairs before the batch, every 10 "
+                        "biological samples, and at batch close."
                     ),
                 },
             },
@@ -198,9 +236,19 @@ class Command(BaseCommand):
                 "configuration": configuration,
                 "status": WorklistStatus.READY,
                 "generated_by": admin_user,
-                "notes": "Generated demo worklist: blank, library, HYE A/B QC pairs, balanced samples, and wash.",
+                "notes": (
+                    "Generated demo worklist: 100 randomized healthy/diseased plasma samples with HYE A/B "
+                    "controls interspersed every 10 biological injections."
+                ),
                 "metadata": {
-                    "ordering_policy": "QC every 4 injections; HYE A/B paired before and after sample blocks.",
+                    "ordering_policy": (
+                        "Start with blank, library, and HYE A/B. Alternate healthy/diseased samples within "
+                        "randomization blocks and insert an HYE A/B pair every 10 biological injections."
+                    ),
+                    "biological_sample_count": 100,
+                    "condition_balance": {"healthy": 50, "diseased": 50},
+                    "hye_interval_biological_samples": 10,
+                    "hye_pseudo_project": "Derived in QC views from tagged HYE-A/HYE-B worklist entries.",
                     "export_format": "Instrument vendor worklist CSV can be generated from these entries.",
                 },
             },
@@ -213,22 +261,58 @@ class Command(BaseCommand):
         self._seed_jobs_and_quant(raw_files, pipeline, node)
         return {"project": project, "worklist": worklist}
 
+    def _remove_legacy_demo_projects(self, *, lab):
+        RawFile.objects.filter(run__isnull=True, filename__startswith="HYE_DIA_DEMO_").delete()
+        projects = Project.objects.filter(lab=lab, code__in=self.legacy_project_codes)
+        for project in projects:
+            experiments = Experiment.objects.filter(project=project)
+            runs = Run.objects.filter(sample__experiment__in=experiments)
+            jobs = ProcessingJob.objects.filter(run__in=runs)
+            ProteinQuant.objects.filter(job__in=jobs).delete()
+            PeptideQuant.objects.filter(job__in=jobs).delete()
+            ProteinIdentification.objects.filter(job__in=jobs).delete()
+            PeptideIdentification.objects.filter(job__in=jobs).delete()
+            jobs.delete()
+            RawFile.objects.filter(run__in=runs).delete()
+            AcquisitionWorklist.objects.filter(experiment__in=experiments).delete()
+            runs.delete()
+            Sample.objects.filter(experiment__in=experiments).delete()
+            experiments.delete()
+            project.delete()
+
     def _seed_samples(self, experiment, researcher):
-        sample_defs = [
+        samples = {}
+        control_defs = [
             ("BLANK", RunFileRole.BLANK, "Solvent blank", {}),
             ("LIB-HYE", RunFileRole.LIBRARY, "HYE spectral library pool", {"library": True}),
-            ("HYE-A", RunFileRole.QC, "Human/Yeast/Ecoli QC A", {"qc_pair": "A", "mix": "65/30/5"}),
-            ("HYE-B", RunFileRole.QC, "Human/Yeast/Ecoli QC B", {"qc_pair": "B", "mix": "50/45/5"}),
-            ("S01-Control", RunFileRole.SAMPLE, "Control replicate 1", {"condition": "control"}),
-            ("S02-Control", RunFileRole.SAMPLE, "Control replicate 2", {"condition": "control"}),
-            ("S03-Control", RunFileRole.SAMPLE, "Control replicate 3", {"condition": "control"}),
-            ("S04-Treated", RunFileRole.SAMPLE, "Treated replicate 1", {"condition": "treated"}),
-            ("S05-Treated", RunFileRole.SAMPLE, "Treated replicate 2", {"condition": "treated"}),
-            ("S06-Treated", RunFileRole.SAMPLE, "Treated replicate 3", {"condition": "treated"}),
+            (
+                "HYE-A",
+                RunFileRole.QC,
+                "Human/Yeast/E. coli QC A",
+                {
+                    "qc_material": "HYE",
+                    "qc_pair": "A",
+                    "mix": "65/30/5",
+                    "pseudo_project_key": "HYE",
+                    "pseudo_project_role": "system_suitability",
+                },
+            ),
+            (
+                "HYE-B",
+                RunFileRole.QC,
+                "Human/Yeast/E. coli QC B",
+                {
+                    "qc_material": "HYE",
+                    "qc_pair": "B",
+                    "mix": "65/15/20",
+                    "pseudo_project_key": "HYE",
+                    "pseudo_project_role": "system_suitability",
+                },
+            ),
             ("WASH", RunFileRole.WASH, "Column wash", {}),
         ]
-        samples = {}
-        for name, role, description, metadata in sample_defs:
+
+        for name, role, description, metadata in control_defs:
             sample, _ = Sample.objects.update_or_create(
                 experiment=experiment,
                 name=name,
@@ -246,32 +330,73 @@ class Command(BaseCommand):
                 },
             )
             samples[name] = sample
+
+        for index in range(1, 101):
+            condition = "healthy" if index <= 50 else "diseased"
+            condition_index = index if condition == "healthy" else index - 50
+            subject_id = f"{condition[:1].upper()}-{condition_index:03d}"
+            age = 28 + ((index * 7) % 41)
+            sex = "female" if index % 2 else "male"
+            bmi = round(20.5 + ((index * 13) % 125) / 10, 1)
+            collection_site = "BYU-Core-A" if index % 3 else "BYU-Core-B"
+            clinical_score = 0 if condition == "healthy" else 2 + (index % 4)
+            name = f"{condition.upper()}-{condition_index:03d}"
+            sample, _ = Sample.objects.update_or_create(
+                experiment=experiment,
+                name=name,
+                defaults={
+                    "external_id": f"PLASMA-{subject_id}",
+                    "species": "Homo sapiens",
+                    "matrix": "EDTA plasma",
+                    "digestion_protocol": "SP3 tryptic digest, 200 ng peptide load",
+                    "enrichment_protocol": "None",
+                    "submitted_by": researcher,
+                    "metadata": {
+                        "role": RunFileRole.SAMPLE,
+                        "subject_id": subject_id,
+                        "condition": condition,
+                        "cohort_arm": "control" if condition == "healthy" else "case",
+                        "age": age,
+                        "sex": sex,
+                        "bmi": bmi,
+                        "clinical_score": clinical_score,
+                        "collection_site": collection_site,
+                        "collection_date": f"2026-06-{(index % 28) + 1:02d}",
+                        "fasting_state": "fasted" if index % 5 else "non-fasted",
+                        "sample_type": "plasma",
+                        "storage_temperature_c": -80,
+                        "freeze_thaw_count": index % 2,
+                        "randomization_block": ((index - 1) // 10) + 1,
+                        "plate": "Plate-1" if index <= 50 else "Plate-2",
+                        "well": f"{chr(65 + ((index - 1) % 8))}{((index - 1) // 8) + 1:02d}",
+                    },
+                },
+            )
+            samples[name] = sample
         return samples
 
     def _seed_worklist_entries(self, worklist, samples, configuration, admin_user):
-        plan = [
-            ("BLANK", RunFileRole.BLANK, "B1", "batch-start"),
-            ("LIB-HYE", RunFileRole.LIBRARY, "L1", "library"),
-            ("HYE-A", RunFileRole.QC, "HYE-PAIR-01", "qc-open"),
-            ("HYE-B", RunFileRole.QC, "HYE-PAIR-01", "qc-open"),
-            ("S01-Control", RunFileRole.SAMPLE, "", "block-1"),
-            ("S04-Treated", RunFileRole.SAMPLE, "", "block-1"),
-            ("S02-Control", RunFileRole.SAMPLE, "", "block-1"),
-            ("HYE-A", RunFileRole.QC, "HYE-PAIR-02", "qc-mid"),
-            ("HYE-B", RunFileRole.QC, "HYE-PAIR-02", "qc-mid"),
-            ("S05-Treated", RunFileRole.SAMPLE, "", "block-2"),
-            ("S03-Control", RunFileRole.SAMPLE, "", "block-2"),
-            ("S06-Treated", RunFileRole.SAMPLE, "", "block-2"),
-            ("HYE-A", RunFileRole.QC, "HYE-PAIR-03", "qc-close"),
-            ("HYE-B", RunFileRole.QC, "HYE-PAIR-03", "qc-close"),
-            ("WASH", RunFileRole.WASH, "W1", "batch-end"),
-        ]
+        plan = [("BLANK", RunFileRole.BLANK, "B1", "batch-start"), ("LIB-HYE", RunFileRole.LIBRARY, "L1", "library")]
+        hye_pair_number = 1
+        plan.extend(self._hye_pair_plan(hye_pair_number, "qc-open"))
+        hye_pair_number += 1
+
+        for block in range(10):
+            for offset in range(5):
+                healthy_index = block * 5 + offset + 1
+                diseased_index = block * 5 + offset + 1
+                plan.append((f"HEALTHY-{healthy_index:03d}", RunFileRole.SAMPLE, "", f"bio-block-{block + 1:02d}"))
+                plan.append((f"DISEASED-{diseased_index:03d}", RunFileRole.SAMPLE, "", f"bio-block-{block + 1:02d}"))
+            plan.extend(self._hye_pair_plan(hye_pair_number, f"qc-after-block-{block + 1:02d}"))
+            hye_pair_number += 1
+
+        plan.append(("WASH", RunFileRole.WASH, "W1", "batch-end"))
         entries = []
         for position, (sample_name, role, hye_pair, block) in enumerate(plan, start=1):
-            expected_filename = f"HYE_DIA_DEMO_{position:03d}_{sample_name}.raw"
+            expected_filename = f"COHORT_DIA_100_{position:03d}_{sample_name}.raw"
             run, _ = Run.objects.update_or_create(
                 sample=samples[sample_name],
-                run_name=f"HYE_DIA_DEMO_{position:03d}_{sample_name}",
+                run_name=f"COHORT_DIA_100_{position:03d}_{sample_name}",
                 defaults={
                     "configuration": configuration,
                     "acquired_by": admin_user,
@@ -280,7 +405,14 @@ class Command(BaseCommand):
                     "expected_filename": expected_filename,
                     "worklist_position": position,
                     "hye_pair_label": hye_pair,
-                    "metadata": {"block": block, "expected_filename": expected_filename},
+                    "metadata": {
+                        "block": block,
+                        "expected_filename": expected_filename,
+                        "sample_condition": samples[sample_name].metadata.get("condition", ""),
+                        "subject_id": samples[sample_name].metadata.get("subject_id", ""),
+                        "qc_material": samples[sample_name].metadata.get("qc_material", ""),
+                        "pseudo_project_key": samples[sample_name].metadata.get("pseudo_project_key", ""),
+                    },
                 },
             )
             entry, _ = WorklistEntry.objects.update_or_create(
@@ -293,11 +425,21 @@ class Command(BaseCommand):
                     "injection_volume_ul": 2.0 if role not in {RunFileRole.BLANK, RunFileRole.WASH} else 1.0,
                     "hye_pair_label": hye_pair,
                     "block_label": block,
-                    "metadata": {"autosampler_vial": f"A{position:02d}", "method": "Demo_DIA_45min_60SPD"},
+                    "metadata": {
+                        "autosampler_vial": f"{chr(65 + ((position - 1) % 8))}{((position - 1) // 8) + 1:02d}",
+                        "method": "Demo_DIA_45min_60SPD",
+                        "condition": samples[sample_name].metadata.get("condition", ""),
+                        "subject_id": samples[sample_name].metadata.get("subject_id", ""),
+                        "qc_material": samples[sample_name].metadata.get("qc_material", ""),
+                    },
                 },
             )
             entries.append(entry)
         return entries
+
+    def _hye_pair_plan(self, pair_number, block):
+        label = f"HYE-PAIR-{pair_number:02d}"
+        return [("HYE-A", RunFileRole.QC, label, block), ("HYE-B", RunFileRole.QC, label, block)]
 
     def _seed_diann_pipeline(self):
         pipeline, _ = ProcessingPipeline.objects.update_or_create(
@@ -357,8 +499,8 @@ class Command(BaseCommand):
 
     def _seed_raw_files(self, entries):
         raw_files = []
-        acquired_base = timezone.now() - timedelta(hours=8)
-        missing_positions = {12}
+        acquired_base = timezone.now() - timedelta(hours=14)
+        missing_positions = {64}
         for entry in entries:
             run = entry.run
             if entry.position in missing_positions:
@@ -371,11 +513,11 @@ class Command(BaseCommand):
                 defaults={
                     "run": run,
                     "source_path": f"/data/incoming/{entry.expected_filename}",
-                    "storage_path": f"/data/raw/HYE-DIA-DEMO/{entry.expected_filename}",
+                    "storage_path": f"/data/raw/{self.project_code}/{entry.expected_filename}",
                     "filename": entry.expected_filename,
-                    "size_bytes": 1_250_000_000 + entry.position * 1_000_000,
-                    "acquired_at": acquired_base + timedelta(minutes=50 * entry.position),
-                    "imported_at": acquired_base + timedelta(minutes=50 * entry.position + 5),
+                    "size_bytes": 950_000_000 + entry.position * 750_000,
+                    "acquired_at": acquired_base + timedelta(minutes=48 * entry.position),
+                    "imported_at": acquired_base + timedelta(minutes=48 * entry.position + 4),
                     "status": RawFileStatus.IMPORTED,
                     "file_role": entry.file_role,
                     "match_confidence": 1.0,
@@ -383,11 +525,14 @@ class Command(BaseCommand):
                         "matched_by": "expected_filename",
                         "worklist_position": entry.position,
                         "autosampler_vial": entry.metadata.get("autosampler_vial"),
+                        "condition": entry.metadata.get("condition"),
+                        "subject_id": entry.metadata.get("subject_id"),
+                        "qc_material": entry.metadata.get("qc_material"),
                         "lc_ms_telemetry": {
-                            "tic": 8.5e9 + entry.position * 1.2e8,
-                            "base_peak_intensity": 2.2e7 + entry.position * 3.5e5,
-                            "ms1_features": 52000 + entry.position * 450,
-                            "ms2_spectra": 185000 + entry.position * 2100,
+                            "tic": 7.8e9 + entry.position * 8.5e7,
+                            "base_peak_intensity": 1.9e7 + entry.position * 2.8e5,
+                            "ms1_features": 48000 + entry.position * 375,
+                            "ms2_spectra": 168000 + entry.position * 1850,
                             "spray_stability_percent": 96.5 - (entry.position % 4) * 0.4,
                             "gradient_minutes": 45,
                             "column_pressure_bar": 710 + entry.position,
@@ -404,9 +549,9 @@ class Command(BaseCommand):
             checksum_sha256=hashlib.sha256(b"unmatched-demo-file").hexdigest(),
             defaults={
                 "run": None,
-                "source_path": "/data/incoming/HYE_DIA_DEMO_999_OPERATOR_NOTE.raw",
-                "storage_path": "/data/raw/HYE-DIA-DEMO/unmatched/HYE_DIA_DEMO_999_OPERATOR_NOTE.raw",
-                "filename": "HYE_DIA_DEMO_999_OPERATOR_NOTE.raw",
+                "source_path": "/data/incoming/COHORT_DIA_100_999_OPERATOR_NOTE.raw",
+                "storage_path": f"/data/raw/{self.project_code}/unmatched/COHORT_DIA_100_999_OPERATOR_NOTE.raw",
+                "filename": "COHORT_DIA_100_999_OPERATOR_NOTE.raw",
                 "size_bytes": 42_000,
                 "imported_at": timezone.now(),
                 "status": RawFileStatus.VALIDATED,
@@ -450,11 +595,11 @@ class Command(BaseCommand):
                         if status == ProcessingStatus.COMPLETE
                         else None
                     ),
-                    "log_path": f"/data/results/HYE-DIA-DEMO/{raw_file.run.run_name}/diann.log",
+                    "log_path": f"/data/results/{self.project_code}/{raw_file.run.run_name}/diann.log",
                     "metadata": {
                         "node": node.name,
                         "settings_snapshot": pipeline.parameters,
-                        "result_directory": f"/data/results/HYE-DIA-DEMO/{raw_file.run.run_name}",
+                        "result_directory": f"/data/results/{self.project_code}/{raw_file.run.run_name}",
                         "telemetry": {
                             "protein_groups": 4300 + index * 19,
                             "precursors": 51000 + index * 220,
@@ -541,7 +686,12 @@ class Command(BaseCommand):
         if raw_file.file_role == RunFileRole.LIBRARY:
             return 1.15
         if raw_file.file_role == RunFileRole.SAMPLE:
-            return 0.95 if "Control" in raw_file.run.sample.name else 1.2
+            condition = raw_file.run.sample.metadata.get("condition")
+            if condition == "healthy":
+                return 0.95 if protein.organism == "Homo sapiens" else 0.04
+            if condition == "diseased":
+                return 1.25 if protein.organism == "Homo sapiens" else 0.04
+            return 1.0
         if raw_file.file_role != RunFileRole.QC:
             return 0.03
 

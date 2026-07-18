@@ -36,9 +36,9 @@
         <h2>Generation Rules</h2>
         <ol class="steps">
           <li>Start with blank and library injections.</li>
-          <li>Place HYE A/B QC pairs before, during, and after sample blocks.</li>
-          <li>Interleave control and treated samples to reduce order effects.</li>
-          <li>End with QC pair and wash injection.</li>
+          <li>Place HYE A/B QC pairs before the batch and every {{ worklist.metadata.hye_interval_biological_samples }} biological samples.</li>
+          <li>Interleave healthy and diseased samples to reduce order effects.</li>
+          <li>End with an HYE pair and wash injection.</li>
         </ol>
       </div>
       <div class="card feature-panel">
@@ -61,6 +61,7 @@
             <th>Expected Run File</th>
             <th>Role</th>
             <th>Sample</th>
+            <th>Condition / QC</th>
             <th>HYE Pair</th>
             <th>Uploaded File</th>
             <th>Match</th>
@@ -75,6 +76,11 @@
             <td><code>{{ entry.expected_filename }}</code></td>
             <td><span class="pill role-{{ entry.file_role }}">{{ entry.get_file_role_display }}</span></td>
             <td>{{ entry.run.sample.name }}</td>
+            <td>
+              {% if entry.run.sample.metadata.condition %}{{ entry.run.sample.metadata.condition }}
+              {% elif entry.run.sample.metadata.qc_material %}{{ entry.run.sample.metadata.qc_material }}
+              {% else %}-{% endif %}
+            </td>
             <td>{{ entry.hye_pair_label|default:"-" }}</td>
             <td>{% if raw_file %}<code>{{ raw_file.filename }}</code>{% else %}<span class="missing">Missing upload</span>{% endif %}</td>
             <td>
@@ -88,7 +94,7 @@
           </tr>
           {% endwith %}
         {% empty %}
-          <tr><td colspan="8">No worklist entries.</td></tr>
+          <tr><td colspan="9">No worklist entries.</td></tr>
         {% endfor %}
         </tbody>
       </table>

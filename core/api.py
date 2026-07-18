@@ -1013,7 +1013,7 @@ class QcApiMixin:
                 "pair_status_counts": [
                     {"status": status, "count": count} for status, count in sorted(status_counts.items())
                 ],
-                "empty_message": "" if pairs else "Seed or acquire HYE A/B QC runs to populate this dashboard.",
+                "empty_message": "" if pairs else "Seed or acquire HYE A/B QC runs inside a project worklist.",
             },
             "details": {
                 "program": "hye",
@@ -1022,7 +1022,7 @@ class QcApiMixin:
                     "pass_relative_error": self.pass_relative_error,
                     "warning_relative_error": self.warning_relative_error,
                 },
-                "empty_message": "" if pairs else "Seed or acquire HYE A/B QC runs to populate this dashboard.",
+                "empty_message": "" if pairs else "Seed or acquire HYE A/B QC runs inside a project worklist.",
                 "pairs": pairs,
             },
         }

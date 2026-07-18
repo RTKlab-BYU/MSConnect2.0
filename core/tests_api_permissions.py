@@ -196,7 +196,7 @@ class ApiPermissionTests(TestCase):
     def test_qc_overview_and_details_return_hye_metrics(self):
         call_command("seed_demo_showcase", verbosity=0)
         demo_user = User.objects.get(username="parkerreyes")
-        project = Project.objects.get(code="HYE-DIA-DEMO")
+        project = Project.objects.get(code="COHORT-DIA-100")
         worklist = AcquisitionWorklist.objects.get(name="Plate 1 DIA acquisition order")
 
         self.client.force_authenticate(user=demo_user)
@@ -206,7 +206,7 @@ class ApiPermissionTests(TestCase):
         )
         self.assertEqual(overview_response.status_code, 200)
         self.assertEqual(overview_response.data["program"], "hye")
-        self.assertGreater(overview_response.data["qc_injection_count"], 0)
+        self.assertEqual(overview_response.data["qc_injection_count"], 22)
         self.assertGreaterEqual(overview_response.data["complete_pair_count"], 1)
 
         details_response = self.client.get(
@@ -219,7 +219,7 @@ class ApiPermissionTests(TestCase):
 
     def test_qc_overview_respects_lab_scope(self):
         call_command("seed_demo_showcase", verbosity=0)
-        project = Project.objects.get(code="HYE-DIA-DEMO")
+        project = Project.objects.get(code="COHORT-DIA-100")
         self.client.force_authenticate(user=self.external)
 
         response = self.client.get(f"/api/qc/overview/?program=hye&project={project.id}")

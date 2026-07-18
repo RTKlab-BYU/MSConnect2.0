@@ -271,7 +271,7 @@ export default function QcPage() {
           ) : (
             <Card>
               <CardHeader>
-                <CardTitle>No HYE QC pairs</CardTitle>
+                <CardTitle>No HYE QC pseudo-project</CardTitle>
                 <CardDescription>{details?.empty_message || "Loading HYE QC metrics..."}</CardDescription>
               </CardHeader>
             </Card>

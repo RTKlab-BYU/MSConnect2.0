@@ -27,8 +27,8 @@
         <p class="eyebrow">Single-cell proteomics operations</p>
         <h1>Project-centered LIMS / SDMS workspace</h1>
         <p>
-          Track the project record, sample registry, acquisition worklists, raw-file custody,
-          DIA-NN processing, and HYE A/B QC without leaving the study context.
+          Track the cohort project, 100 biological samples, acquisition worklists, raw-file custody,
+          DIA-NN processing, and HYE A/B QC controls without creating a separate HYE project.
         </p>
       </div>
       <div class="hero-actions">
@@ -41,7 +41,7 @@
       <a class="workflow-card" href="/ui/showcase/design">
         <span>01</span>
         <h2>Samples</h2>
-        <p>Review biological samples, QC materials, library injections, and pre-acquisition metadata.</p>
+        <p>Review healthy/diseased samples, HYE QC materials, library injections, and pre-acquisition metadata.</p>
       </a>
       {% if worklist %}
       <a class="workflow-card" href="/ui/showcase/worklists/{{ worklist.id }}">
@@ -63,7 +63,7 @@
       <a class="workflow-card" href="/ui/showcase/qc">
         <span>05</span>
         <h2>QC Dashboard</h2>
-        <p>Review HYE A/B pair stats for Human, Yeast, and E. coli with shared protein N and log2 intensities.</p>
+        <p>Review HYE A/B pair stats as a pseudo-project derived from tagged QC injections inside this study.</p>
       </a>
     </section>
 
@@ -95,11 +95,19 @@
         <p class="eyebrow">Active Demo Study</p>
         <h2>{{ project.code }} · {{ project.title }}</h2>
         <p>{{ project.description }}</p>
+        {% if worklist %}
+          <dl class="settings-list">
+            <dt>Biological samples</dt><dd>{{ worklist.metadata.biological_sample_count }}</dd>
+            <dt>Condition balance</dt><dd>{{ worklist.metadata.condition_balance.healthy }} healthy / {{ worklist.metadata.condition_balance.diseased }} diseased</dd>
+            <dt>HYE interval</dt><dd>Every {{ worklist.metadata.hye_interval_biological_samples }} biological injections</dd>
+          </dl>
+        {% endif %}
         {% if pipeline %}<p><span class="pill succeeded">{{ pipeline.name }}</span> {{ pipeline.version }}</p>{% endif %}
       </div>
 
       <div class="card feature-panel">
-        <p class="eyebrow">HYE Target Composition</p>
+        <p class="eyebrow">HYE QC Pseudo-Project</p>
+        <p>HYE is identified from QC-tagged HYE-A/HYE-B injections, then grouped for longitudinal statistics across worklists and projects.</p>
         <table class="compact-table">
           <thead><tr><th>Organism</th><th>A</th><th>B</th><th>Ideal B/A</th></tr></thead>
           <tbody>
