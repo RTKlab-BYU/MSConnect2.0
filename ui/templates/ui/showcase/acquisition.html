@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Acquisition Monitor</title>
+  <link rel="stylesheet" href="/static/ui/ui.css">
+</head>
+<body>
+  <main class="container wide">
+    <nav class="top-nav app-nav">
+      <a class="brand-mark" href="/ui/projects">
+        <span class="brand-glyph">MS</span>
+        <span><strong>MSConnect</strong><small>LIMS / SDMS</small></span>
+      </a>
+      <a href="/ui/projects">Projects</a>
+      <a href="/ui/showcase">Home</a>
+      <a href="/ui/showcase/design">Design</a>
+      {% if worklist %}<a href="/ui/showcase/worklists/{{ worklist.id }}">Worklist</a>{% endif %}
+      <a href="/ui/showcase/results">ID / Quant</a>
+      <a href="/ui/showcase/qc">QC</a>
+    </nav>
+
+    <section class="hero compact">
+      <div>
+        <p class="eyebrow">Step 03 · Live Uploading and File Watching</p>
+        <h1>LC-MS Acquisition Monitor</h1>
+        <p>Model the instrument handoff: files arrive from the mass spec, get tagged, and are matched to the expected run-file order.</p>
+      </div>
+      <span class="pill ready">{{ watcher.mode }}</span>
+    </section>
+
+    <section class="grid-two">
+      <div class="card feature-panel">
+        <h2>Watcher Configuration</h2>
+        <dl class="settings-list">
+          <dt>Incoming</dt><dd><code>{{ watcher.incoming_root }}</code></dd>
+          <dt>Storage</dt><dd><code>{{ watcher.storage_root }}</code></dd>
+          <dt>Matcher</dt><dd>{{ watcher.matching }}</dd>
+          <dt>Tags</dt><dd>sample, QC, library, blank, wash, calibration</dd>
+        </dl>
+      </div>
+      <div class="card feature-panel">
+        <h2>Operator Rules</h2>
+        <ol class="steps">
+          <li>Expected filename and worklist position are the authoritative acquisition contract.</li>
+          <li>Uploaded files inherit the planned role tag from their run-file order.</li>
+          <li>Missing files remain visible in order so the operator can resolve gaps.</li>
+          <li>Unexpected files stay unmatched until manually reviewed.</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Live Run Order and Upload State</h2>
+      <table>
+        <thead><tr><th>#</th><th>Expected</th><th>Role</th><th>Sample</th><th>Uploaded</th><th>MS1</th><th>MS2</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for entry in entries %}
+          {% with raw_file=entry.matched_raw_file %}
+          <tr>
+            <td>{{ entry.position }}</td>
+            <td><code>{{ entry.expected_filename }}</code></td>
+            <td><span class="pill role-{{ entry.file_role }}">{{ entry.get_file_role_display }}</span></td>
+            <td>{{ entry.run.sample.name }}</td>
+            <td>{% if raw_file %}<code>{{ raw_file.filename }}</code>{% else %}<span class="missing">Waiting</span>{% endif %}</td>
+            <td>{{ raw_file.metadata.lc_ms_telemetry.ms1_features|default:"-" }}</td>
+            <td>{{ raw_file.metadata.lc_ms_telemetry.ms2_spectra|default:"-" }}</td>
+            <td>{{ entry.run.get_status_display }}</td>
+          </tr>
+          {% endwith %}
+        {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Unmatched Upload Review</h2>
+      <table>
+        <thead><tr><th>File</th><th>Detected Tag</th><th>Reason</th><th>Storage</th></tr></thead>
+        <tbody>
+        {% for raw_file in unmatched_raw_files %}
+          <tr>
+            <td><code>{{ raw_file.filename }}</code></td>
+            <td><span class="pill role-{{ raw_file.file_role }}">{{ raw_file.get_file_role_display }}</span></td>
+            <td>{{ raw_file.metadata.reason|default:"No expected run-file order entry" }}</td>
+            <td><code>{{ raw_file.storage_path }}</code></td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="4">No unmatched uploads.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

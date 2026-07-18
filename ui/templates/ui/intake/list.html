@@ -2,17 +2,34 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Intake Queue</title>
   <link rel="stylesheet" href="/static/ui/ui.css">
   <script defer src="/static/ui/intake_queue.js"></script>
 </head>
 <body>
-  <main class="container">
-    <h1>Pre-Acquisition Intake Queue</h1>
-    <p>
-      <a href="/ui/intake/new">Create intake request</a> |
-      <a href="/ui/projects/pre-acq">Approved pre-acq board</a>
-    </p>
+  <main class="app-shell">
+    <nav class="top-nav app-nav">
+      <a class="brand-mark" href="/ui/projects">
+        <span class="brand-glyph">MS</span>
+        <span><strong>MSConnect</strong><small>LIMS / SDMS</small></span>
+      </a>
+      <a href="/ui/projects">Projects</a>
+      <a class="active" href="/ui/intake">Intake</a>
+      <a href="/ui/projects/pre-acq">Pre-acq</a>
+      <a href="/admin/">Admin</a>
+    </nav>
+
+    <section class="page-header">
+      <div>
+        <p class="eyebrow">Pre-acquisition</p>
+        <h1>Intake Queue</h1>
+        <p class="lede">Review project requests before they become canonical project records.</p>
+      </div>
+      <div class="header-actions">
+        <a class="button-link" href="/ui/intake/new">New Intake</a>
+      </div>
+    </section>
 
     <form method="get" class="filters card" id="queue-filters">
       <label>Status
@@ -53,36 +70,38 @@
       <button type="submit">Apply</button>
     </form>
 
-    <table class="card">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Title</th>
-          <th>Status</th>
-          <th>Lab</th>
-          <th>Submitter</th>
-          <th>Updated</th>
-          <th>Reviewer</th>
-          <th>Project</th>
-        </tr>
-      </thead>
-      <tbody>
-      {% for intake in intake_requests %}
-        <tr>
-          <td><a href="/ui/intake/{{ intake.id }}">{{ intake.id }}</a></td>
-          <td>{{ intake.requested_title }}</td>
-          <td>{{ intake.get_status_display }}</td>
-          <td>{{ intake.lab.name }}</td>
-          <td>{{ intake.submitted_by.username }}</td>
-          <td>{{ intake.updated_at }}</td>
-          <td>{% if intake.reviewed_by %}{{ intake.reviewed_by.username }}{% else %}-{% endif %}</td>
-          <td>{% if intake.promoted_project %}{{ intake.promoted_project.code }}{% else %}-{% endif %}</td>
-        </tr>
-      {% empty %}
-        <tr><td colspan="8">No intake requests found.</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
+    <section class="content-panel">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Lab</th>
+            <th>Submitter</th>
+            <th>Updated</th>
+            <th>Reviewer</th>
+            <th>Project</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for intake in intake_requests %}
+          <tr>
+            <td><a href="/ui/intake/{{ intake.id }}">{{ intake.id }}</a></td>
+            <td>{{ intake.requested_title }}</td>
+            <td><span class="pill {{ intake.status }}">{{ intake.get_status_display }}</span></td>
+            <td>{{ intake.lab.name }}</td>
+            <td>{{ intake.submitted_by.username }}</td>
+            <td>{{ intake.updated_at }}</td>
+            <td>{% if intake.reviewed_by %}{{ intake.reviewed_by.username }}{% else %}-{% endif %}</td>
+            <td>{% if intake.promoted_project %}<a href="/ui/projects/{{ intake.promoted_project.id }}">{{ intake.promoted_project.code }}</a>{% else %}-{% endif %}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="8">No intake requests found.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </section>
   </main>
 </body>
 </html>

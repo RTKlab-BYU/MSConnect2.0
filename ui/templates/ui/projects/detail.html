@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ project.code }} · MSConnect</title>
+  <link rel="stylesheet" href="/static/ui/ui.css">
+</head>
+<body>
+  <main class="app-shell">
+    <nav class="top-nav app-nav">
+      <a class="brand-mark" href="/ui/projects">
+        <span class="brand-glyph">MS</span>
+        <span>
+          <strong>MSConnect</strong>
+          <small>LIMS / SDMS</small>
+        </span>
+      </a>
+      <a class="active" href="/ui/projects">Projects</a>
+      <a href="/ui/intake">Intake</a>
+      {% if first_worklist %}<a href="/ui/showcase/worklists/{{ first_worklist.id }}">Acquisitions</a>{% endif %}
+      {% if first_worklist %}<a href="/ui/showcase/worklists/{{ first_worklist.id }}/qc">QC</a>{% endif %}
+      <a href="/admin/">Admin</a>
+    </nav>
+
+    <section class="record-header">
+      <div>
+        <p class="eyebrow">{{ project.lab.facility.name }} / {{ project.lab.name }}</p>
+        <h1>{{ project.code }}</h1>
+        <p class="lede">{{ project.title }}</p>
+      </div>
+      <div class="status-stack">
+        <span class="pill {{ project.status }}">{{ project.get_status_display }}</span>
+        <span>{{ project.pi.username }}</span>
+      </div>
+    </section>
+
+    <section class="record-layout">
+      <aside class="record-sidebar">
+        <section class="side-panel">
+          <h2>Project Record</h2>
+          <dl class="settings-list compact">
+            <dt>Lab</dt><dd>{{ project.lab.name }}</dd>
+            <dt>PI</dt><dd>{{ project.pi.username }}</dd>
+            <dt>Status</dt><dd>{{ project.get_status_display }}</dd>
+            <dt>Updated</dt><dd>{{ project.updated_at }}</dd>
+          </dl>
+        </section>
+
+        <section class="side-panel">
+          <h2>Operations</h2>
+          <div class="action-list">
+            {% if first_worklist %}
+            <a href="/ui/showcase/worklists/{{ first_worklist.id }}">Worklist</a>
+            <a href="/ui/showcase/worklists/{{ first_worklist.id }}/acquisition">Acquisition Monitor</a>
+            <a href="/ui/showcase/worklists/{{ first_worklist.id }}/processing">Processing</a>
+            <a href="/ui/showcase/worklists/{{ first_worklist.id }}/qc">QC Dashboard</a>
+            {% else %}
+            <span>No acquisition worklists yet.</span>
+            {% endif %}
+          </div>
+        </section>
+      </aside>
+
+      <div class="record-main">
+        <section class="metric-grid">
+          <div class="metric-card">
+            <span class="metric-label">Samples</span>
+            <strong>{{ project.sample_count }}</strong>
+            <span>registered</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Acquisitions</span>
+            <strong>{{ project.acquisition_count }}</strong>
+            <span>worklists</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Raw Files</span>
+            <strong>{{ project.raw_file_count }}</strong>
+            <span>matched</span>
+          </div>
+          <div class="metric-card warning">
+            <span class="metric-label">Missing Uploads</span>
+            <strong>{{ missing_upload_count }}</strong>
+            <span>open gaps</span>
+          </div>
+        </section>
+
+        <section class="content-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Acquisitions</p>
+              <h2>Worklists and Raw File State</h2>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Worklist</th>
+                <th>Experiment</th>
+                <th>Status</th>
+                <th>Sample Runs</th>
+                <th>QC Runs</th>
+                <th>Matched</th>
+                <th>Method</th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for worklist in worklists %}
+              <tr>
+                <td><a href="/ui/showcase/worklists/{{ worklist.id }}">{{ worklist.name }}</a></td>
+                <td>{{ worklist.experiment.name }}</td>
+                <td><span class="pill {{ worklist.status }}">{{ worklist.get_status_display }}</span></td>
+                <td>{{ worklist.sample_run_count }}</td>
+                <td>{{ worklist.qc_run_count }}</td>
+                <td>{{ worklist.matched_file_count }} / {{ worklist.entry_count }}</td>
+                <td>{{ worklist.configuration.method_name|default:"-" }}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="7">No acquisition worklists recorded.</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </section>
+
+        <section class="content-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Samples</p>
+              <h2>Sample Registry</h2>
+            </div>
+            <span class="pill">{{ samples.count }} records</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Sample</th>
+                <th>Experiment</th>
+                <th>External ID</th>
+                <th>Matrix</th>
+                <th>Condition</th>
+                <th>Runs</th>
+                <th>Files</th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for sample in samples %}
+              <tr>
+                <td>{{ sample.name }}</td>
+                <td>{{ sample.experiment.name }}</td>
+                <td>{{ sample.external_id|default:"-" }}</td>
+                <td>{{ sample.matrix|default:"-" }}</td>
+                <td>
+                  {% if sample.metadata.condition %}
+                    {{ sample.metadata.condition }}
+                  {% elif sample.metadata.mix %}
+                    {{ sample.metadata.mix }}
+                  {% elif sample.metadata.role %}
+                    {{ sample.metadata.role }}
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+                <td>{{ sample.run_count }}</td>
+                <td>{{ sample.raw_file_count }}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="7">No samples recorded.</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </section>
+
+        <section class="content-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">SDMS</p>
+              <h2>Latest Raw Files</h2>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Sample</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Imported</th>
+                <th>Storage</th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for raw_file in latest_raw_files %}
+              <tr>
+                <td><code>{{ raw_file.filename }}</code></td>
+                <td>{{ raw_file.run.sample.name }}</td>
+                <td><span class="pill role-{{ raw_file.file_role }}">{{ raw_file.get_file_role_display }}</span></td>
+                <td><span class="pill {{ raw_file.status }}">{{ raw_file.get_status_display }}</span></td>
+                <td>{{ raw_file.imported_at|default:"-" }}</td>
+                <td><code>{{ raw_file.storage_path }}</code></td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="6">No matched raw files recorded.</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </section>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

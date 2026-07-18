@@ -2,16 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Intake {{ intake.id }}</title>
   <link rel="stylesheet" href="/static/ui/ui.css">
 </head>
 <body>
-  <main class="container">
-    <h1>Intake Request #{{ intake.id }}</h1>
-    <p>
-      <a href="/ui/intake">Back to queue</a> |
-      <a href="/ui/projects/pre-acq">Pre-acq board</a>
-    </p>
+  <main class="app-shell">
+    <nav class="top-nav app-nav">
+      <a class="brand-mark" href="/ui/projects">
+        <span class="brand-glyph">MS</span>
+        <span><strong>MSConnect</strong><small>LIMS / SDMS</small></span>
+      </a>
+      <a href="/ui/projects">Projects</a>
+      <a class="active" href="/ui/intake">Intake</a>
+      <a href="/ui/projects/pre-acq">Pre-acq</a>
+    </nav>
+
+    <section class="record-header">
+      <div>
+        <p class="eyebrow">Intake Request #{{ intake.id }}</p>
+        <h1>{{ intake.requested_title }}</h1>
+        <p class="lede">{{ intake.lab.name }}</p>
+      </div>
+      <div class="status-stack">
+        <span class="pill {{ intake.status }}">{{ intake.get_status_display }}</span>
+        {% if intake.promoted_project %}<a href="/ui/projects/{{ intake.promoted_project.id }}">{{ intake.promoted_project.code }}</a>{% endif %}
+      </div>
+    </section>
 
     {% if messages %}
       {% for message in messages %}
@@ -21,7 +38,7 @@
 
     <section class="card">
       <h2>Request Summary</h2>
-      <dl>
+      <dl class="settings-list">
         <dt>Title</dt><dd>{{ intake.requested_title }}</dd>
         <dt>Code</dt><dd>{{ intake.requested_code|default:'-' }}</dd>
         <dt>Status</dt><dd>{{ intake.get_status_display }}</dd>
@@ -35,13 +52,13 @@
 
     <section class="card">
       <h2>Timeline</h2>
-      <ul>
-        <li>Created: {{ intake.created_at }}</li>
-        <li>Updated: {{ intake.updated_at }}</li>
-        <li>Reviewed By: {% if intake.reviewed_by %}{{ intake.reviewed_by.username }} at {{ intake.reviewed_at }}{% else %}not reviewed yet{% endif %}</li>
-        <li>Review Note: {{ intake.review_note|default:'-' }}</li>
-        <li>Promoted Project: {% if intake.promoted_project %}{{ intake.promoted_project.code }} ({{ intake.promoted_project.title }}){% else %}not promoted{% endif %}</li>
-      </ul>
+      <dl class="settings-list">
+        <dt>Created</dt><dd>{{ intake.created_at }}</dd>
+        <dt>Updated</dt><dd>{{ intake.updated_at }}</dd>
+        <dt>Reviewed By</dt><dd>{% if intake.reviewed_by %}{{ intake.reviewed_by.username }} at {{ intake.reviewed_at }}{% else %}not reviewed yet{% endif %}</dd>
+        <dt>Review Note</dt><dd>{{ intake.review_note|default:'-' }}</dd>
+        <dt>Project</dt><dd>{% if intake.promoted_project %}<a href="/ui/projects/{{ intake.promoted_project.id }}">{{ intake.promoted_project.code }} ({{ intake.promoted_project.title }})</a>{% else %}not promoted{% endif %}</dd>
+      </dl>
     </section>
 
     {% if can_review %}

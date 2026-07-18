@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MSConnect</title>
+  <link rel="stylesheet" href="/static/ui/ui.css">
+</head>
+<body>
+  <main class="container wide">
+    <nav class="top-nav app-nav">
+      <a class="brand-mark" href="/ui/projects">
+        <span class="brand-glyph">MS</span>
+        <span><strong>MSConnect</strong><small>LIMS / SDMS</small></span>
+      </a>
+      <a href="/ui/projects">Projects</a>
+      <a href="/ui/showcase/design">Design</a>
+      {% if worklist %}<a href="/ui/showcase/worklists/{{ worklist.id }}">Worklist</a>{% endif %}
+      <a href="/ui/showcase/acquisition">Acquisition</a>
+      <a href="/ui/showcase/results">ID / Quant</a>
+      <a href="/ui/showcase/qc">QC</a>
+      <a href="/admin/">Admin</a>
+    </nav>
+
+    <section class="hero product-hero">
+      <div>
+        <p class="eyebrow">Single-cell proteomics operations</p>
+        <h1>Project-centered LIMS / SDMS workspace</h1>
+        <p>
+          Track the project record, sample registry, acquisition worklists, raw-file custody,
+          DIA-NN processing, and HYE A/B QC without leaving the study context.
+        </p>
+      </div>
+      <div class="hero-actions">
+        {% if project %}<a class="button-link" href="/ui/projects/{{ project.id }}">Open Project</a>{% endif %}
+        {% if worklist %}<a class="button-link secondary" href="/ui/showcase/worklists/{{ worklist.id }}">Open Acquisition</a>{% endif %}
+      </div>
+    </section>
+
+    <section class="workflow-grid">
+      <a class="workflow-card" href="/ui/showcase/design">
+        <span>01</span>
+        <h2>Samples</h2>
+        <p>Review biological samples, QC materials, library injections, and pre-acquisition metadata.</p>
+      </a>
+      {% if worklist %}
+      <a class="workflow-card" href="/ui/showcase/worklists/{{ worklist.id }}">
+        <span>02</span>
+        <h2>Acquisition</h2>
+        <p>Inspect run-file order, method metadata, expected filenames, and matched raw files.</p>
+      </a>
+      {% endif %}
+      <a class="workflow-card" href="/ui/showcase/acquisition">
+        <span>03</span>
+        <h2>File Watch</h2>
+        <p>Monitor incoming mass-spec files and surface missing or unexpected uploads.</p>
+      </a>
+      <a class="workflow-card" href="/ui/showcase/results">
+        <span>04</span>
+        <h2>Processing</h2>
+        <p>Track DIA-NN jobs, protein/peptide counts, MS1 features, MS2 spectra, and run telemetry.</p>
+      </a>
+      <a class="workflow-card" href="/ui/showcase/qc">
+        <span>05</span>
+        <h2>QC Dashboard</h2>
+        <p>Review HYE A/B pair stats for Human, Yeast, and E. coli with shared protein N and log2 intensities.</p>
+      </a>
+    </section>
+
+    <section class="metric-grid">
+      <div class="metric-card">
+        <span class="metric-label">Run Files</span>
+        <strong>{{ entry_count }}</strong>
+        <span>planned injections</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Matched Raw</span>
+        <strong>{{ matched_file_count }}</strong>
+        <span>uploaded files</span>
+      </div>
+      <div class="metric-card warning">
+        <span class="metric-label">Missing Uploads</span>
+        <strong>{{ missing_file_count }}</strong>
+        <span>requires operator review</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">DIA-NN Node</span>
+        <strong>{{ node.get_status_display|default:"Not configured" }}</strong>
+        <span>{{ node.name|default:"No node" }}</span>
+      </div>
+    </section>
+
+    <section class="grid-two">
+      <div class="card feature-panel">
+        <p class="eyebrow">Active Demo Study</p>
+        <h2>{{ project.code }} · {{ project.title }}</h2>
+        <p>{{ project.description }}</p>
+        {% if pipeline %}<p><span class="pill succeeded">{{ pipeline.name }}</span> {{ pipeline.version }}</p>{% endif %}
+      </div>
+
+      <div class="card feature-panel">
+        <p class="eyebrow">HYE Target Composition</p>
+        <table class="compact-table">
+          <thead><tr><th>Organism</th><th>A</th><th>B</th><th>Ideal B/A</th></tr></thead>
+          <tbody>
+            <tr><td>Human</td><td>0.65</td><td>0.65</td><td>1.00</td></tr>
+            <tr><td>Yeast</td><td>0.30</td><td>0.15</td><td>0.50</td></tr>
+            <tr><td>E. coli</td><td>0.05</td><td>0.20</td><td>4.00</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

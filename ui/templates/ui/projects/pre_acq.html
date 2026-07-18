@@ -2,15 +2,32 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pre-Acquisition Projects</title>
   <link rel="stylesheet" href="/static/ui/ui.css">
 </head>
 <body>
-  <main class="container">
-    <h1>Approved Pre-Acquisition Projects</h1>
-    <p><a href="/ui/intake">Back to intake queue</a></p>
+  <main class="app-shell">
+    <nav class="top-nav app-nav">
+      <a class="brand-mark" href="/ui/projects">
+        <span class="brand-glyph">MS</span>
+        <span><strong>MSConnect</strong><small>LIMS / SDMS</small></span>
+      </a>
+      <a href="/ui/projects">Projects</a>
+      <a href="/ui/intake">Intake</a>
+      <a class="active" href="/ui/projects/pre-acq">Pre-acq</a>
+    </nav>
 
-    <table class="card">
+    <section class="page-header">
+      <div>
+        <p class="eyebrow">Approved requests</p>
+        <h1>Pre-Acquisition Board</h1>
+        <p class="lede">Approved intake requests awaiting project promotion or acquisition planning.</p>
+      </div>
+    </section>
+
+    <section class="content-panel">
+    <table>
       <thead>
         <tr>
           <th>Intake ID</th>
@@ -27,8 +44,8 @@
           <td><a href="/ui/intake/{{ intake.id }}">{{ intake.id }}</a></td>
           <td>{{ intake.requested_title }}</td>
           <td>{{ intake.lab.name }}</td>
-          <td>{{ intake.get_status_display }}</td>
-          <td>{% if intake.promoted_project %}{{ intake.promoted_project.code }}{% else %}Not promoted{% endif %}</td>
+          <td><span class="pill {{ intake.status }}">{{ intake.get_status_display }}</span></td>
+          <td>{% if intake.promoted_project %}<a href="/ui/projects/{{ intake.promoted_project.id }}">{{ intake.promoted_project.code }}</a>{% else %}Not promoted{% endif %}</td>
           <td>{{ intake.updated_at }}</td>
         </tr>
       {% empty %}
@@ -36,6 +53,7 @@
       {% endfor %}
       </tbody>
     </table>
+    </section>
   </main>
 </body>
 </html>
