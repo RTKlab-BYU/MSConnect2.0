@@ -13,6 +13,7 @@ services:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${MSCONNECT_MEDIA_HOST_PATH:-./media}:/app/media
       - ${MSCONNECT_STATIC_HOST_PATH:-./staticfiles}:/app/staticfiles
+      - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming:ro
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
     ports:
@@ -63,6 +64,78 @@ services:
     environment:
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
       MSCONNECT_AGENT_NAME: ${PROCESSOR_AGENT_NAME:-processor-1}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming:ro
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+    depends_on:
+      web:
+        condition: service_healthy
+
+  processor-diann:
+    profiles: ["engines"]
+    image: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:local}
+    build:
+      context: .
+      dockerfile: docker/processor/diann.Dockerfile
+      args:
+        DIANN_LINUX_URL: ${DIANN_LINUX_URL:-}
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${DIANN_AGENT_NAME:-diann-1}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+    depends_on:
+      web:
+        condition: service_healthy
+
+  processor-fragpipe:
+    profiles: ["engines"]
+    image: ${MSCONNECT_FRAGPIPE_IMAGE:-msconnect-processor-fragpipe:local}
+    build:
+      context: .
+      dockerfile: docker/processor/fragpipe.Dockerfile
+      args:
+        FRAGPIPE_URL: ${FRAGPIPE_URL:-}
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${FRAGPIPE_AGENT_NAME:-fragpipe-1}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+    depends_on:
+      web:
+        condition: service_healthy
+
+  processor-pwiz:
+    profiles: ["conversion"]
+    image: ${MSCONNECT_PWIZ_IMAGE:-msconnect-processor-pwiz:local}
+    build:
+      context: .
+      dockerfile: docker/processor/pwiz.Dockerfile
+    command: >
+      sh -c "python3 manage.py run_processor_agent"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${PWIZ_AGENT_NAME:-pwiz-1}
+      MSCONNECT_MSCONVERT_EXECUTABLE: msconvert
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
