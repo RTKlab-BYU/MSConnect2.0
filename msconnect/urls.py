@@ -4,6 +4,8 @@ from django.http import FileResponse, HttpResponse
 from django.urls import include, path, re_path
 from django.views.generic import RedirectView
 
+from .capabilities import capability_urlpatterns
+
 
 def app_shell(_request, _path=""):
     index_path = settings.BASE_DIR / "ui" / "static" / "app" / "index.html"
@@ -25,4 +27,4 @@ urlpatterns = [
     path("api-auth/", include("rest_framework.urls")),
     path("accounts/", include("django.contrib.auth.urls")),
     path("ui/", include("ui.urls")),
-]
+] + capability_urlpatterns()

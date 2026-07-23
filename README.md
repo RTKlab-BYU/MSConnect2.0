@@ -11,6 +11,26 @@ MSConnect is an on-prem SDMS/LIMS scaffold for LC-MS proteomics. The MVP tracks 
 - Watched-share raw file ingestion
 - Repo-embedded watcher and processor agents
 
+## Repository Layout
+
+MSConnect follows a conventional Django project layout with a small extension layer for research tools:
+
+```text
+msconnect/              Django project settings, root URLs, WSGI/ASGI
+core/                   Canonical LIMS/SDMS models, API, agent auth, processor job lifecycle
+ingest/                 Raw-file discovery/import services and result-table import helpers
+ui/                     Built React app mount and legacy compatibility URLs
+frontend/               React/Vite source for /app/*
+capabilities/           Optional researcher/tool Django apps
+docker/                 Optional specialized processor image definitions
+docs/                   Architecture notes and work logs
+incoming/               Host-mounted watched-share input, ignored by git
+raw-storage/            Host-mounted managed raw-file storage, ignored by git
+results/                Host-mounted processing outputs/artifacts, ignored by git
+```
+
+The stable domain model lives in `core`: projects, samples, runs, raw files, processing jobs, derivatives, artifacts, protein/peptide IDs, and quants. New tools should integrate at that boundary instead of duplicating those concepts.
+
 ## Local On-Prem Run
 
 1. Create the environment file:
@@ -50,6 +70,25 @@ The deployment now runs three repo-embedded application services from the same i
 All three services stay in the same repo and can be deployed together from one tag and one image.
 
 `watcher` and `processor` wait for the `web` healthcheck before starting, and their API client retries transient connection and HTTP 5xx errors. This keeps local three-container simulations from failing during Django migration/startup races.
+
+Each component is a Django management command run from the same container image:
+
+```sh
+# Main API/UI server, normally run by docker compose service `web`
+python manage.py migrate
+python manage.py collectstatic --noinput
+gunicorn msconnect.wsgi:application --bind 0.0.0.0:8000
+
+# Watched-share ingestion service, normally run by service `watcher`
+python manage.py run_watcher_agent --match-run-by-name
+
+# Processing worker service, normally run by service `processor`
+python manage.py run_processor_agent
+
+# One-shot utility examples
+python manage.py index_mzml_spectra --project 6
+python manage.py seed_pride_pxd053992 --import-now --limit 2
+```
 
 ## Raw File Ingestion
 
@@ -93,7 +132,15 @@ V1 pipeline execution is driven by `ProcessingPipeline.parameters`:
 }
 ```
 
-The demo showcase seeds a local executable pipeline command that writes small protein and peptide CSV artifacts under `RESULTS_ROOT`, so the `processor` container can exercise claim/start/complete/result-import behavior without a DIA-NN installation.
+Supported result declarations include:
+
+- `protein_table`: CSV/TSV file imported into `ProteinQuant` and `ProteinIdentification`.
+- `peptide_table`: CSV/TSV file imported into `PeptideQuant` and `PeptideIdentification`.
+- `stats_json`: JSON object copied into `ProcessingJob.stats`.
+- `artifact_files`: retained files recorded as `ProcessingJobArtifact` rows.
+- `derivatives`: files such as mzML or spectrum indexes recorded as `RawFileDerivative` rows.
+
+The demo showcase and PRIDE smoke utilities seed executable pipeline commands that write protein/peptide CSV artifacts under `RESULTS_ROOT`, so the `processor` container can exercise claim/start/complete/result-import behavior without a DIA-NN installation.
 
 Run one processor pass manually:
 
@@ -127,6 +174,101 @@ Expected columns:
 
 - Protein table: `accession` and a quant column (`value`/`abundance`/`intensity`/`quantity`), plus optional `label`, `unit`, `score`, `q_value`, `coverage_percent`, `peptide_count`, `organism`.
 - Peptide table: `sequence` and a quant column (`value`/`abundance`/`intensity`/`quantity`), plus optional `modified_sequence`, `charge`, `label`, `unit`, `score`, `q_value`, `retention_time_seconds`, `mz`.
+
+## Adding Researcher Tool Capabilities
+
+Use a Django app for each new tool or service. This keeps experiments modular while preserving one deployment image and one canonical data model.
+
+Create a capability app:
+
+```sh
+docker compose run --rm web python manage.py start_capability spectral_library
+```
+
+This creates:
+
+```text
+capabilities/spectral_library/
+  __init__.py
+  apps.py
+  models.py
+  services.py
+  api_urls.py
+  management/commands/run_spectral_library.py
+  tests.py
+  README.md
+```
+
+Capability apps under `capabilities/` are auto-discovered when they contain `apps.py` and `__init__.py`. You can disable discovery with:
+
+```sh
+MSCONNECT_AUTO_DISCOVER_CAPABILITIES=0
+```
+
+You can also explicitly install apps with:
+
+```sh
+MSCONNECT_EXTRA_APPS=capabilities.spectral_library,capabilities.custom_tool
+```
+
+When manually dropping in a Django app folder, make sure its `apps.py` uses the full package path:
+
+```py
+class SpectralLibraryConfig(AppConfig):
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "capabilities.spectral_library"
+    label = "spectral_library"
+```
+
+If a capability exposes `api_urls.py`, MSConnect mounts it at:
+
+```text
+/api/capabilities/<capability-slug>/
+```
+
+If it exposes `urls.py`, MSConnect mounts it at:
+
+```text
+/capabilities/<capability-slug>/
+```
+
+Development rules for capability apps:
+
+- Put tool-specific wrappers, parsers, and command builders in `services.py`.
+- Put long-running or one-shot work in `management/commands/`.
+- Store new persisted tool data in the capability app only when it is truly tool-specific.
+- Reuse `core` records for shared concepts: `Project`, `Sample`, `Run`, `RawFile`, `ProcessingPipeline`, `ProcessingJob`, `RawFileDerivative`, `ProcessingJobArtifact`, `ProteinQuant`, and `PeptideQuant`.
+- For processor integration, create or update a `ProcessingPipeline` whose `parameters.command` calls a management command, writes outputs under `{results_dir}`, and declares `result_files`/`artifact_files`.
+- Add migrations with `python manage.py makemigrations <capability_app>` and tests with `python manage.py test <capability_app>`.
+- Rebuild/restart Docker after adding a new app so Django settings can discover it.
+
+Minimal processor-capability pattern:
+
+```json
+{
+  "command": [
+    "python",
+    "manage.py",
+    "run_spectral_library",
+    "{job_id}",
+    "{results_dir}",
+    "--raw-file",
+    "{raw_file_path}"
+  ],
+  "working_dir": "/app",
+  "result_files": {
+    "protein_table": "proteins.csv",
+    "peptide_table": "peptides.csv",
+    "stats_json": "stats.json",
+    "delimiter": ","
+  },
+  "artifact_files": [
+    {"artifact_type": "raw_output", "path": "tool-report.json", "format": "json"}
+  ]
+}
+```
+
+This lets a researcher drop in a normal Django app, add commands/services for their tool, and wire it through `ProcessingPipeline` without changing the stable `core` workflow.
 
 ## Core Workflow
 

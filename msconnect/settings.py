@@ -14,30 +14,57 @@ def env_bool(name: str, default: bool = False) -> bool:
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-secret-key-change-me")
 DEBUG = env_bool("DJANGO_DEBUG", True)
 
-ALLOWED_HOSTS = [
-    host.strip()
-    for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
-    if host.strip()
-]
+def env_csv(name: str, default: str = "") -> list[str]:
+    value = os.environ.get(name, default).strip()
+    if not value:
+        value = default
+    return [item.strip() for item in value.split(",") if item.strip()]
 
-CSRF_TRUSTED_ORIGINS = [
-    origin.strip()
-    for origin in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",")
-    if origin.strip()
-]
 
-INSTALLED_APPS = [
+def discover_capability_apps() -> list[str]:
+    if not env_bool("MSCONNECT_AUTO_DISCOVER_CAPABILITIES", True):
+        return []
+    capabilities_root = BASE_DIR / "capabilities"
+    if not capabilities_root.exists():
+        return []
+    apps = []
+    for child in sorted(capabilities_root.iterdir()):
+        if not child.is_dir() or child.name.startswith("_"):
+            continue
+        if (child / "apps.py").exists() and (child / "__init__.py").exists():
+            apps.append(f"capabilities.{child.name}")
+    return apps
+
+
+ALLOWED_HOSTS = env_csv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1")
+
+CSRF_TRUSTED_ORIGINS = env_csv(
+    "DJANGO_CSRF_TRUSTED_ORIGINS",
+    "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8080,http://127.0.0.1:8080",
+)
+
+DJANGO_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+]
+
+THIRD_PARTY_APPS = [
     "rest_framework",
+]
+
+LOCAL_APPS = [
     "core",
     "ingest",
     "ui",
 ]
+
+MSCONNECT_CAPABILITY_APPS = [*discover_capability_apps(), *env_csv("MSCONNECT_EXTRA_APPS")]
+
+INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS + MSCONNECT_CAPABILITY_APPS
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -112,6 +139,10 @@ MSCONNECT_AGENT_HEARTBEAT_SECONDS = int(os.environ.get("MSCONNECT_AGENT_HEARTBEA
 WATCHER_INTERVAL_SECONDS = int(os.environ.get("WATCHER_INTERVAL_SECONDS", "60"))
 PROCESSOR_POLL_INTERVAL_SECONDS = int(os.environ.get("PROCESSOR_POLL_INTERVAL_SECONDS", "15"))
 MSCONNECT_IMAGE = os.environ.get("MSCONNECT_IMAGE", "msconnect:local")
+MSCONNECT_AUTO_QUEUE_SPECTRA_CONVERSION = env_bool("MSCONNECT_AUTO_QUEUE_SPECTRA_CONVERSION", False)
+MSCONNECT_MSCONVERT_EXECUTABLE = os.environ.get("MSCONNECT_MSCONVERT_EXECUTABLE", "msconvert")
+MSCONNECT_MSCONVERT_OUTPUT_FORMAT = os.environ.get("MSCONNECT_MSCONVERT_OUTPUT_FORMAT", "mzML")
+MSCONNECT_PWIZ_VERSION = os.environ.get("MSCONNECT_PWIZ_VERSION", "site-configured")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
