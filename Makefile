@@ -1,4 +1,4 @@
-.PHONY: build up down logs migrate test lint shell createsuperuser watcher processor deploy-tag
+.PHONY: build up down logs migrate test lint frontend-lint ci-local install-hooks shell createsuperuser watcher processor deploy-tag
 
 build:
 	docker compose build
@@ -20,6 +20,21 @@ test:
 
 lint:
 	docker compose run --rm web ruff check .
+
+frontend-lint:
+	cd frontend && npm run lint
+
+ci-local:
+	ruff check .
+	cd frontend && npm run lint
+	docker compose build web
+	docker compose run --rm --no-deps web python manage.py check
+	docker compose run --rm --no-deps web python manage.py makemigrations --check --dry-run
+	docker compose run --rm --no-deps web python manage.py test
+
+install-hooks:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-push
 
 shell:
 	docker compose run --rm web python manage.py shell

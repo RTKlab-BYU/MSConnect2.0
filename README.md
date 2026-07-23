@@ -59,6 +59,22 @@ docker compose run --rm web python manage.py createsuperuser
 http://localhost/admin/
 ```
 
+## Local Push Checks
+
+Enable the repo-managed Git hooks once per clone:
+
+```sh
+make install-hooks
+```
+
+After this, `git push` runs the same local gates we expect before GitHub CI:
+
+```sh
+make ci-local
+```
+
+The gate runs Python lint, frontend lint, rebuilds the Django image from the current tree, runs `manage.py check`, verifies migrations with `makemigrations --check --dry-run`, and runs the Django test suite.
+
 ## Agent Services
 
 The deployment now runs three repo-embedded application services from the same image:
