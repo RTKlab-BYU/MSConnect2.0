@@ -1,4 +1,7 @@
+import json
 import math
+import re
+import sys
 import uuid
 from pathlib import Path, PurePath
 from statistics import median
@@ -22,6 +25,7 @@ from ingest.services import find_run_for_path, parse_filename_metadata, record_i
 from .agent_auth import AgentTokenAuthentication
 from .models import (
     AcquisitionWorklist,
+    DerivativeStatus,
     DirectUploadSession,
     DirectUploadStatus,
     Experiment,
@@ -34,7 +38,9 @@ from .models import (
     Peptide,
     PeptideIdentification,
     PeptideQuant,
+    ProcessingArtifactType,
     ProcessingJob,
+    ProcessingJobArtifact,
     ProcessingNode,
     ProcessingNodeStatus,
     ProcessingPipeline,
@@ -45,14 +51,18 @@ from .models import (
     ProteinIdentification,
     ProteinQuant,
     RawFile,
+    RawFileDerivative,
+    RawFileDerivativeType,
     RawFileStatus,
     Run,
     RunFileRole,
+    RunStatus,
     Sample,
     University,
     UserProfile,
     UserRole,
     WorklistEntry,
+    WorklistStatus,
 )
 from .permissions import AgentRolePermission, RoleScopedWritePermission, active_lab_ids, is_admin, user_role
 
@@ -112,6 +122,66 @@ class ProjectSerializer(BaseSerializer):
         model = Project
 
 
+class ProjectPreAcquisitionSetupSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=255)
+    code = serializers.CharField(max_length=80)
+    lab = serializers.PrimaryKeyRelatedField(queryset=Lab.objects.all(), required=False)
+    sample_count = serializers.IntegerField(min_value=1, max_value=500, default=12)
+    healthy_count = serializers.IntegerField(min_value=0, required=False)
+    diseased_count = serializers.IntegerField(min_value=0, required=False)
+    sample_rows = serializers.ListField(child=serializers.DictField(), required=False)
+    plate_type = serializers.ChoiceField(choices=("96", "384"), default="96")
+    hye_interval = serializers.IntegerField(min_value=0, max_value=100, default=10)
+    experiment_name = serializers.CharField(max_length=255, default="Discovery DIA")
+    worklist_name = serializers.CharField(max_length=255, default="Plate 1 DIA acquisition order")
+    instrument_configuration = serializers.PrimaryKeyRelatedField(
+        queryset=InstrumentConfiguration.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+    fasta_path = serializers.CharField(max_length=1024, allow_blank=True, required=False)
+    speclib_path = serializers.CharField(max_length=1024, allow_blank=True, required=False)
+    organisms = serializers.ListField(child=serializers.CharField(max_length=128), required=False)
+    processing_preset = serializers.CharField(max_length=128, default="Standard DIA-NN plasma")
+    fasta_upload_name = serializers.CharField(max_length=255, allow_blank=True, required=False)
+    speclib_upload_name = serializers.CharField(max_length=255, allow_blank=True, required=False)
+    diann_version = serializers.CharField(max_length=128, default="1.9")
+    diann_settings = serializers.JSONField(required=False)
+
+    def validate(self, attrs):
+        sample_rows = _normalize_sample_rows(attrs.get("sample_rows") or [])
+        if sample_rows:
+            attrs["sample_rows"] = sample_rows
+            attrs["sample_count"] = len(sample_rows)
+            condition_counts = _condition_counts(sample_rows)
+            attrs["healthy_count"] = condition_counts.get("healthy", 0)
+            attrs["diseased_count"] = condition_counts.get("diseased", 0)
+            attrs["organisms"] = _normalize_organisms(attrs.get("organisms"))
+            attrs["diann_settings"] = _ensure_dict(attrs.get("diann_settings"), field_name="diann_settings")
+            return attrs
+
+        sample_count = attrs.get("sample_count") or 0
+        healthy_count = attrs.get("healthy_count")
+        diseased_count = attrs.get("diseased_count")
+        if healthy_count is None and diseased_count is None:
+            healthy_count = sample_count // 2
+            diseased_count = sample_count - healthy_count
+        elif healthy_count is None:
+            healthy_count = sample_count - diseased_count
+        elif diseased_count is None:
+            diseased_count = sample_count - healthy_count
+
+        if healthy_count < 0 or diseased_count < 0 or healthy_count + diseased_count != sample_count:
+            raise ValidationError({"sample_count": "healthy_count + diseased_count must equal sample_count."})
+
+        attrs["healthy_count"] = healthy_count
+        attrs["diseased_count"] = diseased_count
+        attrs["sample_rows"] = []
+        attrs["organisms"] = _normalize_organisms(attrs.get("organisms"))
+        attrs["diann_settings"] = _ensure_dict(attrs.get("diann_settings"), field_name="diann_settings")
+        return attrs
+
+
 class ProjectIntakeQueueSerializer(BaseSerializer):
     lab_name = serializers.CharField(source="lab.name", read_only=True)
     submitted_by_username = serializers.CharField(source="submitted_by.username", read_only=True)
@@ -159,6 +229,16 @@ class RunSerializer(BaseSerializer):
 class RawFileSerializer(BaseSerializer):
     class Meta(BaseSerializer.Meta):
         model = RawFile
+
+
+class RawFileDerivativeSerializer(BaseSerializer):
+    raw_file_filename = serializers.CharField(source="raw_file.filename", read_only=True)
+    project_id = serializers.IntegerField(source="raw_file.run.sample.experiment.project_id", read_only=True)
+    project_code = serializers.CharField(source="raw_file.run.sample.experiment.project.code", read_only=True)
+
+    class Meta(BaseSerializer.Meta):
+        model = RawFileDerivative
+        fields = "__all__"
 
 
 class DirectUploadSessionSerializer(BaseSerializer):
@@ -240,6 +320,18 @@ class ProcessingJobSerializer(BaseSerializer):
         fields = "__all__"
 
 
+class ProcessingJobArtifactSerializer(BaseSerializer):
+    job_status = serializers.CharField(source="job.status", read_only=True)
+    raw_file_filename = serializers.CharField(source="job.raw_file.filename", read_only=True)
+    run_name = serializers.CharField(source="job.run.run_name", read_only=True)
+    project_id = serializers.IntegerField(source="job.run.sample.experiment.project_id", read_only=True)
+    project_code = serializers.CharField(source="job.run.sample.experiment.project.code", read_only=True)
+
+    class Meta(BaseSerializer.Meta):
+        model = ProcessingJobArtifact
+        fields = "__all__"
+
+
 class QcOverviewSerializer(serializers.Serializer):
     program = serializers.CharField()
     configured = serializers.BooleanField()
@@ -294,12 +386,136 @@ def _boolish(value) -> bool:
     return str(value).lower() in {"1", "true", "yes", "on"}
 
 
+def _filename_token(value: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9]+", "_", value.strip()).strip("_")
+    return token.upper() or "MSCONNECT"
+
+
 def _ensure_dict(value, *, field_name: str) -> dict:
     if value in (None, ""):
         return {}
     if not isinstance(value, dict):
         raise ValidationError({field_name: "Expected an object."})
     return value
+
+
+REFERENCE_PRESETS = {
+    "human": {
+        "label": "Human",
+        "fasta_path": "/data/reference/managed/2026Q3/human.fasta",
+        "speclib_path": "/data/reference/managed/2026Q3/human.speclib",
+    },
+    "yeast": {
+        "label": "Yeast",
+        "fasta_path": "/data/reference/managed/2026Q3/yeast.fasta",
+        "speclib_path": "/data/reference/managed/2026Q3/yeast.speclib",
+    },
+    "ecoli": {
+        "label": "E. coli",
+        "fasta_path": "/data/reference/managed/2026Q3/ecoli.fasta",
+        "speclib_path": "/data/reference/managed/2026Q3/ecoli.speclib",
+    },
+}
+
+
+def _normalize_organisms(value) -> list[str]:
+    organisms = value or ["human", "yeast", "ecoli"]
+    normalized = []
+    for organism in organisms:
+        token = str(organism).strip().lower().replace(" ", "_")
+        if token in {"e_coli", "escherichia_coli"}:
+            token = "ecoli"
+        if token and token not in normalized:
+            normalized.append(token)
+    invalid = [organism for organism in normalized if organism not in REFERENCE_PRESETS]
+    if invalid:
+        raise ValidationError({"organisms": f"Unsupported organism preset(s): {', '.join(invalid)}."})
+    return normalized or ["human"]
+
+
+def _resolve_reference_assets(data: dict) -> dict:
+    organisms = _normalize_organisms(data.get("organisms"))
+    preset_version = "2026Q3"
+    fasta_upload = (data.get("fasta_upload_name") or "").strip()
+    speclib_upload = (data.get("speclib_upload_name") or "").strip()
+
+    fasta_path = data.get("fasta_path", "")
+    speclib_path = data.get("speclib_path", "")
+    if not fasta_path:
+        fasta_path = (
+            f"/data/reference/uploads/{_filename_token(fasta_upload)}.fasta"
+            if fasta_upload
+            else f"/data/reference/managed/{preset_version}/{'_'.join(organisms)}.fasta"
+        )
+    if not speclib_path:
+        speclib_path = (
+            f"/data/reference/uploads/{_filename_token(speclib_upload)}.speclib"
+            if speclib_upload
+            else f"/data/reference/managed/{preset_version}/{'_'.join(organisms)}.speclib"
+        )
+
+    return {
+        "organisms": organisms,
+        "preset_version": preset_version,
+        "refresh_policy": "quarterly",
+        "fasta_path": fasta_path,
+        "speclib_path": speclib_path,
+        "uploads": {
+            "fasta": fasta_upload,
+            "speclib": speclib_upload,
+        },
+        "components": [REFERENCE_PRESETS[organism] for organism in organisms],
+    }
+
+
+def _normalize_sample_rows(rows: list[dict]) -> list[dict]:
+    normalized_rows = []
+    for index, row in enumerate(rows, start=1):
+        lowered = {str(key).strip().lower(): value for key, value in row.items()}
+        sample_id = (
+            lowered.get("sample_id")
+            or lowered.get("sample id")
+            or lowered.get("sample")
+            or lowered.get("id")
+            or lowered.get("name")
+        )
+        condition = lowered.get("condition") or lowered.get("group") or lowered.get("status") or "sample"
+        if not sample_id:
+            raise ValidationError({"sample_rows": f"Row {index} is missing sample_id."})
+
+        canonical = {
+            "sample_id": str(sample_id).strip(),
+            "condition": str(condition).strip().lower() or "sample",
+            "well": str(lowered.get("well") or "").strip().upper(),
+            "plate_id": str(lowered.get("plate") or lowered.get("plate_id") or "Plate 1").strip(),
+            "metadata": {str(key): value for key, value in row.items()},
+        }
+        if not canonical["sample_id"]:
+            raise ValidationError({"sample_rows": f"Row {index} has an empty sample_id."})
+        normalized_rows.append(canonical)
+    return normalized_rows
+
+
+def _condition_counts(rows: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        condition = row["condition"]
+        counts[condition] = counts.get(condition, 0) + 1
+    return counts
+
+
+def _well_for_position(position: int, plate_type: str) -> str:
+    rows = "ABCDEFGHIJKLMNOP" if plate_type == "384" else "ABCDEFGH"
+    columns = 24 if plate_type == "384" else 12
+    zero_based = position - 1
+    return f"{rows[(zero_based // columns) % len(rows)]}{(zero_based % columns) + 1:02d}"
+
+
+def _well_coordinates(well: str) -> dict:
+    match = re.fullmatch(r"([A-Z]+)(\d+)", well.strip().upper())
+    if not match:
+        return {"well": well, "row": "", "column": None}
+    return {"well": well, "row": match.group(1), "column": int(match.group(2))}
 
 
 def _resolve_results_path(path_value: str | None) -> Path | None:
@@ -315,6 +531,302 @@ def _resolve_results_path(path_value: str | None) -> Path | None:
     if not candidate.is_file():
         raise ValidationError({"path": f"Artifact path must point to a file: {candidate}"})
     return candidate
+
+
+def _managed_storage_roots() -> tuple[Path, ...]:
+    return (
+        Path(settings.RESULTS_ROOT).resolve(),
+        Path(settings.RAW_FILE_STORAGE_ROOT).resolve(),
+        Path(settings.MEDIA_ROOT).resolve(),
+    )
+
+
+def _resolve_managed_read_path(path_value: str) -> Path:
+    candidate = Path(path_value).resolve()
+    if not any(candidate.is_relative_to(root) for root in _managed_storage_roots()):
+        raise ValidationError({"path": "Derivative path must remain under managed MSConnect storage."})
+    if not candidate.exists():
+        raise ValidationError({"path": f"Derivative path does not exist: {candidate}"})
+    if not candidate.is_file():
+        raise ValidationError({"path": f"Derivative path must point to a file: {candidate}"})
+    return candidate
+
+
+def _load_spectrum_index(raw_file: RawFile) -> tuple[RawFileDerivative | None, dict]:
+    derivative = (
+        raw_file.derivatives.filter(
+            derivative_type__in=(RawFileDerivativeType.SPECTRUM_INDEX, RawFileDerivativeType.PREVIEW_JSON),
+            status="ready",
+        )
+        .order_by("derivative_type", "-updated_at")
+        .first()
+    )
+    if not derivative:
+        return None, {"spectra": [], "chromatograms": {"tic": [], "bpc": []}, "metadata": {}}
+
+    index_path = _resolve_managed_read_path(derivative.path)
+    try:
+        with index_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ValidationError({"spectrum_index": f"Invalid spectrum index JSON: {exc}"}) from exc
+    if not isinstance(payload, dict):
+        raise ValidationError({"spectrum_index": "Spectrum index must be a JSON object."})
+    payload.setdefault("spectra", [])
+    payload.setdefault("chromatograms", {"tic": [], "bpc": []})
+    payload.setdefault("metadata", {})
+    return derivative, payload
+
+
+def _spectrum_index_counts(index_payload: dict) -> dict[str, int]:
+    spectra = index_payload.get("spectra") or []
+    if not isinstance(spectra, list):
+        spectra = []
+    metadata = index_payload.get("metadata") or {}
+    return {
+        "indexed_spectra_count": _numeric_stat(metadata, "total_spectra", "indexed_spectra_count") or len(spectra),
+        "indexed_ms1_spectra_count": _numeric_stat(metadata, "ms1_spectra", "indexed_ms1_spectra_count")
+        or sum(1 for item in spectra if item.get("ms_level") == 1),
+        "indexed_ms2_spectra_count": _numeric_stat(metadata, "ms2_spectra", "indexed_ms2_spectra_count")
+        or sum(1 for item in spectra if item.get("ms_level") == 2),
+    }
+
+
+def _safe_spectrum_counts_for_raw_files(raw_files) -> dict[str, int]:
+    totals = {
+        "indexed_spectra_count": 0,
+        "indexed_ms1_spectra_count": 0,
+        "indexed_ms2_spectra_count": 0,
+    }
+    for raw_file in raw_files:
+        try:
+            _derivative, index_payload = _load_spectrum_index(raw_file)
+        except ValidationError:
+            continue
+        counts = _spectrum_index_counts(index_payload)
+        for key, value in counts.items():
+            totals[key] += value
+    return totals
+
+
+def _numeric_stat(stats: dict, *keys: str) -> int:
+    for key in keys:
+        value = stats.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return int(value)
+    return 0
+
+
+def _aggregate_job_stats(jobs) -> dict[str, int]:
+    totals = {
+        "reported_protein_count": 0,
+        "reported_peptide_count": 0,
+        "reported_precursor_count": 0,
+        "ms1_feature_count": 0,
+        "ms2_spectra_count": 0,
+    }
+    for job in jobs:
+        stats = job.stats or {}
+        totals["reported_protein_count"] += _numeric_stat(stats, "protein_groups", "protein_count")
+        totals["reported_peptide_count"] += _numeric_stat(stats, "peptides", "peptide_count")
+        totals["reported_precursor_count"] += _numeric_stat(stats, "precursors", "precursor_count")
+        totals["ms1_feature_count"] += _numeric_stat(stats, "ms1_features", "ms1_feature_count")
+        totals["ms2_spectra_count"] += _numeric_stat(stats, "ms2_spectra", "ms2_spectra_count")
+    return totals
+
+
+def _spectrum_summary(item: dict) -> dict:
+    return {
+        "id": str(item.get("id") or item.get("scan_number") or item.get("index") or ""),
+        "index": item.get("index"),
+        "scan_number": item.get("scan_number"),
+        "ms_level": item.get("ms_level"),
+        "retention_time_seconds": item.get("retention_time_seconds"),
+        "base_peak_mz": item.get("base_peak_mz"),
+        "base_peak_intensity": item.get("base_peak_intensity"),
+        "tic": item.get("tic"),
+        "precursor_mz": item.get("precursor_mz"),
+    }
+
+
+def _find_spectrum(index_payload: dict, spectrum_id: str) -> dict | None:
+    for item in index_payload.get("spectra", []):
+        if str(item.get("id")) == spectrum_id:
+            return item
+        if str(item.get("scan_number")) == spectrum_id:
+            return item
+        if str(item.get("index")) == spectrum_id:
+            return item
+    return None
+
+
+def _record_job_derivatives(job: ProcessingJob, derivatives_payload) -> list[RawFileDerivative]:
+    if not derivatives_payload:
+        return []
+    if not isinstance(derivatives_payload, list):
+        raise ValidationError({"derivatives": "derivatives must be a list."})
+
+    valid_types = {value for value, _label in RawFileDerivativeType.choices}
+    valid_statuses = {value for value, _label in DerivativeStatus.choices}
+    records = []
+    for index, item in enumerate(derivatives_payload, start=1):
+        if not isinstance(item, dict):
+            raise ValidationError({"derivatives": f"Derivative {index} must be an object."})
+        derivative_type = str(item.get("derivative_type") or item.get("type") or "").strip()
+        if derivative_type not in valid_types:
+            raise ValidationError({"derivatives": f"Derivative {index} has an invalid type."})
+        path = str(item.get("path") or "").strip()
+        if not path:
+            raise ValidationError({"derivatives": f"Derivative {index} is missing path."})
+        managed_path = _resolve_managed_read_path(path)
+        size_bytes = item.get("size_bytes")
+        if size_bytes in ("", None):
+            size_bytes = managed_path.stat().st_size
+
+        derivative_status = str(item.get("status") or DerivativeStatus.READY)
+        if derivative_status not in valid_statuses:
+            raise ValidationError({"derivatives": f"Derivative {index} has an invalid status."})
+
+        record, _created = RawFileDerivative.objects.update_or_create(
+            raw_file=job.raw_file,
+            derivative_type=derivative_type,
+            path=str(managed_path),
+            defaults={
+                "status": derivative_status,
+                "format": str(item.get("format") or derivative_type),
+                "size_bytes": size_bytes,
+                "checksum_sha256": str(item.get("checksum_sha256") or ""),
+                "created_by_job": job,
+                "error_message": str(item.get("error_message") or ""),
+                "metadata": _ensure_dict(item.get("metadata"), field_name="derivative.metadata"),
+            },
+        )
+        records.append(record)
+    return records
+
+
+def _record_job_artifacts(job: ProcessingJob, artifacts_payload) -> list[ProcessingJobArtifact]:
+    if not artifacts_payload:
+        return []
+    if not isinstance(artifacts_payload, list):
+        raise ValidationError({"artifacts": "artifacts must be a list."})
+
+    valid_types = {value for value, _label in ProcessingArtifactType.choices}
+    records = []
+    for index, item in enumerate(artifacts_payload, start=1):
+        if not isinstance(item, dict):
+            raise ValidationError({"artifacts": f"Artifact {index} must be an object."})
+        artifact_type = str(item.get("artifact_type") or item.get("type") or "").strip() or ProcessingArtifactType.OTHER
+        if artifact_type not in valid_types:
+            raise ValidationError({"artifacts": f"Artifact {index} has an invalid type."})
+        path = str(item.get("path") or "").strip()
+        if not path:
+            raise ValidationError({"artifacts": f"Artifact {index} is missing path."})
+        managed_path = _resolve_managed_read_path(path)
+        size_bytes = item.get("size_bytes")
+        if size_bytes in ("", None):
+            size_bytes = managed_path.stat().st_size
+
+        record, _created = ProcessingJobArtifact.objects.update_or_create(
+            job=job,
+            artifact_type=artifact_type,
+            path=str(managed_path),
+            defaults={
+                "format": str(item.get("format") or managed_path.suffix.lstrip(".") or artifact_type),
+                "size_bytes": size_bytes,
+                "checksum_sha256": str(item.get("checksum_sha256") or ""),
+                "retained": not _boolish(item.get("discarded")),
+                "metadata": _ensure_dict(item.get("metadata"), field_name="artifact.metadata"),
+            },
+        )
+        records.append(record)
+    return records
+
+
+def _auto_artifact_payloads(*, protein_table: Path | None, peptide_table: Path | None, log_path: Path | None) -> list[dict]:
+    payloads = []
+    if protein_table:
+        payloads.append({"artifact_type": ProcessingArtifactType.PROTEIN_TABLE, "path": str(protein_table), "format": "table"})
+    if peptide_table:
+        payloads.append({"artifact_type": ProcessingArtifactType.PEPTIDE_TABLE, "path": str(peptide_table), "format": "table"})
+    if log_path:
+        payloads.append({"artifact_type": ProcessingArtifactType.LOG, "path": str(log_path), "format": "log"})
+    return payloads
+
+
+def _queue_spectra_conversion_job_for_raw_file(raw_file: RawFile) -> ProcessingJob | None:
+    if not settings.MSCONNECT_AUTO_QUEUE_SPECTRA_CONVERSION or not raw_file.run_id:
+        return None
+
+    pipeline, _created = ProcessingPipeline.objects.update_or_create(
+        name="ProteoWizard msconvert",
+        version=settings.MSCONNECT_PWIZ_VERSION,
+        defaults={
+            "container_image": "proteowizard/pwiz-skyline-i-agree-to-the-vendor-licenses:site-managed",
+            "parameters": {
+                "adapter": "msconvert",
+                "executable": settings.MSCONNECT_MSCONVERT_EXECUTABLE,
+                "output_format": settings.MSCONNECT_MSCONVERT_OUTPUT_FORMAT,
+                "filters": ["peakPicking true 1-"],
+            },
+        },
+    )
+    job, _created = ProcessingJob.objects.get_or_create(
+        run_id=raw_file.run_id,
+        raw_file=raw_file,
+        pipeline=pipeline,
+        defaults={
+            "status": ProcessingStatus.QUEUED,
+            "metadata": {
+                "queued_by": "watcher_agent",
+                "purpose": "spectra_conversion",
+            },
+        },
+    )
+    return job
+
+
+def _queue_processing_job_for_raw_file(raw_file: RawFile) -> ProcessingJob | None:
+    if not raw_file.run_id:
+        return None
+
+    Run.objects.filter(pk=raw_file.run_id).update(status=RunStatus.IMPORTED, updated_at=timezone.now())
+    if raw_file.file_role not in {RunFileRole.SAMPLE, RunFileRole.QC, RunFileRole.LIBRARY}:
+        return None
+
+    entry = (
+        WorklistEntry.objects.select_related("worklist")
+        .filter(run_id=raw_file.run_id)
+        .order_by("id")
+        .first()
+    )
+    if not entry:
+        return None
+
+    pipeline_id = (entry.worklist.metadata or {}).get("processing_pipeline_id")
+    if not pipeline_id:
+        return None
+    try:
+        pipeline = ProcessingPipeline.objects.get(pk=pipeline_id)
+    except ProcessingPipeline.DoesNotExist:
+        return None
+
+    job, _created = ProcessingJob.objects.get_or_create(
+        run_id=raw_file.run_id,
+        raw_file=raw_file,
+        pipeline=pipeline,
+        defaults={
+            "status": ProcessingStatus.QUEUED,
+            "metadata": {
+                "queued_by": "watcher_agent",
+                "worklist_entry_id": entry.id,
+                "worklist_position": entry.position,
+            },
+        },
+    )
+    return job
 
 
 def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
@@ -440,26 +952,35 @@ class AgentRawFileImportView(AgentApiView):
                 raise ValidationError({"run_id": "Run does not exist."}) from exc
         elif _boolish(request.data.get("match_run_by_name")):
             run = find_run_for_path(Path(filename))
+        if run:
+            file_role = run.file_role
 
         metadata = _ensure_dict(request.data.get("metadata"), field_name="metadata")
         metadata.setdefault("importer", "watcher_agent")
         metadata.setdefault("filename_metadata", parse_filename_metadata(Path(filename)))
 
-        raw_file = RawFile.objects.create(
-            run=run,
-            source_path=source_path,
-            storage_path=str(storage_candidate),
-            filename=filename,
-            checksum_sha256=checksum,
-            size_bytes=size_bytes,
-            imported_at=timezone.now(),
-            status=RawFileStatus.IMPORTED,
-            file_role=file_role,
-            match_confidence=1.0 if run else 0.0,
-            metadata=metadata,
-        )
+        with transaction.atomic():
+            raw_file = RawFile.objects.create(
+                run=run,
+                source_path=source_path,
+                storage_path=str(storage_candidate),
+                filename=filename,
+                checksum_sha256=checksum,
+                size_bytes=size_bytes,
+                imported_at=timezone.now(),
+                status=RawFileStatus.IMPORTED,
+                file_role=file_role,
+                match_confidence=1.0 if run else 0.0,
+                metadata=metadata,
+            )
+            _queue_spectra_conversion_job_for_raw_file(raw_file)
+            processing_job = _queue_processing_job_for_raw_file(raw_file)
         return Response(
-            {"created": True, "raw_file": RawFileSerializer(raw_file).data},
+            {
+                "created": True,
+                "raw_file": RawFileSerializer(raw_file).data,
+                "processing_job": ProcessingJobSerializer(processing_job).data if processing_job else None,
+            },
             status=status.HTTP_201_CREATED,
         )
 
@@ -626,13 +1147,63 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
                 "peptide_table_path": str(peptide_table) if peptide_table else "",
                 "delimiter": delimiter or "",
             }
+        stats_payload = _ensure_dict(request.data.get("stats"), field_name="stats")
+        stats_payload = {**(job.stats or {}), **stats_payload}
+        if result_summary:
+            stats_payload.setdefault("protein_quant_count", result_summary.get("protein_quant_rows", 0))
+            stats_payload.setdefault("protein_identification_count", result_summary.get("protein_ident_rows", 0))
+            stats_payload.setdefault("peptide_quant_count", result_summary.get("peptide_quant_rows", 0))
+            stats_payload.setdefault("peptide_identification_count", result_summary.get("peptide_ident_rows", 0))
+
+        derivative_records = _record_job_derivatives(job, request.data.get("derivatives"))
+        if derivative_records:
+            metadata["derivatives"] = [
+                {
+                    "id": derivative.id,
+                    "derivative_type": derivative.derivative_type,
+                    "path": derivative.path,
+                    "status": derivative.status,
+                }
+                for derivative in derivative_records
+            ]
+            for derivative in derivative_records:
+                if derivative.derivative_type not in {
+                    RawFileDerivativeType.SPECTRUM_INDEX,
+                    RawFileDerivativeType.PREVIEW_JSON,
+                }:
+                    continue
+                try:
+                    with _resolve_managed_read_path(derivative.path).open("r", encoding="utf-8") as handle:
+                        index_payload = json.load(handle)
+                except (json.JSONDecodeError, OSError, ValidationError):
+                    continue
+                for key, value in _spectrum_index_counts(index_payload).items():
+                    stats_payload.setdefault(key, value)
+
+        explicit_artifacts = request.data.get("artifacts") or []
+        artifact_records = _record_job_artifacts(
+            job,
+            _auto_artifact_payloads(protein_table=protein_table, peptide_table=peptide_table, log_path=log_path)
+            + explicit_artifacts,
+        )
+        if artifact_records:
+            metadata["artifacts"] = [
+                {
+                    "id": artifact.id,
+                    "artifact_type": artifact.artifact_type,
+                    "path": artifact.path,
+                    "retained": artifact.retained,
+                }
+                for artifact in artifact_records
+            ]
 
         job.status = ProcessingStatus.COMPLETE
         job.finished_at = timezone.now()
         job.log_path = str(log_path) if log_path else job.log_path
         job.error_message = ""
+        job.stats = stats_payload
         job.metadata = metadata
-        job.save(update_fields=["status", "finished_at", "log_path", "error_message", "metadata", "updated_at"])
+        job.save(update_fields=["status", "finished_at", "log_path", "error_message", "stats", "metadata", "updated_at"])
 
         job.raw_file.status = RawFileStatus.PROCESSED
         job.raw_file.save(update_fields=["status", "updated_at"])
@@ -1132,9 +1703,14 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         experiments = Experiment.objects.filter(project=project)
         samples = Sample.objects.filter(experiment__project=project)
         runs = Run.objects.filter(sample__experiment__project=project)
-        raw_files = RawFile.objects.filter(run__sample__experiment__project=project)
+        raw_files = RawFile.objects.filter(run__sample__experiment__project=project).prefetch_related("derivatives")
         jobs = ProcessingJob.objects.filter(run__sample__experiment__project=project)
         worklists = AcquisitionWorklist.objects.filter(experiment__project=project)
+        raw_file_count = raw_files.count()
+        jobs_for_stats = list(jobs)
+        raw_files_for_stats = list(raw_files)
+        job_stats = _aggregate_job_stats(jobs_for_stats)
+        spectrum_counts = _safe_spectrum_counts_for_raw_files(raw_files_for_stats)
 
         expected_raw_file_count = WorklistEntry.objects.filter(worklist__experiment__project=project).count()
 
@@ -1146,9 +1722,17 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 "sample_count": samples.count(),
                 "run_count": runs.count(),
                 "acquisition_worklist_count": worklists.count(),
-                "raw_file_count": raw_files.count(),
+                "raw_file_count": raw_file_count,
                 "processing_job_count": jobs.count(),
-                "missing_raw_file_count": max(expected_raw_file_count - raw_files.count(), 0),
+                "missing_raw_file_count": max(expected_raw_file_count - raw_file_count, 0),
+                "protein_quant_count": ProteinQuant.objects.filter(job__in=jobs_for_stats).count(),
+                "protein_identification_count": ProteinIdentification.objects.filter(job__in=jobs_for_stats).count(),
+                "peptide_quant_count": PeptideQuant.objects.filter(job__in=jobs_for_stats).count(),
+                "peptide_identification_count": PeptideIdentification.objects.filter(job__in=jobs_for_stats).count(),
+                "artifact_count": ProcessingJobArtifact.objects.filter(job__in=jobs_for_stats).count(),
+                "derivative_count": RawFileDerivative.objects.filter(raw_file__in=raw_files_for_stats).count(),
+                **job_stats,
+                **spectrum_counts,
                 "raw_files_by_status": list(raw_files.values("status").annotate(count=Count("id")).order_by("status")),
                 "raw_files_by_role": list(
                     raw_files.values("file_role").annotate(count=Count("id")).order_by("file_role")
@@ -1157,6 +1741,260 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 "worklists_by_status": list(worklists.values("status").annotate(count=Count("id")).order_by("status")),
             }
         )
+
+    @action(detail=False, methods=["post"], url_path="pre-acquisition-setup")
+    def pre_acquisition_setup(self, request):
+        serializer = ProjectPreAcquisitionSetupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        lab = data.get("lab") or self._default_lab_for_user(request.user)
+        if lab is None:
+            raise ValidationError({"lab": "No lab was provided and no active lab membership was found."})
+        if not is_admin(request.user) and lab.id not in set(active_lab_ids(request.user)):
+            raise PermissionDenied("This project targets a lab outside your membership scope.")
+
+        configuration = data.get("instrument_configuration")
+        if configuration and configuration.facility_id != lab.facility_id:
+            raise ValidationError(
+                {"instrument_configuration": "Configuration must belong to the selected lab facility."}
+            )
+
+        with transaction.atomic():
+            project = Project.objects.create(
+                lab=lab,
+                title=data["title"],
+                code=data["code"],
+                pi=getattr(lab, "pi", None) or request.user,
+                description=(
+                    "Pre-acquisition project generated from MSConnect setup. "
+                    "Expected filenames are available before LC-MS acquisition."
+                ),
+            )
+            experiment = Experiment.objects.create(
+                project=project,
+                name=data["experiment_name"],
+                created_by=request.user,
+                metadata={
+                    "setup_source": "pre_acquisition_setup",
+                    "healthy_count": data["healthy_count"],
+                    "diseased_count": data["diseased_count"],
+                    "sample_metadata_mode": "sample_rows" if data["sample_rows"] else "counts",
+                    "plate_type": data["plate_type"],
+                },
+            )
+            pipeline = self._create_or_update_diann_pipeline(data)
+            worklist = AcquisitionWorklist.objects.create(
+                experiment=experiment,
+                name=data["worklist_name"],
+                configuration=configuration,
+                status=WorklistStatus.READY,
+                generated_by=request.user,
+                notes="Generated before acquisition so watcher agents can match expected raw filenames.",
+                metadata={
+                    "setup_source": "pre_acquisition_setup",
+                    "processing_pipeline_id": pipeline.id,
+                    "processing_plan": pipeline.parameters,
+                    "hye_interval": data["hye_interval"],
+                    "plate_type": data["plate_type"],
+                    "watcher_matching": "expected_filename",
+                    "export_targets": ["thermo_ms_sequence", "lc_injection_sequence"],
+                    "reference_assets": pipeline.parameters.get("reference_assets", {}),
+                },
+            )
+            samples, runs, entries = self._build_pre_acquisition_entries(
+                request=request,
+                project=project,
+                experiment=experiment,
+                worklist=worklist,
+                configuration=configuration,
+                data=data,
+            )
+
+        return Response(
+            {
+                "project": ProjectSerializer(project).data,
+                "experiment": ExperimentSerializer(experiment).data,
+                "worklist": AcquisitionWorklistSerializer(worklist).data,
+                "pipeline": ProcessingPipelineSerializer(pipeline).data,
+                "samples_created": len(samples),
+                "runs_created": len(runs),
+                "worklist_entries_created": len(entries),
+                "expected_filenames": [entry.expected_filename for entry in entries],
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    def _default_lab_for_user(self, user):
+        membership = LabMembership.objects.select_related("lab").filter(user=user, active=True).order_by("id").first()
+        if membership:
+            return membership.lab
+        if is_admin(user):
+            return Lab.objects.order_by("id").first()
+        return None
+
+    def _create_or_update_diann_pipeline(self, data):
+        reference_assets = _resolve_reference_assets(data)
+        parameters = {
+            "engine": "diann",
+            "command": [
+                sys.executable,
+                "manage.py",
+                "seed_demo_showcase",
+                "--write-job-results",
+                "{job_id}",
+                "{results_dir}",
+            ],
+            "working_dir": str(settings.BASE_DIR),
+            "result_files": {
+                "protein_table": "proteins.csv",
+                "peptide_table": "peptides.csv",
+                "delimiter": ",",
+            },
+            "fasta_path": reference_assets["fasta_path"],
+            "speclib_path": reference_assets["speclib_path"],
+            "reference_assets": reference_assets,
+            "processing_preset": data.get("processing_preset", "Standard DIA-NN plasma"),
+            "settings": data.get("diann_settings") or {},
+            "project_level_rollup": {
+                "enabled": True,
+                "mode": "combine_runs_after_run_level_processing",
+                "future_executor": "supercomputer",
+            },
+        }
+        pipeline, _created = ProcessingPipeline.objects.update_or_create(
+            name="DIA-NN",
+            version=data["diann_version"],
+            defaults={
+                "container_image": "ghcr.io/rtklab-byu/msconnect-diann:latest",
+                "parameters": parameters,
+            },
+        )
+        return pipeline
+
+    def _build_pre_acquisition_entries(self, *, request, project, experiment, worklist, configuration, data):
+        if data["sample_rows"]:
+            sample_defs = data["sample_rows"]
+        else:
+            sample_defs = [
+                {
+                    "sample_id": f"{condition.upper()}-{index:03d}",
+                    "condition": condition,
+                    "well": "",
+                    "plate_id": "Plate 1",
+                    "metadata": {"condition": condition},
+                }
+                for condition, count in (("healthy", data["healthy_count"]), ("diseased", data["diseased_count"]))
+                for index in range(1, count + 1)
+            ]
+            sample_defs.sort(key=lambda item: (item["sample_id"].split("-")[-1], item["condition"]))
+
+        sample_lookup = {}
+        for index, sample_def in enumerate(sample_defs, start=1):
+            condition = sample_def["condition"]
+            sample_name = sample_def["sample_id"]
+            well = sample_def["well"] or _well_for_position(index, data["plate_type"])
+            well_metadata = _well_coordinates(well)
+            sample_lookup[sample_name] = Sample.objects.create(
+                experiment=experiment,
+                name=sample_name,
+                external_id=f"{project.code}-{sample_name}",
+                species="Homo sapiens",
+                matrix="plasma",
+                digestion_protocol="trypsin",
+                enrichment_protocol="none",
+                submitted_by=request.user,
+                metadata={
+                    **sample_def["metadata"],
+                    "condition": condition,
+                    "setup_source": "pre_acquisition_setup",
+                    "plate_type": data["plate_type"],
+                    "plate_id": sample_def["plate_id"] or "Plate 1",
+                    **well_metadata,
+                },
+            )
+
+        hye_samples = {
+            "HYE-A": Sample.objects.create(
+                experiment=experiment,
+                name="HYE-A",
+                external_id=f"{project.code}-HYE-A",
+                species="Homo sapiens / S. cerevisiae / E. coli",
+                matrix="qc mixture",
+                submitted_by=request.user,
+                metadata={"qc_material": "hye", "pseudo_project_key": "hye", "mix": "A"},
+            ),
+            "HYE-B": Sample.objects.create(
+                experiment=experiment,
+                name="HYE-B",
+                external_id=f"{project.code}-HYE-B",
+                species="Homo sapiens / S. cerevisiae / E. coli",
+                matrix="qc mixture",
+                submitted_by=request.user,
+                metadata={"qc_material": "hye", "pseudo_project_key": "hye", "mix": "B"},
+            ),
+        }
+
+        ordered_names = list(sample_lookup)
+        runs = []
+        entries = []
+        position = 0
+        pair_index = 0
+
+        def add_entry(sample, role=RunFileRole.SAMPLE, hye_pair_label=""):
+            nonlocal position
+            position += 1
+            sample_well = sample.metadata.get("well") or _well_for_position(position, data["plate_type"])
+            well_metadata = _well_coordinates(str(sample_well))
+            expected_filename = f"{_filename_token(project.code)}_{position:03d}_{_filename_token(sample.name)}.raw"
+            run = Run.objects.create(
+                sample=sample,
+                configuration=configuration,
+                run_name=f"{project.code}-{position:03d}-{sample.name}",
+                status=RunStatus.PLANNED,
+                file_role=role,
+                expected_filename=expected_filename,
+                worklist_position=position,
+                hye_pair_label=hye_pair_label,
+                metadata={
+                    "setup_source": "pre_acquisition_setup",
+                    "expected_filename": expected_filename,
+                    "plate_type": data["plate_type"],
+                    **well_metadata,
+                },
+            )
+            entry = WorklistEntry.objects.create(
+                worklist=worklist,
+                run=run,
+                position=position,
+                file_role=role,
+                expected_filename=expected_filename,
+                hye_pair_label=hye_pair_label,
+                block_label=f"Block {math.ceil(position / 24)}",
+                metadata={
+                    "setup_source": "pre_acquisition_setup",
+                    "sample_name": sample.name,
+                    "sample_external_id": sample.external_id,
+                    "condition": sample.metadata.get("condition", ""),
+                    "qc_material": sample.metadata.get("qc_material", ""),
+                    "watcher_match_key": expected_filename,
+                    "plate_type": data["plate_type"],
+                    "plate_id": sample.metadata.get("plate_id", "Plate 1"),
+                    **well_metadata,
+                },
+            )
+            runs.append(run)
+            entries.append(entry)
+
+        for index, sample_name in enumerate(ordered_names, start=1):
+            add_entry(sample_lookup[sample_name])
+            if data["hye_interval"] and index % data["hye_interval"] == 0:
+                pair_index += 1
+                label = f"HYE-{pair_index:02d}"
+                add_entry(hye_samples["HYE-A"], role=RunFileRole.QC, hye_pair_label=label)
+                add_entry(hye_samples["HYE-B"], role=RunFileRole.QC, hye_pair_label=label)
+
+        return list(sample_lookup.values()) + list(hye_samples.values()), runs, entries
 
 
 class ProjectIntakeRequestViewSet(viewsets.ModelViewSet):
@@ -1373,6 +2211,58 @@ class RunViewSet(AuthenticatedModelViewSet):
             queryset = queryset.filter(file_role=file_role_filter)
         return queryset
 
+    @action(detail=True, methods=["get"])
+    def summary(self, request, pk=None):
+        run = self.get_object()
+        raw_files = list(run.raw_files.prefetch_related("derivatives").order_by("-imported_at", "filename"))
+        jobs = list(
+            run.processing_jobs.select_related("pipeline", "raw_file", "node").prefetch_related("artifacts").order_by(
+                "-created_at"
+            )
+        )
+        job_ids = [job.id for job in jobs]
+        job_stats = _aggregate_job_stats(jobs)
+        spectrum_counts = _safe_spectrum_counts_for_raw_files(raw_files)
+        artifacts = ProcessingJobArtifact.objects.filter(job_id__in=job_ids).select_related(
+            "job",
+            "job__run",
+            "job__raw_file",
+            "job__run__sample",
+            "job__run__sample__experiment",
+            "job__run__sample__experiment__project",
+        )
+        derivatives = RawFileDerivative.objects.filter(raw_file__in=raw_files).select_related(
+            "raw_file",
+            "raw_file__run",
+            "raw_file__run__sample",
+            "raw_file__run__sample__experiment",
+            "raw_file__run__sample__experiment__project",
+            "created_by_job",
+        )
+
+        return Response(
+            {
+                "run": RunSerializer(run).data,
+                "sample": SampleSerializer(run.sample).data,
+                "raw_files": RawFileSerializer(raw_files, many=True).data,
+                "processing_jobs": ProcessingJobSerializer(jobs, many=True).data,
+                "derivatives": RawFileDerivativeSerializer(derivatives, many=True).data,
+                "artifacts": ProcessingJobArtifactSerializer(artifacts, many=True).data,
+                "stats": {
+                    "raw_file_count": len(raw_files),
+                    "processing_job_count": len(jobs),
+                    "protein_quant_count": ProteinQuant.objects.filter(job_id__in=job_ids).count(),
+                    "protein_identification_count": ProteinIdentification.objects.filter(job_id__in=job_ids).count(),
+                    "peptide_quant_count": PeptideQuant.objects.filter(job_id__in=job_ids).count(),
+                    "peptide_identification_count": PeptideIdentification.objects.filter(job_id__in=job_ids).count(),
+                    "artifact_count": artifacts.count(),
+                    "derivative_count": derivatives.count(),
+                    **job_stats,
+                    **spectrum_counts,
+                },
+            }
+        )
+
 
 class RawFileViewSet(AuthenticatedModelViewSet):
     queryset = RawFile.objects.select_related("run")
@@ -1419,6 +2309,61 @@ class RawFileViewSet(AuthenticatedModelViewSet):
                 "by_status": list(queryset.values("status").annotate(count=Count("id")).order_by("status")),
                 "by_role": list(queryset.values("file_role").annotate(count=Count("id")).order_by("file_role")),
                 "unmatched": queryset.filter(run__isnull=True).count(),
+            }
+        )
+
+    @action(detail=True, methods=["get"])
+    def derivatives(self, request, pk=None):
+        raw_file = self.get_object()
+        queryset = raw_file.derivatives.order_by("derivative_type", "-updated_at")
+        return Response(RawFileDerivativeSerializer(queryset, many=True).data)
+
+    @action(detail=True, methods=["get"])
+    def spectra(self, request, pk=None):
+        raw_file = self.get_object()
+        derivative, index_payload = _load_spectrum_index(raw_file)
+        spectra = index_payload.get("spectra", [])
+        ms_level = request.query_params.get("ms_level")
+        if ms_level:
+            try:
+                ms_level_value = int(ms_level)
+            except ValueError as exc:
+                raise ValidationError({"ms_level": "ms_level must be an integer."}) from exc
+            spectra = [item for item in spectra if item.get("ms_level") == ms_level_value]
+        limit = min(int(request.query_params.get("limit") or 200), 1000)
+        return Response(
+            {
+                "raw_file": RawFileSerializer(raw_file).data,
+                "index_derivative": RawFileDerivativeSerializer(derivative).data if derivative else None,
+                "count": len(spectra),
+                "spectra": [_spectrum_summary(item) for item in spectra[:limit]],
+            }
+        )
+
+    @action(detail=True, methods=["get"], url_path=r"spectra/(?P<spectrum_id>[^/.]+)")
+    def spectrum(self, request, pk=None, spectrum_id=None):
+        raw_file = self.get_object()
+        derivative, index_payload = _load_spectrum_index(raw_file)
+        item = _find_spectrum(index_payload, str(spectrum_id or ""))
+        if not item:
+            raise ValidationError({"spectrum_id": "Spectrum was not found in the available index."})
+        return Response(
+            {
+                "raw_file": RawFileSerializer(raw_file).data,
+                "index_derivative": RawFileDerivativeSerializer(derivative).data if derivative else None,
+                "spectrum": item,
+            }
+        )
+
+    @action(detail=True, methods=["get"])
+    def chromatograms(self, request, pk=None):
+        raw_file = self.get_object()
+        derivative, index_payload = _load_spectrum_index(raw_file)
+        return Response(
+            {
+                "raw_file": RawFileSerializer(raw_file).data,
+                "index_derivative": RawFileDerivativeSerializer(derivative).data if derivative else None,
+                "chromatograms": index_payload.get("chromatograms", {"tic": [], "bpc": []}),
             }
         )
 
@@ -1511,12 +2456,87 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
                 **session.metadata,
             },
         )
+        with transaction.atomic():
+            _queue_spectra_conversion_job_for_raw_file(raw_file)
+            _queue_processing_job_for_raw_file(raw_file)
         session.checksum_sha256 = checksum
         session.completed_raw_file = raw_file
         session.status = DirectUploadStatus.COMPLETE
         session.save(update_fields=["checksum_sha256", "completed_raw_file", "status", "updated_at"])
         serializer = self.get_serializer(session)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class RawFileDerivativeViewSet(AuthenticatedModelViewSet):
+    queryset = RawFileDerivative.objects.select_related(
+        "raw_file",
+        "raw_file__run",
+        "raw_file__run__sample",
+        "raw_file__run__sample__experiment",
+        "raw_file__run__sample__experiment__project",
+        "created_by_job",
+    )
+    serializer_class = RawFileDerivativeSerializer
+    scope_lab_lookup = "raw_file__run__sample__experiment__project__lab_id"
+    write_scope_lab_path = "raw_file.run.sample.experiment.project.lab"
+    search_fields = ("raw_file__filename", "path", "checksum_sha256", "format")
+    ordering_fields = ("derivative_type", "status", "format", "size_bytes", "created_at", "updated_at")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        raw_file_filter = self.request.query_params.get("raw_file")
+        if raw_file_filter:
+            queryset = queryset.filter(raw_file_id=raw_file_filter)
+        project_filter = self.request.query_params.get("project")
+        if project_filter:
+            queryset = queryset.filter(raw_file__run__sample__experiment__project_id=project_filter)
+        derivative_type_filter = self.request.query_params.get("derivative_type")
+        if derivative_type_filter:
+            queryset = queryset.filter(derivative_type=derivative_type_filter)
+        status_filter = self.request.query_params.get("status")
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        return queryset
+
+
+class ProcessingJobArtifactViewSet(AuthenticatedModelViewSet):
+    queryset = ProcessingJobArtifact.objects.select_related(
+        "job",
+        "job__run",
+        "job__raw_file",
+        "job__run__sample",
+        "job__run__sample__experiment",
+        "job__run__sample__experiment__project",
+    )
+    serializer_class = ProcessingJobArtifactSerializer
+    scope_lab_lookup = "job__run__sample__experiment__project__lab_id"
+    write_scope_lab_path = "job.run.sample.experiment.project.lab"
+    search_fields = ("job__run__run_name", "job__raw_file__filename", "path", "checksum_sha256", "format")
+    ordering_fields = ("artifact_type", "format", "size_bytes", "retained", "created_at", "updated_at")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        job_filter = self.request.query_params.get("job")
+        if job_filter:
+            queryset = queryset.filter(job_id=job_filter)
+        raw_file_filter = self.request.query_params.get("raw_file")
+        if raw_file_filter:
+            queryset = queryset.filter(job__raw_file_id=raw_file_filter)
+        run_filter = self.request.query_params.get("run")
+        if run_filter:
+            queryset = queryset.filter(job__run_id=run_filter)
+        project_filter = self.request.query_params.get("project")
+        if project_filter:
+            queryset = queryset.filter(job__run__sample__experiment__project_id=project_filter)
+        artifact_type_filter = self.request.query_params.get("artifact_type")
+        if artifact_type_filter:
+            queryset = queryset.filter(artifact_type=artifact_type_filter)
+        retained_filter = self.request.query_params.get("retained")
+        if retained_filter in {"1", "true", "True"}:
+            queryset = queryset.filter(retained=True)
+        elif retained_filter in {"0", "false", "False"}:
+            queryset = queryset.filter(retained=False)
+        return queryset
 
 
 class AcquisitionWorklistViewSet(AuthenticatedModelViewSet):

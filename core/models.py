@@ -58,6 +58,34 @@ class RawFileStatus(models.TextChoices):
     FAILED = "failed", "Failed"
 
 
+class RawFileDerivativeType(models.TextChoices):
+    MZML = "mzml", "mzML"
+    MZMLB = "mzmlb", "mzMLb"
+    MGF = "mgf", "MGF"
+    SPECTRUM_INDEX = "spectrum_index", "Spectrum index"
+    PREVIEW_JSON = "preview_json", "Preview JSON"
+    VENDOR_METADATA = "vendor_metadata", "Vendor metadata"
+
+
+class DerivativeStatus(models.TextChoices):
+    QUEUED = "queued", "Queued"
+    RUNNING = "running", "Running"
+    READY = "ready", "Ready"
+    FAILED = "failed", "Failed"
+
+
+class ProcessingArtifactType(models.TextChoices):
+    LOG = "log", "Log"
+    PROTEIN_TABLE = "protein_table", "Protein table"
+    PEPTIDE_TABLE = "peptide_table", "Peptide table"
+    DIANN_REPORT = "diann_report", "DIA-NN report"
+    FRAGPIPE_OUTPUT = "fragpipe_output", "FragPipe output"
+    ENTERPRISE_EXPORT = "enterprise_export", "Enterprise export"
+    MATRIX = "matrix", "Matrix"
+    RAW_OUTPUT = "raw_output", "Raw output"
+    OTHER = "other", "Other"
+
+
 class ProcessingStatus(models.TextChoices):
     QUEUED = "queued", "Queued"
     ASSIGNED = "assigned", "Assigned"
@@ -461,6 +489,37 @@ class RawFile(TimestampedModel):
         return self.filename
 
 
+class RawFileDerivative(TimestampedModel):
+    raw_file = models.ForeignKey(RawFile, on_delete=models.CASCADE, related_name="derivatives")
+    derivative_type = models.CharField(max_length=32, choices=RawFileDerivativeType.choices)
+    status = models.CharField(max_length=32, choices=DerivativeStatus.choices, default=DerivativeStatus.QUEUED)
+    path = models.TextField()
+    format = models.CharField(max_length=64, blank=True)
+    size_bytes = models.PositiveBigIntegerField(blank=True, null=True)
+    checksum_sha256 = models.CharField(max_length=64, blank=True)
+    created_by_job = models.ForeignKey(
+        "ProcessingJob",
+        on_delete=models.SET_NULL,
+        related_name="raw_file_derivatives",
+        blank=True,
+        null=True,
+    )
+    error_message = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("raw_file", "derivative_type", "-updated_at")
+        constraints = (
+            models.UniqueConstraint(
+                fields=("raw_file", "derivative_type", "path"),
+                name="uniq_raw_file_derivative_path",
+            ),
+        )
+
+    def __str__(self) -> str:
+        return f"{self.raw_file.filename} {self.derivative_type}"
+
+
 class IngestionFailure(TimestampedModel):
     source_path = models.TextField(unique=True, db_index=True)
     filename = models.CharField(max_length=255)
@@ -622,6 +681,7 @@ class ProcessingJob(TimestampedModel):
     finished_at = models.DateTimeField(blank=True, null=True)
     log_path = models.TextField(blank=True)
     error_message = models.TextField(blank=True)
+    stats = models.JSONField(default=dict, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:
@@ -629,6 +689,26 @@ class ProcessingJob(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.pipeline} on {self.run}"
+
+
+class ProcessingJobArtifact(TimestampedModel):
+    job = models.ForeignKey(ProcessingJob, on_delete=models.CASCADE, related_name="artifacts")
+    artifact_type = models.CharField(max_length=32, choices=ProcessingArtifactType.choices)
+    path = models.TextField()
+    format = models.CharField(max_length=64, blank=True)
+    size_bytes = models.PositiveBigIntegerField(blank=True, null=True)
+    checksum_sha256 = models.CharField(max_length=64, blank=True)
+    retained = models.BooleanField(default=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("job", "artifact_type", "-updated_at")
+        constraints = (
+            models.UniqueConstraint(fields=("job", "artifact_type", "path"), name="uniq_processing_artifact_path"),
+        )
+
+    def __str__(self) -> str:
+        return f"{self.job_id} {self.artifact_type}"
 
 
 class Protein(TimestampedModel):

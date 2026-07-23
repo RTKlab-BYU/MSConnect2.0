@@ -1,6 +1,7 @@
 import socket
 import subprocess
 import time
+import json
 from pathlib import Path
 
 from django.conf import settings
@@ -92,9 +93,28 @@ class Command(BaseCommand):
             )
             return
 
-        for artifact in (execution.protein_table_path, execution.peptide_table_path):
+        for artifact in (execution.protein_table_path, execution.peptide_table_path, execution.stats_json_path):
             if artifact and not artifact.exists():
                 raise CommandError(f"Expected result artifact was not created: {artifact}")
+        derivative_payload = []
+        for derivative in execution.derivative_files:
+            artifact = Path(str(derivative.get("path") or "")).resolve()
+            if not artifact.exists():
+                raise CommandError(f"Expected derivative artifact was not created: {artifact}")
+            derivative_payload.append({**derivative, "path": str(artifact)})
+        artifact_payload = []
+        for declared_artifact in execution.artifact_files:
+            artifact = Path(str(declared_artifact.get("path") or "")).resolve()
+            if not artifact.exists():
+                raise CommandError(f"Expected processing artifact was not created: {artifact}")
+            artifact_payload.append({**declared_artifact, "path": str(artifact)})
+
+        stats_payload = {}
+        if execution.stats_json_path:
+            with execution.stats_json_path.open("r", encoding="utf-8") as stats_file:
+                stats_payload = json.load(stats_file)
+            if not isinstance(stats_payload, dict):
+                raise CommandError(f"Expected stats JSON object in {execution.stats_json_path}")
 
         client.complete_job(
             job["id"],
@@ -108,6 +128,9 @@ class Command(BaseCommand):
                     str(execution.peptide_table_path.resolve()) if execution.peptide_table_path else ""
                 ),
                 "delimiter": execution.delimiter or "",
+                "derivatives": derivative_payload,
+                "artifacts": artifact_payload,
+                "stats": stats_payload,
             },
         )
         self.stdout.write(self.style.SUCCESS(f"completed job {job['id']}"))

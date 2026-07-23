@@ -14,6 +14,7 @@ from .models import (
     PeptideIdentification,
     PeptideQuant,
     ProcessingJob,
+    ProcessingJobArtifact,
     ProcessingNode,
     ProcessingPipeline,
     Project,
@@ -22,6 +23,7 @@ from .models import (
     ProteinIdentification,
     ProteinQuant,
     RawFile,
+    RawFileDerivative,
     Run,
     Sample,
     University,
@@ -122,6 +124,14 @@ class RawFileAdmin(admin.ModelAdmin):
     readonly_fields = ("checksum_sha256", "size_bytes", "imported_at")
 
 
+@admin.register(RawFileDerivative)
+class RawFileDerivativeAdmin(admin.ModelAdmin):
+    list_display = ("raw_file", "derivative_type", "status", "format", "size_bytes", "created_by_job", "updated_at")
+    search_fields = ("raw_file__filename", "path", "checksum_sha256", "format")
+    list_filter = ("derivative_type", "status", "raw_file__run__sample__experiment__project__lab")
+    readonly_fields = ("created_at", "updated_at")
+
+
 @admin.register(IngestionFailure)
 class IngestionFailureAdmin(admin.ModelAdmin):
     list_display = ("filename", "failure_reason", "seen_count", "last_seen_at")
@@ -155,6 +165,14 @@ class ProcessingJobAdmin(admin.ModelAdmin):
     list_display = ("run", "pipeline", "raw_file", "node", "status", "started_at", "finished_at")
     search_fields = ("run__run_name", "pipeline__name", "raw_file__filename", "node__name")
     list_filter = ("status", "pipeline", "node")
+
+
+@admin.register(ProcessingJobArtifact)
+class ProcessingJobArtifactAdmin(admin.ModelAdmin):
+    list_display = ("job", "artifact_type", "format", "size_bytes", "retained", "updated_at")
+    search_fields = ("job__run__run_name", "job__raw_file__filename", "path", "checksum_sha256", "format")
+    list_filter = ("artifact_type", "retained", "job__run__sample__experiment__project__lab")
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(AcquisitionWorklist)

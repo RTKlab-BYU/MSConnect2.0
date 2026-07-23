@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -11,6 +13,7 @@ from core.models import (
     DirectUploadSession,
     Experiment,
     Facility,
+    InstrumentConfiguration,
     Lab,
     LabMembership,
     PeptideQuant,
@@ -21,6 +24,7 @@ from core.models import (
     Project,
     ProteinQuant,
     RawFile,
+    RawFileDerivative,
     Run,
     Sample,
     University,
@@ -110,6 +114,93 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(summary_response.data["project_id"], self.project_a.id)
         self.assertEqual(summary_response.data["raw_file_count"], 0)
         self.assertEqual(summary_response.data["processing_job_count"], 0)
+
+    def test_pre_acquisition_setup_creates_expected_worklist_and_processing_plan(self):
+        self.client.force_authenticate(user=self.researcher)
+
+        response = self.client.post(
+            "/api/projects/pre-acquisition-setup/",
+            data={
+                "title": "Smoke Test DIA Cohort",
+                "code": "SMOKE-DIA",
+                "sample_count": 4,
+                "healthy_count": 2,
+                "diseased_count": 2,
+                "hye_interval": 2,
+                "fasta_path": "/data/reference/hye.fasta",
+                "speclib_path": "/data/reference/hye.speclib",
+                "diann_version": "1.9",
+                "diann_settings": {"q_value": 0.01, "threads": 8},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["samples_created"], 6)
+        self.assertEqual(response.data["runs_created"], 8)
+        self.assertEqual(response.data["worklist_entries_created"], 8)
+        self.assertEqual(len(response.data["expected_filenames"]), 8)
+        self.assertTrue(response.data["expected_filenames"][0].startswith("SMOKE_DIA_001_"))
+
+        project = Project.objects.get(code="SMOKE-DIA")
+        worklist = AcquisitionWorklist.objects.get(experiment__project=project)
+        self.assertEqual(worklist.status, "ready")
+        self.assertEqual(worklist.entries.count(), 8)
+        self.assertEqual(worklist.entries.filter(file_role="qc", hye_pair_label="HYE-01").count(), 2)
+
+        pipeline = ProcessingPipeline.objects.get(name="DIA-NN", version="1.9")
+        self.assertEqual(pipeline.parameters["fasta_path"], "/data/reference/hye.fasta")
+        self.assertEqual(pipeline.parameters["speclib_path"], "/data/reference/hye.speclib")
+        self.assertTrue(pipeline.parameters["project_level_rollup"]["enabled"])
+
+    def test_pre_acquisition_setup_accepts_sample_rows_plate_and_reference_presets(self):
+        self.client.force_authenticate(user=self.researcher)
+        configuration = InstrumentConfiguration.objects.create(
+            facility=self.facility,
+            name="Exploris 480 DIA",
+            method_name="60SPD DIA",
+            column_description="Aurora 25cm",
+        )
+
+        response = self.client.post(
+            "/api/projects/pre-acquisition-setup/",
+            data={
+                "title": "Wizard Smoke Cohort",
+                "code": "WIZ-DIA",
+                "sample_rows": [
+                    {"sample_id": "H-001", "condition": "healthy", "well": "A01", "subject_id": "S-001"},
+                    {"sample_id": "D-001", "condition": "diseased", "well": "A02", "subject_id": "S-002"},
+                    {"sample_id": "H-002", "condition": "healthy", "well": "A03", "subject_id": "S-003"},
+                    {"sample_id": "D-002", "condition": "diseased", "well": "A04", "subject_id": "S-004"},
+                ],
+                "plate_type": "96",
+                "hye_interval": 2,
+                "instrument_configuration": configuration.id,
+                "organisms": ["human", "yeast", "ecoli"],
+                "processing_preset": "Standard DIA-NN plasma",
+                "diann_version": "1.9",
+                "diann_settings": {"q_value": 0.01, "threads": 8},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["samples_created"], 6)
+        self.assertEqual(response.data["runs_created"], 8)
+        self.assertEqual(response.data["worklist_entries_created"], 8)
+
+        worklist = AcquisitionWorklist.objects.get(experiment__project__code="WIZ-DIA")
+        self.assertEqual(worklist.metadata["plate_type"], "96")
+        self.assertEqual(worklist.metadata["export_targets"], ["thermo_ms_sequence", "lc_injection_sequence"])
+        first_entry = worklist.entries.order_by("position").first()
+        self.assertEqual(first_entry.metadata["well"], "A01")
+        self.assertEqual(first_entry.metadata["condition"], "healthy")
+        self.assertEqual(first_entry.run.configuration_id, configuration.id)
+
+        pipeline = ProcessingPipeline.objects.get(name="DIA-NN", version="1.9")
+        self.assertEqual(pipeline.parameters["reference_assets"]["organisms"], ["human", "yeast", "ecoli"])
+        self.assertEqual(pipeline.parameters["reference_assets"]["refresh_policy"], "quarterly")
+        self.assertEqual(pipeline.parameters["processing_preset"], "Standard DIA-NN plasma")
 
     def test_direct_upload_session_issues_signed_urls_and_records_completion(self):
         self.client.force_authenticate(user=self.researcher)
@@ -240,6 +331,7 @@ class AgentApiTests(TestCase):
         self.lab = Lab.objects.create(facility=self.facility, name="Lab A", slug="lab-a")
         self.pi_user = User.objects.create_user(username="pi-agent", password="password123")
         UserProfile.objects.create(user=self.pi_user, global_role=UserRole.PI)
+        LabMembership.objects.create(user=self.pi_user, lab=self.lab, role=UserRole.PI)
         self.project = Project.objects.create(lab=self.lab, title="Project A", code="P-A", pi=self.pi_user)
         self.experiment = Experiment.objects.create(project=self.project, name="Exp 1")
         self.sample = Sample.objects.create(experiment=self.experiment, name="Sample A")
@@ -305,6 +397,61 @@ class AgentApiTests(TestCase):
                 self.assertEqual(second_response.status_code, 200)
                 self.assertFalse(second_response.data["created"])
                 self.assertEqual(RawFile.objects.count(), 1)
+
+    def test_watcher_import_queues_processing_job_for_pre_acquisition_run(self):
+        self.client.force_authenticate(user=self.pi_user)
+        setup_response = self.client.post(
+            "/api/projects/pre-acquisition-setup/",
+            data={
+                "title": "Agent Smoke Cohort",
+                "code": "AGENT-SMOKE",
+                "sample_count": 1,
+                "healthy_count": 1,
+                "diseased_count": 0,
+                "hye_interval": 0,
+                "diann_version": "smoke-1.9",
+            },
+            format="json",
+        )
+        self.assertEqual(setup_response.status_code, 201)
+        expected_filename = setup_response.data["expected_filenames"][0]
+
+        watcher = self._watcher_client()
+        with TemporaryDirectory() as storage_dir:
+            storage_root = Path(storage_dir)
+            file_bytes = b"raw-data"
+            checksum = hashlib.sha256(file_bytes).hexdigest()
+            file_path = storage_root / checksum[:2] / f"{checksum}_{expected_filename}"
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_bytes(file_bytes)
+
+            with override_settings(RAW_FILE_STORAGE_ROOT=str(storage_root)):
+                import_response = watcher.post(
+                    "/api/agents/raw-files/import/",
+                    data={
+                        "source_path": f"/incoming/{expected_filename}",
+                        "storage_path": str(file_path),
+                        "filename": expected_filename,
+                        "checksum_sha256": checksum,
+                        "size_bytes": len(file_bytes),
+                        "match_run_by_name": True,
+                    },
+                    format="json",
+                )
+
+        self.assertEqual(import_response.status_code, 201)
+        self.assertTrue(import_response.data["created"])
+        self.assertIsNotNone(import_response.data["processing_job"])
+
+        raw_file = RawFile.objects.get(checksum_sha256=checksum)
+        raw_file.run.refresh_from_db()
+        job = ProcessingJob.objects.get(raw_file=raw_file)
+        self.assertEqual(raw_file.file_role, raw_file.run.file_role)
+        self.assertEqual(raw_file.status, "imported")
+        self.assertEqual(raw_file.run.status, "imported")
+        self.assertEqual(job.status, ProcessingStatus.QUEUED)
+        self.assertEqual(job.pipeline.name, "DIA-NN")
+        self.assertIn("command", job.pipeline.parameters)
 
     def test_watcher_failure_endpoint_increments_seen_count(self):
         watcher = self._watcher_client()
@@ -389,3 +536,89 @@ class AgentApiTests(TestCase):
         self.assertEqual(ProteinQuant.objects.filter(job=job).count(), 1)
         self.assertEqual(PeptideQuant.objects.filter(job=job).count(), 1)
         self.assertEqual(ProcessingNode.objects.get(name="proc-1").status, "idle")
+
+    def test_processor_complete_records_derivative_and_spectra_api_reads_index(self):
+        processor = self._processor_client()
+        raw_file = RawFile.objects.create(
+            run=self.run,
+            source_path="/incoming/SampleA_run07.raw",
+            storage_path="/data/raw/aa/sample.raw",
+            filename="SampleA_run07.raw",
+            checksum_sha256="c" * 64,
+            size_bytes=1024,
+            status="imported",
+        )
+        pipeline = ProcessingPipeline.objects.create(
+            name="ProteoWizard msconvert",
+            version="test",
+            parameters={"adapter": "msconvert", "output_format": "mzML"},
+        )
+        job = ProcessingJob.objects.create(
+            run=self.run,
+            pipeline=pipeline,
+            raw_file=raw_file,
+            status=ProcessingStatus.QUEUED,
+        )
+
+        claim_response = processor.post("/api/processing-jobs/claim-next/", data={"node_name": "proc-2"}, format="json")
+        self.assertEqual(claim_response.status_code, 200)
+
+        with TemporaryDirectory() as results_dir:
+            index_path = Path(results_dir) / "spectrum-index.json"
+            log_path = Path(results_dir) / "process.log"
+            index_path.write_text(
+                json.dumps(
+                    {
+                        "spectra": [
+                            {
+                                "id": "scan=1",
+                                "index": 0,
+                                "scan_number": 1,
+                                "ms_level": 2,
+                                "retention_time_seconds": 42.5,
+                                "base_peak_mz": 445.2,
+                                "base_peak_intensity": 12000,
+                                "tic": 45000,
+                                "precursor_mz": 678.9,
+                                "peaks": [[445.2, 12000], [500.1, 3000]],
+                            }
+                        ],
+                        "chromatograms": {"tic": [[42.5, 45000]], "bpc": [[42.5, 12000]]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            log_path.write_text("done\n", encoding="utf-8")
+
+            with override_settings(RESULTS_ROOT=results_dir):
+                complete_response = processor.post(
+                    f"/api/processing-jobs/{job.id}/complete/",
+                    data={
+                        "node_name": "proc-2",
+                        "log_path": str(log_path),
+                        "derivatives": [
+                            {
+                                "derivative_type": "spectrum_index",
+                                "path": str(index_path),
+                                "format": "json",
+                            }
+                        ],
+                    },
+                    format="json",
+                )
+                self.assertEqual(complete_response.status_code, 200)
+                self.client.force_authenticate(user=self.pi_user)
+                spectra_response = self.client.get(f"/api/raw-files/{raw_file.id}/spectra/")
+                spectrum_response = self.client.get(f"/api/raw-files/{raw_file.id}/spectra/scan=1/")
+                chromatograms_response = self.client.get(f"/api/raw-files/{raw_file.id}/chromatograms/")
+
+        self.assertEqual(
+            RawFileDerivative.objects.filter(raw_file=raw_file, derivative_type="spectrum_index").count(),
+            1,
+        )
+        self.assertEqual(spectra_response.status_code, 200)
+        self.assertEqual(spectra_response.data["count"], 1)
+        self.assertEqual(spectrum_response.status_code, 200)
+        self.assertEqual(spectrum_response.data["spectrum"]["peaks"][0], [445.2, 12000])
+        self.assertEqual(chromatograms_response.status_code, 200)
+        self.assertEqual(chromatograms_response.data["chromatograms"]["tic"][0], [42.5, 45000])
