@@ -4,19 +4,19 @@
 
 @layer base {
   :root {
-    --background: 214 24% 97%;
-    --foreground: 216 34% 12%;
+    --background: 210 38% 97%;
+    --foreground: 222 46% 11%;
     --card: 0 0% 100%;
-    --card-foreground: 216 34% 12%;
+    --card-foreground: 222 46% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 216 34% 12%;
-    --primary: 213 49% 29%;
+    --popover-foreground: 222 46% 11%;
+    --primary: 211 56% 27%;
     --primary-foreground: 210 40% 98%;
-    --secondary: 211 28% 93%;
-    --secondary-foreground: 216 34% 18%;
-    --muted: 213 24% 92%;
-    --muted-foreground: 215 16% 43%;
-    --accent: 172 66% 28%;
+    --secondary: 210 32% 94%;
+    --secondary-foreground: 222 38% 18%;
+    --muted: 211 28% 92%;
+    --muted-foreground: 215 17% 43%;
+    --accent: 174 68% 29%;
     --accent-foreground: 0 0% 100%;
     --destructive: 356 58% 45%;
     --destructive-foreground: 0 0% 100%;
@@ -26,10 +26,10 @@
     --warning-foreground: 30 100% 10%;
     --info: 209 72% 39%;
     --info-foreground: 0 0% 100%;
-    --border: 214 23% 84%;
-    --input: 214 23% 78%;
+    --border: 214 24% 86%;
+    --input: 214 23% 80%;
     --ring: 213 49% 36%;
-    --radius: 0.5rem;
+    --radius: 0.9rem;
     --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.06);
     --shadow-md: 0 12px 28px rgb(15 23 42 / 0.08);
     --shadow-lg: 0 20px 48px rgb(15 23 42 / 0.12);
@@ -69,6 +69,17 @@
 
   body {
     @apply bg-background text-foreground antialiased;
+    background:
+      radial-gradient(circle at 12% 0%, hsl(var(--accent) / 0.1), transparent 28rem),
+      radial-gradient(circle at 88% 0%, hsl(var(--primary) / 0.1), transparent 30rem),
+      hsl(var(--background));
+    font-family:
+      Aptos,
+      "Avenir Next",
+      "Segoe UI",
+      ui-sans-serif,
+      system-ui,
+      sans-serif;
     font-feature-settings:
       "rlig" 1,
       "calt" 1;

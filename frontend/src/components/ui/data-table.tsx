@@ -48,19 +48,19 @@ export function DataTable<TData, TValue>({
   });
 
   return (
-    <div className={cn("overflow-hidden rounded-lg border bg-card", className)}>
+    <div className={cn("overflow-hidden rounded-2xl border bg-card/95 shadow-[0_18px_50px_rgb(15_23_42/0.06)]", className)}>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[960px] border-collapse text-sm">
-          <thead className="bg-secondary/65 text-left text-xs uppercase text-muted-foreground">
+          <thead className="bg-secondary/65 text-left text-xs uppercase tracking-[0.08em] text-muted-foreground">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => {
                   const sort = header.column.getIsSorted();
                   return (
-                    <th key={header.id} className="border-b px-3 py-2 font-semibold">
+                    <th key={header.id} className="border-b px-4 py-3 font-bold">
                       {header.isPlaceholder ? null : header.column.getCanSort() ? (
                         <Button
-                          className="-ml-2 h-7 px-2 text-xs uppercase"
+                          className="-ml-2 h-8 px-2 text-xs uppercase tracking-[0.08em]"
                           variant="ghost"
                           onClick={header.column.getToggleSortingHandler()}
                         >
@@ -92,7 +92,7 @@ export function DataTable<TData, TValue>({
                   return (
                     <tr
                       key={row.id}
-                      className="absolute left-0 grid w-full grid-cols-[repeat(var(--col-count),minmax(0,1fr))] border-b hover:bg-secondary/35"
+                      className="absolute left-0 grid w-full grid-cols-[repeat(var(--col-count),minmax(0,1fr))] border-b hover:bg-secondary/45"
                       style={
                         {
                           "--col-count": row.getVisibleCells().length,
@@ -102,7 +102,7 @@ export function DataTable<TData, TValue>({
                       }
                     >
                       {row.getVisibleCells().map((cell) => (
-                        <td key={cell.id} className="truncate px-3 py-2 align-middle">
+                        <td key={cell.id} className="truncate px-4 py-2.5 align-middle">
                           {flexRender(cell.column.columnDef.cell, cell.getContext())}
                         </td>
                       ))}

@@ -61,3 +61,10 @@ export async function paginatedResource<T>(path: string, params: ListParams = {}
 export async function getResource<T>(path: string) {
   return apiFetch<T>(path);
 }
+
+export async function postResource<T>(path: string, body: unknown) {
+  return apiFetch<T>(path, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

@@ -21,6 +21,56 @@ export type Project = {
   updated_at: string;
 };
 
+export type PreAcquisitionSetupPayload = {
+  title: string;
+  code: string;
+  sample_count?: number;
+  healthy_count?: number;
+  diseased_count?: number;
+  sample_rows?: Array<Record<string, unknown>>;
+  plate_type: "96" | "384";
+  hye_interval: number;
+  experiment_name: string;
+  worklist_name: string;
+  instrument_configuration?: EntityId | null;
+  organisms: string[];
+  processing_preset: string;
+  fasta_upload_name?: string;
+  speclib_upload_name?: string;
+  diann_version: string;
+  diann_settings: Record<string, unknown>;
+};
+
+export type PreAcquisitionSetupResponse = {
+  project: Project;
+  experiment: {
+    id: EntityId;
+    name: string;
+  };
+  worklist: AcquisitionWorklist;
+  pipeline: ProcessingPipeline;
+  samples_created: number;
+  runs_created: number;
+  worklist_entries_created: number;
+  expected_filenames: string[];
+};
+
+export type InstrumentConfiguration = {
+  id: EntityId;
+  facility: EntityId;
+  name: string;
+  lc_instrument: EntityId | null;
+  ms_instrument: EntityId | null;
+  method_name: string;
+  column_description: string;
+  gradient_description: string;
+  ion_source: string;
+  active: boolean;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ProjectSummary = {
   project_id: EntityId;
   project_code: string;
@@ -31,6 +81,20 @@ export type ProjectSummary = {
   raw_file_count: number;
   processing_job_count: number;
   missing_raw_file_count: number;
+  protein_quant_count: number;
+  protein_identification_count: number;
+  peptide_quant_count: number;
+  peptide_identification_count: number;
+  reported_protein_count: number;
+  reported_peptide_count: number;
+  reported_precursor_count: number;
+  ms1_feature_count: number;
+  ms2_spectra_count: number;
+  indexed_spectra_count: number;
+  indexed_ms1_spectra_count: number;
+  indexed_ms2_spectra_count: number;
+  artifact_count: number;
+  derivative_count: number;
   raw_files_by_status: CountBy<"status">;
   raw_files_by_role: CountBy<"file_role">;
   jobs_by_status: CountBy<"status">;
@@ -56,6 +120,59 @@ export type RawFile = {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+};
+
+export type RawFileDerivative = {
+  id: EntityId;
+  raw_file: EntityId;
+  raw_file_filename: string;
+  project_id: EntityId;
+  project_code: string;
+  derivative_type: "mzml" | "mzmlb" | "mgf" | "spectrum_index" | "preview_json" | "vendor_metadata";
+  status: "queued" | "running" | "ready" | "failed";
+  path: string;
+  format: string;
+  size_bytes: number | null;
+  checksum_sha256: string;
+  created_by_job: EntityId | null;
+  error_message: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SpectrumSummary = {
+  id: string;
+  index: number | null;
+  scan_number: number | null;
+  ms_level: number | null;
+  retention_time_seconds: number | null;
+  base_peak_mz: number | null;
+  base_peak_intensity: number | null;
+  tic: number | null;
+  precursor_mz: number | null;
+};
+
+export type SpectraResponse = {
+  raw_file: RawFile;
+  index_derivative: RawFileDerivative | null;
+  count: number;
+  spectra: SpectrumSummary[];
+};
+
+export type SpectrumDetailResponse = {
+  raw_file: RawFile;
+  index_derivative: RawFileDerivative | null;
+  spectrum: SpectrumSummary & { peaks?: Array<[number, number]> };
+};
+
+export type ChromatogramsResponse = {
+  raw_file: RawFile;
+  index_derivative: RawFileDerivative | null;
+  chromatograms: {
+    tic?: Array<[number, number]>;
+    bpc?: Array<[number, number]>;
+  };
 };
 
 export type DirectUploadPart = {
@@ -106,6 +223,35 @@ export type ProcessingJob = {
   finished_at: string | null;
   log_path: string;
   error_message: string;
+  stats: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProcessingJobArtifact = {
+  id: EntityId;
+  job: EntityId;
+  job_status: ProcessingJob["status"];
+  raw_file_filename: string;
+  run_name: string;
+  project_id: EntityId;
+  project_code: string;
+  artifact_type:
+    | "log"
+    | "protein_table"
+    | "peptide_table"
+    | "diann_report"
+    | "fragpipe_output"
+    | "enterprise_export"
+    | "matrix"
+    | "raw_output"
+    | "other";
+  path: string;
+  format: string;
+  size_bytes: number | null;
+  checksum_sha256: string;
+  retained: boolean;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -197,6 +343,33 @@ export type Run = {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+};
+
+export type RunSummary = {
+  run: Run;
+  sample: Sample;
+  raw_files: RawFile[];
+  processing_jobs: ProcessingJob[];
+  derivatives: RawFileDerivative[];
+  artifacts: ProcessingJobArtifact[];
+  stats: {
+    raw_file_count: number;
+    processing_job_count: number;
+    protein_quant_count: number;
+    protein_identification_count: number;
+    peptide_quant_count: number;
+    peptide_identification_count: number;
+    reported_protein_count: number;
+    reported_peptide_count: number;
+    reported_precursor_count: number;
+    ms1_feature_count: number;
+    ms2_spectra_count: number;
+    indexed_spectra_count: number;
+    indexed_ms1_spectra_count: number;
+    indexed_ms2_spectra_count: number;
+    artifact_count: number;
+    derivative_count: number;
+  };
 };
 
 export type AcquisitionWorklist = {

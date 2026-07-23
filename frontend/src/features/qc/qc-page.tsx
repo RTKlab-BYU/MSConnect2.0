@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 
+import { MetricCard, PageHero } from "@/components/layout/page-section";
 import { SummaryChart } from "@/components/data/summary-chart";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
@@ -16,18 +17,6 @@ import {
   queryKeys,
 } from "@/lib/api/queries";
 import { formatDate } from "@/lib/format";
-
-function MetricCard({ label, value, detail }: { label: string; value: number | string; detail: string }) {
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="text-xs font-bold uppercase text-muted-foreground">{label}</div>
-        <div className="mt-2 text-2xl font-bold">{value}</div>
-        <div className="mt-1 text-sm text-muted-foreground">{detail}</div>
-      </CardContent>
-    </Card>
-  );
-}
 
 export default function QcPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -81,21 +70,17 @@ export default function QcPage() {
     <div className="grid gap-4">
       <Breadcrumbs items={[{ label: "QC" }]} />
 
-      <section className="rounded-lg border bg-card p-4 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-bold uppercase text-muted-foreground">Assay health and system suitability</p>
-            <h1 className="mt-1 text-2xl font-bold tracking-tight">QC</h1>
-            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-              Review HYE control pairs today and leave room for PRTC spiked-in standards without changing the global navigation.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
+      <PageHero
+        eyebrow="Assay health"
+        title="QC"
+        description="Review embedded HYE controls as pseudo-project reporting while keeping room for future PRTC standards."
+        actions={
+          <>
             <StatusBadge status="qc" />
             <StatusBadge status={program === "hye" ? "pass" : "warning"} />
-          </div>
-        </div>
-      </section>
+          </>
+        }
+      />
 
       <Tabs value={program} onValueChange={(value) => updateParam("program", value)}>
         <TabsList>
@@ -105,8 +90,8 @@ export default function QcPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>QC Filters</CardTitle>
-            <CardDescription>Scope the dashboard by project or acquisition worklist without leaving the QC workspace.</CardDescription>
+            <CardTitle>QC filters</CardTitle>
+            <CardDescription>Scope HYE pseudo-project reporting by project or acquisition worklist.</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -136,7 +121,7 @@ export default function QcPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <div className="rounded-lg border bg-secondary/35 px-3 py-2 text-sm text-muted-foreground">
+              <div className="rounded-2xl border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
                 Pair pass threshold: within {passThreshold}% of ideal B/A. Warning up to {warningThreshold}%.
               </div>
             </div>
@@ -155,7 +140,7 @@ export default function QcPage() {
           <section className="grid gap-4 xl:grid-cols-[1fr_360px]">
             <Card>
               <CardHeader>
-                <CardTitle>Expected HYE Composition</CardTitle>
+                <CardTitle>Expected HYE composition</CardTitle>
                 <CardDescription>Human remains constant while Yeast and E. coli shift between A and B.</CardDescription>
               </CardHeader>
               <CardContent>
@@ -218,15 +203,15 @@ export default function QcPage() {
                 </CardHeader>
                 <CardContent className="grid gap-3">
                   <div className="grid gap-3 md:grid-cols-3">
-                    <div className="rounded-lg border bg-secondary/20 px-3 py-2 text-sm">
+                    <div className="rounded-2xl border bg-secondary/20 px-3 py-2 text-sm">
                       <div className="text-xs font-bold uppercase text-muted-foreground">Shared Proteins</div>
                       <div className="mt-1 text-lg font-semibold">{pair.shared_total_n}</div>
                     </div>
-                    <div className="rounded-lg border bg-secondary/20 px-3 py-2 text-sm">
+                    <div className="rounded-2xl border bg-secondary/20 px-3 py-2 text-sm">
                       <div className="text-xs font-bold uppercase text-muted-foreground">Completed</div>
                       <div className="mt-1 text-lg font-semibold">{formatDate(pair.completed_at)}</div>
                     </div>
-                    <div className="rounded-lg border bg-secondary/20 px-3 py-2 text-sm">
+                    <div className="rounded-2xl border bg-secondary/20 px-3 py-2 text-sm">
                       <div className="text-xs font-bold uppercase text-muted-foreground">Project</div>
                       <div className="mt-1 text-lg font-semibold">{pair.project_code}</div>
                     </div>
@@ -281,27 +266,27 @@ export default function QcPage() {
         <TabsContent value="prtc">
           <Card>
             <CardHeader>
-              <CardTitle>PRTC Standards</CardTitle>
+              <CardTitle>PRTC standards</CardTitle>
               <CardDescription>
                 The QC workspace is ready for PRTC spiked-in standards, but this environment does not yet expose tagged PRTC inputs or acceptance thresholds.
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3">
-              <div className="rounded-lg border bg-secondary/20 p-4 text-sm text-muted-foreground">
+              <div className="rounded-2xl border bg-secondary/20 p-4 text-sm text-muted-foreground">
                 {overview?.empty_message || "PRTC metrics will appear here once standards are modeled and uploaded into the main API."}
               </div>
               <div className="grid gap-3 md:grid-cols-3">
-                <div className="rounded-lg border bg-secondary/20 px-3 py-3">
+                <div className="rounded-2xl border bg-secondary/20 px-3 py-3">
                   <div className="text-xs font-bold uppercase text-muted-foreground">Transitions</div>
                   <div className="mt-2 text-xl font-bold">-</div>
                   <div className="mt-1 text-sm text-muted-foreground">placeholder for monitored standards</div>
                 </div>
-                <div className="rounded-lg border bg-secondary/20 px-3 py-3">
+                <div className="rounded-2xl border bg-secondary/20 px-3 py-3">
                   <div className="text-xs font-bold uppercase text-muted-foreground">Retention Shift</div>
                   <div className="mt-2 text-xl font-bold">-</div>
                   <div className="mt-1 text-sm text-muted-foreground">future system suitability trend</div>
                 </div>
-                <div className="rounded-lg border bg-secondary/20 px-3 py-3">
+                <div className="rounded-2xl border bg-secondary/20 px-3 py-3">
                   <div className="text-xs font-bold uppercase text-muted-foreground">Intensity CV</div>
                   <div className="mt-2 text-xl font-bold">-</div>
                   <div className="mt-1 text-sm text-muted-foreground">future batch consistency metric</div>

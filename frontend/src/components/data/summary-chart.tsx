@@ -19,7 +19,7 @@ export function SummaryChart({ title, data }: { title: string; data: SummaryDatu
             <XAxis dataKey="label" tickLine={false} axisLine={false} fontSize={12} />
             <YAxis allowDecimals={false} tickLine={false} axisLine={false} fontSize={12} />
             <Tooltip cursor={{ fill: "hsl(var(--secondary))" }} />
-            <Bar dataKey="count" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="count" fill="hsl(var(--primary))" radius={[10, 10, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </CardContent>

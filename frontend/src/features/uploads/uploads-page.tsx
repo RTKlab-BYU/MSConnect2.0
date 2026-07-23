@@ -1,6 +1,7 @@
 import { AlertTriangle, FileUp, RotateCcw, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
 
+import { PageHero } from "@/components/layout/page-section";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -96,20 +97,17 @@ export default function UploadsPage() {
     <div className="grid gap-4">
       <Breadcrumbs items={[{ label: "Uploads" }]} />
 
-      <section className="rounded-lg border bg-card p-4 shadow-sm">
-        <p className="text-xs font-bold uppercase text-muted-foreground">Distributed ingest</p>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight">Resumable Upload Manager</h1>
-        <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-          Phase 2 UI state is chunk-aware and persisted locally. The current backend has watched-share ingest but no browser chunk endpoint.
-        </p>
-      </section>
+      <PageHero
+        eyebrow="Distributed ingest"
+        title="Uploads"
+        description="Stage raw files, prepare chunk manifests, and track upload state without crowding the workspace."
+      />
 
       <Card>
         <CardHeader>
-          <CardTitle>Stage Raw Files</CardTitle>
+          <CardTitle>Stage raw files</CardTitle>
           <CardDescription>
-            Creates a resumable manifest with 8 MB chunks, requests signed object-storage URLs from Django, uploads
-            chunks directly to storage, then records completion back in Django.
+            Select files, attach them to a project, and prepare resumable upload manifests.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -163,7 +161,7 @@ export default function UploadsPage() {
               </div>
 
               {file.error ? (
-                <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                <div className="flex items-center gap-2 rounded-2xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   <AlertTriangle className="h-4 w-4" />
                   {file.error}
                 </div>

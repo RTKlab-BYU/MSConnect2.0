@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
+import { MetricCard, PageHero } from "@/components/layout/page-section";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -13,18 +14,6 @@ type HistoryPoint = {
   failed: number;
   rawFiles: number;
 };
-
-function MetricCard({ label, value, detail }: { label: string; value: number | string; detail: string }) {
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="text-xs font-bold uppercase text-muted-foreground">{label}</div>
-        <div className="mt-2 text-2xl font-bold">{value}</div>
-        <div className="mt-1 text-sm text-muted-foreground">{detail}</div>
-      </CardContent>
-    </Card>
-  );
-}
 
 export default function MonitoringPage() {
   const feed = useRunStatusFeed();
@@ -58,23 +47,19 @@ export default function MonitoringPage() {
     <div className="grid gap-4">
       <Breadcrumbs items={[{ label: "Monitoring" }]} />
 
-      <section className="rounded-lg border bg-card p-4 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-bold uppercase text-muted-foreground">High-throughput operations</p>
-            <h1 className="mt-1 text-2xl font-bold tracking-tight">Run and Processing Dashboard</h1>
-            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-              Uses one centralized polling feed today. The hook is transport-neutral so a WebSocket or SSE source can replace polling later.
-            </p>
-          </div>
-          <div className="rounded-md border bg-secondary px-3 py-2 text-sm font-semibold">
+      <PageHero
+        eyebrow="High-throughput operations"
+        title="Run and processing dashboard"
+        description="A clean operations view for queue pressure, node health, raw-file matching, and run-level processing state."
+        actions={
+          <div className="rounded-2xl border bg-secondary/70 px-4 py-3 text-sm font-bold">
             {statusText}
             {feed.lastUpdatedAt ? (
               <span className="ml-2 text-muted-foreground">{formatDate(new Date(feed.lastUpdatedAt).toISOString())}</span>
             ) : null}
           </div>
-        </div>
-      </section>
+        }
+      />
 
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <MetricCard label="Active Jobs" value={active} detail="queued, assigned, running, retrying" />
@@ -88,7 +73,7 @@ export default function MonitoringPage() {
         <Card>
           <CardHeader>
             <CardTitle>Backlog Trend</CardTitle>
-            <CardDescription>Local dashboard history from reconciled polling snapshots.</CardDescription>
+            <CardDescription>Recent queue pressure from reconciled polling snapshots.</CardDescription>
           </CardHeader>
           <CardContent className="h-72">
             <ResponsiveContainer width="100%" height="100%">
@@ -106,12 +91,12 @@ export default function MonitoringPage() {
         <Card>
           <CardHeader>
             <CardTitle>Node Health</CardTitle>
-            <CardDescription>Current processing/uploader node records from the main API.</CardDescription>
+            <CardDescription>Current processing and upload workers.</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid gap-2">
               {feed.nodes.map((node) => (
-                <div key={node.id} className="rounded-md border p-3">
+                <div key={node.id} className="rounded-2xl border bg-background/50 p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div>
                       <div className="font-semibold">{node.name}</div>
@@ -125,7 +110,7 @@ export default function MonitoringPage() {
                 </div>
               ))}
               {!feed.nodes.length && (
-                <div className="rounded-md border p-4 text-sm text-muted-foreground">No processing nodes registered.</div>
+                <div className="rounded-2xl border p-4 text-sm text-muted-foreground">No processing nodes registered.</div>
               )}
             </div>
           </CardContent>
@@ -135,12 +120,12 @@ export default function MonitoringPage() {
       <Card>
         <CardHeader>
           <CardTitle>Active Jobs</CardTitle>
-          <CardDescription>Jobs use the formal queued → assigned → running → complete / failed / retrying state model.</CardDescription>
+          <CardDescription>Only jobs needing current operational attention.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid gap-2">
             {feed.activeJobs.map((job) => (
-              <div key={job.id} className="grid gap-2 rounded-md border p-3 md:grid-cols-[120px_160px_1fr_1fr]">
+              <div key={job.id} className="grid gap-2 rounded-2xl border bg-background/50 p-3 md:grid-cols-[120px_160px_1fr_1fr]">
                 <div className="font-mono text-sm">Job #{job.id}</div>
                 <StatusBadge status={job.status} />
                 <div className="text-sm text-muted-foreground">Run ID {job.run}</div>
@@ -150,7 +135,7 @@ export default function MonitoringPage() {
               </div>
             ))}
             {!feed.activeJobs.length && (
-              <div className="rounded-md border p-4 text-sm text-muted-foreground">No queued or running jobs.</div>
+              <div className="rounded-2xl border p-4 text-sm text-muted-foreground">No queued or running jobs.</div>
             )}
           </div>
         </CardContent>

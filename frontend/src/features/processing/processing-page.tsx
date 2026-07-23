@@ -2,6 +2,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 
+import { MetricCard, PageHero } from "@/components/layout/page-section";
 import { SummaryChart } from "@/components/data/summary-chart";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,18 +20,6 @@ import {
 } from "@/lib/api/queries";
 import { formatDate } from "@/lib/format";
 import type { ProcessingJob, ProcessingNode } from "@/lib/api/types";
-
-function MetricCard({ label, value, detail }: { label: string; value: number | string; detail: string }) {
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="text-xs font-bold uppercase text-muted-foreground">{label}</div>
-        <div className="mt-2 text-2xl font-bold">{value}</div>
-        <div className="mt-1 text-sm text-muted-foreground">{detail}</div>
-      </CardContent>
-    </Card>
-  );
-}
 
 export default function ProcessingPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -159,27 +148,23 @@ export default function ProcessingPage() {
     <div className="grid gap-4">
       <Breadcrumbs items={[{ label: "Processing" }]} />
 
-      <section className="rounded-lg border bg-card p-4 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-bold uppercase text-muted-foreground">Distributed execution control</p>
-            <h1 className="mt-1 text-2xl font-bold tracking-tight">Processing</h1>
-            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-              Track node assignment, queue pressure, retries, and run-level processing work without leaving the main React app.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
+      <PageHero
+        eyebrow="Distributed execution"
+        title="Processing"
+        description="Track node assignment, queue pressure, retries, and run-level processing work from a focused control surface."
+        actions={
+          <>
             <StatusBadge status="assigned" />
             <StatusBadge status="running" />
             <StatusBadge status="retrying" />
-          </div>
-        </div>
-      </section>
+          </>
+        }
+      />
 
       <Card>
         <CardHeader>
-          <CardTitle>Processing Filters</CardTitle>
-          <CardDescription>Filter the global queue by project, node, pipeline, and job state.</CardDescription>
+          <CardTitle>Queue filters</CardTitle>
+          <CardDescription>Scope the queue by project, node, pipeline, and job state.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">

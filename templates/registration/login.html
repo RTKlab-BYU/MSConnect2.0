@@ -4,27 +4,355 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MSConnect Login</title>
+  <style>
+    :root {
+      --background: #f4f7fb;
+      --foreground: #142033;
+      --card: #ffffff;
+      --primary: #264f7d;
+      --primary-strong: #173a61;
+      --accent: #187c72;
+      --muted: #e7edf4;
+      --muted-foreground: #5e6d7e;
+      --border: #cbd6e2;
+      --danger: #b7303f;
+      --shadow-lg: 0 24px 60px rgb(20 32 51 / 0.14);
+      --shadow-md: 0 12px 28px rgb(20 32 51 / 0.1);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--foreground);
+      font-family:
+        Aptos,
+        "Avenir Next",
+        ui-sans-serif,
+        "Segoe UI",
+        system-ui,
+        sans-serif;
+      background:
+        radial-gradient(circle at 14% 18%, rgb(24 124 114 / 0.2), transparent 28rem),
+        radial-gradient(circle at 86% 10%, rgb(38 79 125 / 0.18), transparent 24rem),
+        linear-gradient(135deg, #f8fbff 0%, var(--background) 48%, #eef4f8 100%);
+    }
+
+    a {
+      color: var(--primary);
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+      text-underline-offset: 4px;
+    }
+
+    .login-page {
+      display: grid;
+      min-height: 100vh;
+      grid-template-columns: minmax(0, 1.1fr) minmax(380px, 0.9fr);
+    }
+
+    .hero {
+      position: relative;
+      display: flex;
+      min-height: 100%;
+      flex-direction: column;
+      justify-content: flex-start;
+      overflow: hidden;
+      padding: 48px;
+      background:
+        linear-gradient(135deg, rgb(20 32 51 / 0.92), rgb(23 58 97 / 0.88)),
+        radial-gradient(circle at 70% 28%, rgb(24 124 114 / 0.52), transparent 26rem);
+      color: #f8fbff;
+    }
+
+    .hero::before,
+    .hero::after {
+      position: absolute;
+      border: 1px solid rgb(255 255 255 / 0.14);
+      content: "";
+      pointer-events: none;
+    }
+
+    .hero::before {
+      inset: 9% auto auto 12%;
+      width: 360px;
+      height: 360px;
+      transform: rotate(18deg);
+      border-radius: 34px;
+    }
+
+    .hero::after {
+      right: -90px;
+      bottom: 8%;
+      width: 300px;
+      height: 300px;
+      border-radius: 999px;
+      background: rgb(255 255 255 / 0.05);
+    }
+
+    .brand,
+    .hero-content {
+      position: relative;
+      z-index: 1;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-mark {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border-radius: 10px;
+      background: #f8fbff;
+      color: var(--primary-strong);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+      font-weight: 950;
+    }
+
+    .hero-content {
+      max-width: 680px;
+      margin: auto 0;
+      padding: 80px 0;
+    }
+
+    .eyebrow {
+      margin: 0 0 14px;
+      color: rgb(248 251 255 / 0.68);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(42px, 6vw, 78px);
+      line-height: 0.93;
+      letter-spacing: -0.07em;
+    }
+
+    .lede {
+      max-width: 560px;
+      margin: 24px 0 0;
+      color: rgb(248 251 255 / 0.76);
+      font-size: 18px;
+      line-height: 1.6;
+    }
+
+    .panel-wrap {
+      display: grid;
+      min-height: 100%;
+      place-items: center;
+      padding: 32px;
+    }
+
+    .login-card {
+      width: min(100%, 460px);
+      border: 1px solid rgb(203 214 226 / 0.88);
+      border-radius: 28px;
+      padding: 34px;
+      background: rgb(255 255 255 / 0.88);
+      box-shadow: var(--shadow-lg);
+      backdrop-filter: blur(18px);
+    }
+
+    .card-header {
+      margin-bottom: 28px;
+    }
+
+    .card-header h2 {
+      margin: 0;
+      font-size: 30px;
+      letter-spacing: -0.04em;
+    }
+
+    .card-header p {
+      margin: 10px 0 0;
+      color: var(--muted-foreground);
+      line-height: 1.5;
+    }
+
+    .field {
+      margin-bottom: 18px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: #33445a;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      min-height: 48px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 0 14px;
+      outline: none;
+      background: #fbfdff;
+      color: var(--foreground);
+      font: inherit;
+      transition:
+        border-color 150ms ease,
+        box-shadow 150ms ease,
+        background 150ms ease;
+    }
+
+    input[type="text"]:focus,
+    input[type="password"]:focus {
+      border-color: var(--primary);
+      background: #ffffff;
+      box-shadow: 0 0 0 4px rgb(38 79 125 / 0.13);
+    }
+
+    .error {
+      margin: 0 0 18px;
+      border: 1px solid rgb(183 48 63 / 0.28);
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: rgb(183 48 63 / 0.08);
+      color: var(--danger);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .field-error {
+      margin: 7px 0 0;
+      color: var(--danger);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .login-button {
+      display: inline-flex;
+      width: 100%;
+      min-height: 50px;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      border-radius: 14px;
+      margin-top: 6px;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      box-shadow: var(--shadow-md);
+      color: #ffffff;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 900;
+      letter-spacing: -0.01em;
+    }
+
+    .login-button:hover {
+      filter: brightness(0.98);
+    }
+
+    .support-note {
+      margin: 20px 0 0;
+      color: var(--muted-foreground);
+      font-size: 13px;
+      line-height: 1.5;
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      .login-page {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        min-height: auto;
+        padding: 32px;
+      }
+
+      .hero-content {
+        padding: 54px 0;
+      }
+
+    }
+
+    @media (max-width: 560px) {
+      .panel-wrap,
+      .hero {
+        padding: 20px;
+      }
+
+      .login-card {
+        border-radius: 22px;
+        padding: 24px;
+      }
+    }
+  </style>
 </head>
 <body>
-  <main class="container">
-    <section class="page-header">
-      <div>
+  <main class="login-page">
+    <section class="hero" aria-label="MSConnect overview">
+      <div class="brand">
+        <div class="brand-mark">MS</div>
+        <div>MSConnect</div>
+      </div>
+
+      <div class="hero-content">
         <p class="eyebrow">Secure workspace</p>
-        <h1>MSConnect Login</h1>
-        <p class="lede">Access project, sample, acquisition, and raw-file records.</p>
+        <h1>Mass spec operations, connected.</h1>
+        <p class="lede">
+          Track projects, samples, acquisition worklists, processing runs, QC flags, and result files from one authenticated workspace.
+        </p>
       </div>
     </section>
 
-    {% if form.errors %}
-    <div class="flash error">Invalid username or password.</div>
-    {% endif %}
+    <section class="panel-wrap" aria-label="Sign in">
+      <form method="post" class="login-card">
+        {% csrf_token %}
+        <div class="card-header">
+          <p class="eyebrow" style="color: var(--accent); margin-bottom: 10px;">Authenticated access</p>
+          <h2>Sign in to MSConnect</h2>
+          <p>Use your workspace account to continue to the project dashboard.</p>
+        </div>
 
-    <form method="post" class="card">
-      {% csrf_token %}
-      {{ form.as_p }}
-      <input type="hidden" name="next" value="{{ next }}">
-      <button type="submit">Log In</button>
-    </form>
+        {% if form.non_field_errors %}
+          <div class="error">{{ form.non_field_errors|striptags }}</div>
+        {% elif form.errors %}
+          <div class="error">Invalid username or password.</div>
+        {% endif %}
+
+        <div class="field">
+          <label for="{{ form.username.id_for_label }}">Username</label>
+          {{ form.username }}
+          {% for error in form.username.errors %}
+            <p class="field-error">{{ error }}</p>
+          {% endfor %}
+        </div>
+
+        <div class="field">
+          <label for="{{ form.password.id_for_label }}">Password</label>
+          {{ form.password }}
+          {% for error in form.password.errors %}
+            <p class="field-error">{{ error }}</p>
+          {% endfor %}
+        </div>
+
+        <input type="hidden" name="next" value="{{ next }}">
+        <button type="submit" class="login-button">Log in</button>
+        <p class="support-note">Local demo access is managed through Django users seeded in this environment.</p>
+      </form>
+    </section>
   </main>
 </body>
 </html>
