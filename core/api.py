@@ -745,12 +745,29 @@ def _record_job_artifacts(job: ProcessingJob, artifacts_payload) -> list[Process
     return records
 
 
-def _auto_artifact_payloads(*, protein_table: Path | None, peptide_table: Path | None, log_path: Path | None) -> list[dict]:
+def _auto_artifact_payloads(
+    *,
+    protein_table: Path | None,
+    peptide_table: Path | None,
+    log_path: Path | None,
+) -> list[dict]:
     payloads = []
     if protein_table:
-        payloads.append({"artifact_type": ProcessingArtifactType.PROTEIN_TABLE, "path": str(protein_table), "format": "table"})
+        payloads.append(
+            {
+                "artifact_type": ProcessingArtifactType.PROTEIN_TABLE,
+                "path": str(protein_table),
+                "format": "table",
+            }
+        )
     if peptide_table:
-        payloads.append({"artifact_type": ProcessingArtifactType.PEPTIDE_TABLE, "path": str(peptide_table), "format": "table"})
+        payloads.append(
+            {
+                "artifact_type": ProcessingArtifactType.PEPTIDE_TABLE,
+                "path": str(peptide_table),
+                "format": "table",
+            }
+        )
     if log_path:
         payloads.append({"artifact_type": ProcessingArtifactType.LOG, "path": str(log_path), "format": "log"})
     return payloads
@@ -1203,7 +1220,17 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
         job.error_message = ""
         job.stats = stats_payload
         job.metadata = metadata
-        job.save(update_fields=["status", "finished_at", "log_path", "error_message", "stats", "metadata", "updated_at"])
+        job.save(
+            update_fields=[
+                "status",
+                "finished_at",
+                "log_path",
+                "error_message",
+                "stats",
+                "metadata",
+                "updated_at",
+            ]
+        )
 
         job.raw_file.status = RawFileStatus.PROCESSED
         job.raw_file.save(update_fields=["status", "updated_at"])

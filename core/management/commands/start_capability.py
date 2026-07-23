@@ -11,7 +11,11 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("name", help="Python package name, for example diann_tools or spectral_library")
-        parser.add_argument("--force", action="store_true", help="Allow adding starter files to an existing app folder.")
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Allow adding starter files to an existing app folder.",
+        )
 
     def handle(self, *args, **options):
         app_name = options["name"].strip()

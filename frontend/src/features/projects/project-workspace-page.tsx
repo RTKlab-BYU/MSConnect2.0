@@ -108,7 +108,7 @@ export default function ProjectWorkspacePage() {
 
   const project = projectQuery.data;
   const summary = summaryQuery.data;
-  const runs = runsQuery.data?.results ?? [];
+  const runs = useMemo(() => runsQuery.data?.results ?? [], [runsQuery.data?.results]);
   const selectedRunSummary = runSummaryQuery.data;
   const selectedRunRawFile = selectedRunSummary?.raw_files[0];
 

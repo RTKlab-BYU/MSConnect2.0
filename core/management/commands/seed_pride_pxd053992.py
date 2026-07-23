@@ -90,7 +90,10 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(f"Seeded {project.code} with {len(runs)} runs."))
         if imported:
-            self.stdout.write(self.style.SUCCESS(f"Imported and queued {len(imported)} raw files: {', '.join(imported)}"))
+            imported_names = ", ".join(imported)
+            self.stdout.write(
+                self.style.SUCCESS(f"Imported and queued {len(imported)} raw files: {imported_names}")
+            )
 
     def _seed_records(self, *, project_code: str, incoming_dir: Path, mzml_files: list[Path]):
         User = get_user_model()
