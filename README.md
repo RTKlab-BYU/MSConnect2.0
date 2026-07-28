@@ -87,6 +87,20 @@ All three services stay in the same repo and can be deployed together from one t
 
 `watcher` and `processor` wait for the `web` healthcheck before starting, and their API client retries transient connection and HTTP 5xx errors. This keeps local three-container simulations from failing during Django migration/startup races.
 
+Health and readiness endpoints:
+
+```sh
+curl -f http://localhost:8080/healthz/
+curl -f http://localhost:8080/readyz/
+```
+
+Agent preflight checks verify DNS, TCP connectivity, bearer-token role, API ping, and shared storage before a worker is put into service:
+
+```sh
+docker compose run --rm watcher python manage.py check_agent_runtime --role watcher --write-test
+docker compose run --rm processor python manage.py check_agent_runtime --role processor --engine processor --write-test
+```
+
 Each component is a Django management command run from the same container image:
 
 ```sh
@@ -163,6 +177,23 @@ Run one processor pass manually:
 ```sh
 docker compose run --rm processor python manage.py run_processor_agent --once
 ```
+
+## End-to-End Smoke Test
+
+Use this flow to prove web, watcher, processor, networking, shared storage, queueing, processing, result import, and artifact recording are functioning together:
+
+```sh
+docker compose up -d --build web watcher processor nginx
+curl -f http://localhost:8080/readyz/
+docker compose run --rm watcher python manage.py check_agent_runtime --role watcher --write-test
+docker compose run --rm processor python manage.py check_agent_runtime --role processor --engine processor --write-test
+docker compose exec web python manage.py create_e2e_smoke_fixture --code E2E-SMOKE
+docker compose run --rm watcher python manage.py run_watcher_agent --once --match-run-by-name
+docker compose run --rm processor python manage.py run_processor_agent --once
+docker compose exec web python manage.py verify_e2e_smoke_fixture --code E2E-SMOKE
+```
+
+After a successful run, `/app/admin` and `/app/processing/admin` should show green live nodes, current IPs, heartbeat age, and the completed smoke job artifacts.
 
 ## Agent Auth
 

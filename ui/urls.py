@@ -4,11 +4,11 @@ from django.views.generic import RedirectView
 app_name = "ui"
 
 urlpatterns = [
-    path("", RedirectView.as_view(url="/app/projects", permanent=True), name="project_list"),
+    path("", RedirectView.as_view(url="/app/dashboard", permanent=True), name="project_list"),
     path("projects", RedirectView.as_view(url="/app/projects", permanent=True), name="project_list"),
     path("projects/pre-acq", RedirectView.as_view(url="/app/projects", permanent=True), name="projects_pre_acq"),
     path("projects/<int:pk>", RedirectView.as_view(url="/app/projects/%(pk)s", permanent=True), name="project_detail"),
-    path("showcase", RedirectView.as_view(url="/app/projects", permanent=True), name="showcase_dashboard"),
+    path("showcase", RedirectView.as_view(url="/app/dashboard", permanent=True), name="showcase_dashboard"),
     path("showcase/design", RedirectView.as_view(url="/app/projects", permanent=True), name="showcase_design"),
     path(
         "showcase/acquisition",
@@ -47,5 +47,5 @@ urlpatterns = [
     path("intake", RedirectView.as_view(url="/app/projects", permanent=True), name="intake_list"),
     path("intake/<int:pk>", RedirectView.as_view(url="/app/projects", permanent=True), name="intake_detail"),
     path("intake/<int:pk>/review", RedirectView.as_view(url="/app/projects", permanent=True), name="intake_review"),
-    re_path(r"^.*$", RedirectView.as_view(url="/app/projects", permanent=True), name="ui_fallback"),
+    re_path(r"^.*$", RedirectView.as_view(url="/app/dashboard", permanent=True), name="ui_fallback"),
 ]

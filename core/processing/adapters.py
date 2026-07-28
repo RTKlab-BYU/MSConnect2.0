@@ -25,6 +25,8 @@ def render_adapter_plan(
         return _diann_plan(parameters=parameters, placeholders=placeholders, results_dir=results_dir)
     if adapter == "fragpipe":
         return _fragpipe_plan(parameters=parameters, placeholders=placeholders, results_dir=results_dir)
+    if adapter in {"skyline", "skylinecmd"}:
+        return _skyline_plan(parameters=parameters, placeholders=placeholders, results_dir=results_dir)
     if adapter in {"proteome-discoverer", "proteome_discoverer", "spectronaut", "enterprise-handoff"}:
         return _enterprise_handoff_plan(
             adapter=adapter,
@@ -161,6 +163,42 @@ def _fragpipe_plan(*, parameters: dict, placeholders: dict[str, str], results_di
     )
 
 
+def _skyline_plan(*, parameters: dict, placeholders: dict[str, str], results_dir: Path) -> AdapterPlan:
+    executable = _command_prefix(parameters.get("executable") or "SkylineCmd")
+    document = parameters.get("document")
+    if not document:
+        raise ValueError("skyline adapter requires parameters.document.")
+
+    report_name = _substitute(str(parameters.get("report") or "skyline-report.csv"), placeholders)
+    command = [
+        *executable,
+        f"--in={_substitute(str(document), placeholders)}",
+        f"--import-file={placeholders['raw_file_path']}",
+        f"--report-file={str((results_dir / report_name).resolve())}",
+    ]
+    report_name_value = parameters.get("report_name")
+    if report_name_value:
+        command.append(f"--report-name={_substitute(str(report_name_value), placeholders)}")
+    output_document = parameters.get("out")
+    if output_document:
+        command.append(f"--out={_substitute(str(output_document), placeholders)}")
+    command.extend(_string_list(parameters.get("options") or [], placeholders))
+    artifact_files = [
+        {
+            "artifact_type": "other",
+            "path": str((results_dir / report_name).resolve()),
+            "format": "csv",
+            "metadata": {"software": "skyline", "role": "report"},
+        }
+    ]
+    artifact_files.extend(list(parameters.get("artifact_files") or []))
+    return AdapterPlan(
+        command=command,
+        result_files=dict(parameters.get("result_files") or {}),
+        artifact_files=artifact_files,
+    )
+
+
 def _enterprise_handoff_plan(
     *,
     adapter: str,
@@ -168,14 +206,41 @@ def _enterprise_handoff_plan(
     placeholders: dict[str, str],
     results_dir: Path,
 ) -> AdapterPlan:
+    results_dir = results_dir.resolve()
     command_template = parameters.get("command")
     if not isinstance(command_template, list) or not command_template:
         raise ValueError(f"{adapter} adapter requires a site-specific parameters.command array.")
     command_placeholders = {**placeholders, "results_dir": str(results_dir)}
+    artifact_files = list(parameters.get("artifact_files") or [])
+    handoff_name = parameters.get("handoff_manifest") or f"{adapter}-handoff.json"
+    handoff_candidate = Path(_substitute(str(handoff_name), command_placeholders))
+    if not handoff_candidate.is_absolute():
+        handoff_path = (results_dir / handoff_candidate).resolve()
+    else:
+        handoff_path = handoff_candidate.resolve()
+    if not handoff_path.is_relative_to(results_dir):
+        raise ValueError("Enterprise handoff manifest must stay under the job results directory.")
+    handoff_payload = {
+        "adapter": adapter,
+        "raw_file_path": placeholders["raw_file_path"],
+        "run_name": placeholders.get("run_name", ""),
+        "results_dir": str(results_dir),
+        "command": [_substitute(str(item), command_placeholders) for item in command_template],
+        "site_notes": parameters.get("site_notes", ""),
+    }
+    artifact_files.append(
+        {
+            "artifact_type": "enterprise_export",
+            "path": str(handoff_path),
+            "format": "json",
+            "metadata": {"software": adapter, "role": "handoff_manifest"},
+        }
+    )
     return AdapterPlan(
-        command=[_substitute(str(item), command_placeholders) for item in command_template],
+        command=handoff_payload["command"],
         result_files=dict(parameters.get("result_files") or {}),
-        artifact_files=list(parameters.get("artifact_files") or []),
+        artifact_files=artifact_files,
+        files_to_write={str(handoff_path): _json_dump(handoff_payload)},
     )
 
 
@@ -198,3 +263,9 @@ def _substitute(value: str, placeholders: dict[str, str]) -> str:
         return value.format(**placeholders)
     except KeyError as exc:
         raise ValueError(f"Unknown placeholder {exc.args[0]!r} in adapter parameters.") from exc
+
+
+def _json_dump(value: dict) -> str:
+    import json
+
+    return json.dumps(value, indent=2, sort_keys=True) + "\n"

@@ -308,6 +308,10 @@ export type ProcessingNode = {
   last_heartbeat_at: string | null;
   settings: Record<string, unknown>;
   metadata: Record<string, unknown>;
+  ip_address: string;
+  health: "green" | "yellow" | "red";
+  active_control: Record<string, unknown>;
+  seconds_since_heartbeat: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -344,6 +348,7 @@ export type ProcessingNodeOverview = {
   total: number;
   by_status: CountBy<"status">;
   by_type: CountBy<"node_type">;
+  stale: number;
 };
 
 export type RawFileOverview = {
@@ -446,6 +451,49 @@ export type ProjectResearcherStatus = {
     missing_raw_files: number;
   };
   runs: ProjectResearcherRun[];
+};
+
+export type FindingsWorkspace = {
+  id: EntityId;
+  project: EntityId;
+  project_code: string;
+  project_title: string;
+  mode: "personal" | "shared";
+  data_strategy: "manifest" | "symlink";
+  root_path: string;
+  workspace_path: string;
+  status: "prepared" | "active" | "indexed" | "error";
+  plugin_marketplace: string;
+  plugin_name: string;
+  plugin_version: string;
+  findings_count: number;
+  reports_count: number;
+  latest_report_path: string;
+  last_indexed_at: string | null;
+  error_message: string;
+  metadata: Record<string, unknown>;
+  walkthrough_path: string;
+  claude_commands: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type FindingsWorkspaceResponse = {
+  workspace: FindingsWorkspace | null;
+  default_root_path?: string;
+  claude_commands?: string[];
+};
+
+export type PrepareFindingsWorkspacePayload = {
+  root_path?: string;
+  mode: "personal" | "shared";
+  data_strategy: "manifest" | "symlink";
+};
+
+export type PrepareFindingsWorkspaceResponse = {
+  workspace: FindingsWorkspace;
+  created_paths: string[];
+  kept_paths: string[];
 };
 
 export type AcquisitionWorklist = {

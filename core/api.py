@@ -219,6 +219,10 @@ class WorklistImportSerializer(serializers.Serializer):
         return rows
 
 
+class QueueRunsSerializer(serializers.Serializer):
+    run_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), allow_empty=False)
+
+
 class ProjectIntakeQueueSerializer(BaseSerializer):
     lab_name = serializers.CharField(source="lab.name", read_only=True)
     submitted_by_username = serializers.CharField(source="submitted_by.username", read_only=True)
@@ -339,8 +343,36 @@ class ProcessingPipelineSerializer(BaseSerializer):
 
 
 class ProcessingNodeSerializer(BaseSerializer):
+    ip_address = serializers.SerializerMethodField()
+    health = serializers.SerializerMethodField()
+    active_control = serializers.SerializerMethodField()
+    seconds_since_heartbeat = serializers.SerializerMethodField()
+
     class Meta(BaseSerializer.Meta):
         model = ProcessingNode
+
+    def get_ip_address(self, obj):
+        return (obj.metadata or {}).get("ip_address") or (obj.metadata or {}).get("remote_addr") or ""
+
+    def get_health(self, obj):
+        if obj.status == ProcessingNodeStatus.ERROR:
+            return "red"
+        if not obj.last_heartbeat_at:
+            return "red"
+        age = (timezone.now() - obj.last_heartbeat_at).total_seconds()
+        if age > 180:
+            return "red"
+        if age > 75:
+            return "yellow"
+        return "green"
+
+    def get_active_control(self, obj):
+        return (obj.metadata or {}).get("control") or {}
+
+    def get_seconds_since_heartbeat(self, obj):
+        if not obj.last_heartbeat_at:
+            return None
+        return int((timezone.now() - obj.last_heartbeat_at).total_seconds())
 
 
 class ProcessingJobSerializer(BaseSerializer):
@@ -930,14 +962,40 @@ class AgentHeartbeatView(AgentApiView):
         if not name:
             raise ValidationError({"name": "Agent name is required."})
 
-        node_type = (request.data.get("node_type") or getattr(request.user, "agent_role", "")).strip()
-        if node_type != getattr(request.user, "agent_role", ""):
+        agent_role = getattr(request.user, "agent_role", "")
+        node_type = (request.data.get("node_type") or agent_role).strip()
+        if agent_role == "processor":
+            if not re.fullmatch(r"[A-Za-z0-9_. -]{1,64}", node_type):
+                raise ValidationError({"node_type": "Processor node_type must be a short engine identifier."})
+        elif node_type != agent_role:
             raise ValidationError({"node_type": "node_type must match the authenticated agent role."})
 
         status_value = (request.data.get("status") or ProcessingNodeStatus.IDLE).strip()
         valid_statuses = {value for value, _label in ProcessingNodeStatus.choices}
         if status_value not in valid_statuses:
             raise ValidationError({"status": "Invalid processing node status."})
+
+        existing = ProcessingNode.objects.filter(name=name).first()
+        incoming_metadata = _ensure_dict(request.data.get("metadata"), field_name="metadata")
+        previous_control = ((existing.metadata or {}).get("control") if existing else None) or {}
+        acknowledged_control_id = incoming_metadata.get("ack_control_id")
+        if previous_control and acknowledged_control_id == previous_control.get("id"):
+            previous_control = {
+                **previous_control,
+                "acknowledged_at": timezone.now().isoformat(),
+                "status": "acknowledged",
+            }
+        remote_addr = (
+            request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
+            or request.META.get("REMOTE_ADDR", "")
+        )
+        metadata = {
+            **incoming_metadata,
+            "remote_addr": remote_addr,
+            "ip_address": incoming_metadata.get("ip_address") or remote_addr,
+        }
+        if previous_control:
+            metadata["control"] = previous_control
 
         node, _created = ProcessingNode.objects.update_or_create(
             name=name,
@@ -948,10 +1006,25 @@ class AgentHeartbeatView(AgentApiView):
                 "endpoint_url": (request.data.get("endpoint_url") or "").strip(),
                 "last_heartbeat_at": timezone.now(),
                 "settings": _ensure_dict(request.data.get("settings"), field_name="settings"),
-                "metadata": _ensure_dict(request.data.get("metadata"), field_name="metadata"),
+                "metadata": metadata,
             },
         )
         return Response(ProcessingNodeSerializer(node).data, status=status.HTTP_200_OK)
+
+
+class AgentPingView(AgentApiView):
+    agent_roles = ("watcher", "processor")
+
+    def get(self, request):
+        return Response(
+            {
+                "status": "ok",
+                "agent_role": getattr(request.user, "agent_role", ""),
+                "token_label": getattr(request.user, "token_label", ""),
+                "server_time": timezone.now().isoformat(),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class AgentRawFileImportView(AgentApiView):
@@ -1292,12 +1365,15 @@ class ProcessingJobFailView(ProcessingJobStartView):
             raise ValidationError({"error_message": "error_message is required."})
 
         log_path = _resolve_results_path(request.data.get("log_path"))
+        stats_payload = _ensure_dict(request.data.get("stats"), field_name="stats")
         job.status = ProcessingStatus.FAILED
         job.finished_at = timezone.now()
         job.error_message = error_message
+        if stats_payload:
+            job.stats = {**(job.stats or {}), **stats_payload}
         if log_path:
             job.log_path = str(log_path)
-        job.save(update_fields=["status", "finished_at", "error_message", "log_path", "updated_at"])
+        job.save(update_fields=["status", "finished_at", "error_message", "log_path", "stats", "updated_at"])
 
         node.status = (
             ProcessingNodeStatus.ERROR if _boolish(request.data.get("node_error")) else ProcessingNodeStatus.IDLE
@@ -2063,6 +2139,33 @@ class ProjectViewSet(AuthenticatedModelViewSet):
 
         return Response(
             {
+                "queued": len(queued_jobs),
+                "jobs": ProcessingJobSerializer(queued_jobs, many=True).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"], url_path="queue-runs")
+    def queue_runs(self, request, pk=None):
+        project = self.get_object()
+        serializer = QueueRunsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        run_ids = serializer.validated_data["run_ids"]
+        raw_files = RawFile.objects.filter(
+            run__sample__experiment__project=project,
+            run_id__in=run_ids,
+            run__isnull=False,
+            run__processing_jobs__isnull=True,
+        ).select_related("run")
+        queued_jobs = []
+        for raw_file in raw_files:
+            job = _queue_processing_job_for_raw_file(raw_file)
+            if job:
+                queued_jobs.append(job)
+
+        return Response(
+            {
+                "requested": len(set(run_ids)),
                 "queued": len(queued_jobs),
                 "jobs": ProcessingJobSerializer(queued_jobs, many=True).data,
             },
@@ -2953,14 +3056,62 @@ class ProcessingNodeViewSet(AuthenticatedModelViewSet):
             queryset = queryset.filter(node_type=node_type_filter)
         return queryset
 
+    @action(detail=True, methods=["post"], url_path="control")
+    def control(self, request, pk=None):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can control processing nodes.")
+        node = self.get_object()
+        command = str(request.data.get("command") or "").strip()
+        if command not in {"pause", "resume", "drain", "restart", "stop"}:
+            raise ValidationError({"command": "Command must be pause, resume, drain, restart, or stop."})
+        reason = str(request.data.get("reason") or "").strip()
+        control = {
+            "id": str(uuid.uuid4()),
+            "command": command,
+            "status": "requested",
+            "requested_by": request.user.username,
+            "requested_at": timezone.now().isoformat(),
+            "reason": reason,
+        }
+        node.metadata = {**(node.metadata or {}), "control": control}
+        node.save(update_fields=["metadata", "updated_at"])
+        return Response(ProcessingNodeSerializer(node).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="mark-offline")
+    def mark_offline(self, request, pk=None):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can mark processing nodes offline.")
+        node = self.get_object()
+        node.status = ProcessingNodeStatus.OFFLINE
+        node.metadata = {
+            **(node.metadata or {}),
+            "control": {
+                "id": str(uuid.uuid4()),
+                "command": "mark-offline",
+                "status": "applied",
+                "requested_by": request.user.username,
+                "requested_at": timezone.now().isoformat(),
+                "reason": str(request.data.get("reason") or "").strip(),
+            },
+        }
+        node.save(update_fields=["status", "metadata", "updated_at"])
+        return Response(ProcessingNodeSerializer(node).data, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=["get"])
     def overview(self, request):
         queryset = self.filter_queryset(self.get_queryset())
+        now = timezone.now()
+        stale_count = sum(
+            1
+            for node in queryset
+            if not node.last_heartbeat_at or (now - node.last_heartbeat_at).total_seconds() > 180
+        )
         return Response(
             {
                 "total": queryset.count(),
                 "by_status": list(queryset.values("status").annotate(count=Count("id")).order_by("status")),
                 "by_type": list(queryset.values("node_type").annotate(count=Count("id")).order_by("node_type")),
+                "stale": stale_count,
             }
         )
 

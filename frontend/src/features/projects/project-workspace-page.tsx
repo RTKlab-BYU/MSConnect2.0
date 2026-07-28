@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { BarChart3, CheckCircle2, FileUp, HardDrive, Save, Settings2 } from "lucide-react";
+import { BarChart3, BrainCircuit, CheckCircle2, Copy, FileUp, FolderKanban, HardDrive, RefreshCw, Save, Settings2 } from "lucide-react";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -14,7 +14,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
   fetchProjectResearcherStatus,
+  fetchFindingsWorkspace,
+  indexFindingsWorkspace,
   importProjectWorklist,
+  prepareFindingsWorkspace,
+  queueProjectRuns,
   queueProjectReadyRuns,
   queryKeys,
   updateRun,
@@ -22,7 +26,7 @@ import {
 } from "@/lib/api/queries";
 import { queryClient } from "@/lib/api/query-client";
 import { formatBytes, formatDate } from "@/lib/format";
-import type { ProjectResearcherRun, WorklistImportRow } from "@/lib/api/types";
+import type { FindingsWorkspace, ProjectResearcherRun, WorklistImportRow } from "@/lib/api/types";
 
 const roleOptions = ["sample", "qc", "library", "blank", "wash", "calibration"] as const;
 const runStatusOptions = ["planned", "acquired", "imported", "processed", "failed"] as const;
@@ -47,6 +51,9 @@ export default function ProjectWorkspacePage() {
   const [worklistRows, setWorklistRows] = useState<WorklistImportRow[]>([]);
   const [worklistError, setWorklistError] = useState("");
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
+  const [selectedRunIds, setSelectedRunIds] = useState<number[]>([]);
+  const [workspaceMode, setWorkspaceMode] = useState<"personal" | "shared">("personal");
+  const [dataStrategy, setDataStrategy] = useState<"manifest" | "symlink">("manifest");
 
   const statusQuery = useQuery({
     queryKey: queryKeys.projectResearcherStatus(projectId),
@@ -54,12 +61,20 @@ export default function ProjectWorkspacePage() {
     enabled: Number.isFinite(projectId),
     refetchInterval: 30_000,
   });
+  const findingsQuery = useQuery({
+    queryKey: queryKeys.findingsWorkspace(projectId),
+    queryFn: () => fetchFindingsWorkspace(projectId),
+    enabled: Number.isFinite(projectId),
+  });
   const data = statusQuery.data;
   const project = data?.project;
   const runs = data?.runs ?? [];
   const selectedRun = runs.find((row) => row.run.id === selectedRunId) ?? runs[0];
   const readyToProcess = runs.filter((row) => row.raw_file && !row.processing_job);
   const failedRows = runs.filter((row) => row.processing_job?.status === "failed" || row.run.status === "failed");
+  const selectedRows = runs.filter((row) => selectedRunIds.includes(row.run.id));
+  const selectedReadyRows = selectedRows.filter((row) => row.raw_file && !row.processing_job);
+  const allSelected = Boolean(runs.length) && selectedRunIds.length === runs.length;
 
   const importMutation = useMutation({
     mutationFn: () => importProjectWorklist(projectId, { worklist_name: worklistName, rows: worklistRows }),
@@ -75,6 +90,13 @@ export default function ProjectWorkspacePage() {
     mutationFn: () => queueProjectReadyRuns(projectId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.projectResearcherStatus(projectId) });
+    },
+  });
+  const queueSelectedMutation = useMutation({
+    mutationFn: () => queueProjectRuns(projectId, selectedReadyRows.map((row) => row.run.id)),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.projectResearcherStatus(projectId) });
+      setSelectedRunIds([]);
     },
   });
   const editMutation = useMutation({
@@ -96,6 +118,18 @@ export default function ProjectWorkspacePage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.projectResearcherStatus(projectId) });
       setEditDraft(null);
+    },
+  });
+  const prepareWorkspaceMutation = useMutation({
+    mutationFn: () => prepareFindingsWorkspace(projectId, { mode: workspaceMode, data_strategy: dataStrategy }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.findingsWorkspace(projectId) });
+    },
+  });
+  const indexWorkspaceMutation = useMutation({
+    mutationFn: (workspaceId: number) => indexFindingsWorkspace(workspaceId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.findingsWorkspace(projectId) });
     },
   });
 
@@ -134,6 +168,14 @@ export default function ProjectWorkspacePage() {
       notes: "",
     });
     setSelectedRunId(row.run.id);
+  }
+
+  function toggleRunSelected(runId: number) {
+    setSelectedRunIds((current) => (current.includes(runId) ? current.filter((id) => id !== runId) : [...current, runId]));
+  }
+
+  function toggleAllSelected() {
+    setSelectedRunIds(allSelected ? [] : runs.map((row) => row.run.id));
   }
 
   return (
@@ -196,6 +238,20 @@ export default function ProjectWorkspacePage() {
         <MetricCard label="Ready" value={readyToProcess.length} detail="uploaded, not queued" />
       </section>
 
+      <FindingsWorkflowPanel
+        workspace={findingsQuery.data?.workspace ?? null}
+        defaultRoot={findingsQuery.data?.default_root_path ?? ""}
+        mode={workspaceMode}
+        dataStrategy={dataStrategy}
+        onModeChange={setWorkspaceMode}
+        onDataStrategyChange={setDataStrategy}
+        onPrepare={() => prepareWorkspaceMutation.mutate()}
+        preparePending={prepareWorkspaceMutation.isPending}
+        prepareError={prepareWorkspaceMutation.error instanceof Error ? prepareWorkspaceMutation.error.message : ""}
+        onIndex={(workspaceId) => indexWorkspaceMutation.mutate(workspaceId)}
+        indexPending={indexWorkspaceMutation.isPending}
+      />
+
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -224,10 +280,27 @@ export default function ProjectWorkspacePage() {
           </div>
         </CardHeader>
         <CardContent>
+          <SelectedRunsPanel
+            projectId={projectId}
+            rows={selectedRows}
+            readyCount={selectedReadyRows.length}
+            onClear={() => setSelectedRunIds([])}
+            onQueue={() => queueSelectedMutation.mutate()}
+            queuePending={queueSelectedMutation.isPending}
+          />
           <div className="overflow-x-auto rounded-lg border">
             <table className="w-full min-w-[1120px] text-sm">
               <thead className="bg-secondary/65 text-left text-xs uppercase tracking-[0.08em] text-muted-foreground">
                 <tr>
+                  <th className="px-3 py-3">
+                    <input
+                      aria-label="Select all runs"
+                      checked={allSelected}
+                      className="h-4 w-4"
+                      type="checkbox"
+                      onChange={toggleAllSelected}
+                    />
+                  </th>
                   <th className="px-3 py-3">Order</th>
                   <th className="px-3 py-3">Run</th>
                   <th className="px-3 py-3">Sample</th>
@@ -249,12 +322,29 @@ export default function ProjectWorkspacePage() {
                     className={`border-t hover:bg-secondary/35 ${selectedRun?.run.id === row.run.id ? "bg-secondary/45" : ""}`}
                     onClick={() => setSelectedRunId(row.run.id)}
                   >
+                    <td className="px-3 py-3">
+                      <input
+                        aria-label={`Select ${row.run.run_name}`}
+                        checked={selectedRunIds.includes(row.run.id)}
+                        className="h-4 w-4"
+                        type="checkbox"
+                        onChange={(event) => {
+                          event.stopPropagation();
+                          toggleRunSelected(row.run.id);
+                        }}
+                        onClick={(event) => event.stopPropagation()}
+                      />
+                    </td>
                     <td className="px-3 py-3 font-mono">{row.run.worklist_position ?? "-"}</td>
                     <td className="px-3 py-3">
                       <div className="font-semibold">{row.run.run_name}</div>
                       <div className="max-w-[220px] truncate text-xs text-muted-foreground">{row.run.expected_filename || "No expected filename"}</div>
                     </td>
-                    <td className="px-3 py-3">{row.sample.name}</td>
+                    <td className="px-3 py-3">
+                      <Link className="font-semibold" to={`/projects/${projectId}/samples/${row.sample.id}`} onClick={(event) => event.stopPropagation()}>
+                        {row.sample.name}
+                      </Link>
+                    </td>
                     <td className="px-3 py-3">{row.raw_file ? <StatusBadge status={row.raw_file.status} /> : <span className="text-muted-foreground">Missing</span>}</td>
                     <td className="px-3 py-3"><StatusBadge status={row.run.status} /></td>
                     <td className="px-3 py-3">{row.processing_job ? <StatusBadge status={row.processing_job.status} /> : <span className="text-muted-foreground">Not queued</span>}</td>
@@ -273,7 +363,7 @@ export default function ProjectWorkspacePage() {
                 ))}
                 {!runs.length ? (
                   <tr>
-                    <td className="px-3 py-8 text-center text-muted-foreground" colSpan={12}>
+                    <td className="px-3 py-8 text-center text-muted-foreground" colSpan={13}>
                       Import a worklist to establish the planned LC-MS runs for this project.
                     </td>
                   </tr>
@@ -334,6 +424,54 @@ export default function ProjectWorkspacePage() {
   );
 }
 
+function SelectedRunsPanel({
+  projectId,
+  rows,
+  readyCount,
+  onClear,
+  onQueue,
+  queuePending,
+}: {
+  projectId: number;
+  rows: ProjectResearcherRun[];
+  readyCount: number;
+  onClear: () => void;
+  onQueue: () => void;
+  queuePending: boolean;
+}) {
+  if (!rows.length) return null;
+  const rawFileCount = rows.filter((row) => row.raw_file).length;
+  const failedCount = rows.filter((row) => row.run.status === "failed" || row.processing_job?.status === "failed").length;
+  const firstSample = rows[0]?.sample;
+
+  return (
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-secondary/55 p-3">
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <div className="font-black">{rows.length} selected</div>
+        <div className="text-muted-foreground">{rawFileCount} with raw files</div>
+        <div className="text-muted-foreground">{readyCount} ready to queue</div>
+        <div className={failedCount ? "font-bold text-warning" : "text-muted-foreground"}>{failedCount} failed</div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {firstSample ? (
+          <Button asChild size="sm" variant="secondary">
+            <Link to={`/projects/${projectId}/samples/${firstSample.id}`}>
+              Open first sample
+            </Link>
+          </Button>
+        ) : null}
+        <Button size="sm" variant="secondary" disabled={!readyCount || queuePending} onClick={onQueue}>
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          {queuePending ? "Queueing..." : "Queue selected"}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onClear}>
+          Clear
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function RunDetail({ projectId, row, onEdit }: { projectId: number; row: ProjectResearcherRun; onEdit: () => void }) {
   return (
     <Card>
@@ -374,6 +512,130 @@ function RunDetail({ projectId, row, onEdit }: { projectId: number; row: Project
           <div className="mt-1 text-sm text-muted-foreground">
             {row.raw_file ? <Link className="font-medium text-primary" to={`/spectra?rawFile=${row.raw_file.id}`}>Open spectra viewer</Link> : "No raw file yet"}
           </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function FindingsWorkflowPanel({
+  workspace,
+  defaultRoot,
+  mode,
+  dataStrategy,
+  onModeChange,
+  onDataStrategyChange,
+  onPrepare,
+  preparePending,
+  prepareError,
+  onIndex,
+  indexPending,
+}: {
+  workspace: FindingsWorkspace | null;
+  defaultRoot: string;
+  mode: "personal" | "shared";
+  dataStrategy: "manifest" | "symlink";
+  onModeChange: (mode: "personal" | "shared") => void;
+  onDataStrategyChange: (strategy: "manifest" | "symlink") => void;
+  onPrepare: () => void;
+  preparePending: boolean;
+  prepareError: string;
+  onIndex: (workspaceId: number) => void;
+  indexPending: boolean;
+}) {
+  const commands = workspace?.claude_commands ?? [
+    "/plugin marketplace add mriffle/findings-ai-collab-workflow",
+    "/plugin install findings-workflow@findings-workflow",
+    "/findings-workflow:init",
+  ];
+
+  function copyCommands() {
+    void navigator.clipboard?.writeText(commands.join("\n"));
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle>Claude Findings Workflow</CardTitle>
+            <CardDescription>Prepare an analysis workspace for experimental design, QC, validated findings, figures, and reports.</CardDescription>
+          </div>
+          {workspace ? <StatusBadge status={workspace.status} /> : null}
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-4 xl:grid-cols-[1fr_420px]">
+        <div className="grid gap-3">
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="grid gap-1 text-sm font-bold">
+              Workspace mode
+              <Select value={mode} onValueChange={(value) => onModeChange(value as "personal" | "shared")}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="personal">Personal</SelectItem>
+                  <SelectItem value="shared">Shared</SelectItem>
+                </SelectContent>
+              </Select>
+            </label>
+            <label className="grid gap-1 text-sm font-bold">
+              Data access
+              <Select value={dataStrategy} onValueChange={(value) => onDataStrategyChange(value as "manifest" | "symlink")}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="manifest">Path manifest</SelectItem>
+                  <SelectItem value="symlink">Read-only symlinks</SelectItem>
+                </SelectContent>
+              </Select>
+            </label>
+          </div>
+
+          <div className="rounded-lg border bg-background/50 p-3">
+            <div className="flex items-center gap-2 text-sm font-bold">
+              <FolderKanban className="h-4 w-4" />
+              Workspace
+            </div>
+            <div className="mt-2 break-all font-mono text-xs text-muted-foreground">
+              {workspace?.workspace_path ?? defaultRoot ?? "Prepare the workspace to create project files."}
+            </div>
+            {workspace ? (
+              <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+                <span>Walkthrough: {workspace.walkthrough_path}</span>
+                <span>Findings: {workspace.findings_count} · Reports: {workspace.reports_count}</span>
+                {workspace.latest_report_path ? <span>Latest report: {workspace.latest_report_path}</span> : null}
+              </div>
+            ) : null}
+          </div>
+
+          {prepareError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{prepareError}</div> : null}
+
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={onPrepare} disabled={preparePending}>
+              <BrainCircuit className="h-4 w-4" />
+              {preparePending ? "Preparing..." : workspace ? "Refresh workspace export" : "Prepare workspace"}
+            </Button>
+            {workspace ? (
+              <Button variant="secondary" onClick={() => onIndex(workspace.id)} disabled={indexPending}>
+                <RefreshCw className="h-4 w-4" />
+                {indexPending ? "Indexing..." : "Index outputs"}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="rounded-lg border bg-secondary/45 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-black">Claude walkthrough</div>
+            <Button size="sm" variant="secondary" onClick={copyCommands}>
+              <Copy className="h-3.5 w-3.5" />
+              Copy
+            </Button>
+          </div>
+          <ol className="mt-3 grid gap-2 text-sm text-muted-foreground">
+            <li><span className="font-bold text-foreground">1.</span> Install the plugin in Claude Code and restart Claude.</li>
+            <li><span className="font-bold text-foreground">2.</span> Open Claude Code in the workspace path.</li>
+            <li><span className="font-bold text-foreground">3.</span> Run init, setup-env, then Stage 0 through reporting.</li>
+          </ol>
+          <pre className="mt-3 max-h-52 overflow-auto rounded-lg bg-background p-3 text-xs"><code>{commands.join("\n")}</code></pre>
         </div>
       </CardContent>
     </Card>

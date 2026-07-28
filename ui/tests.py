@@ -44,11 +44,11 @@ class UiIntakeIntegrationTests(TestCase):
         worklist = AcquisitionWorklist.objects.create(experiment=project.experiments.create(name="Exp 1"))
 
         redirects = (
-            ("/ui/", "/app/projects"),
+            ("/ui/", "/app/dashboard"),
             ("/ui/projects", "/app/projects"),
             (f"/ui/projects/{project.id}", f"/app/projects/{project.id}"),
             ("/ui/projects/pre-acq", "/app/projects"),
-            ("/ui/showcase", "/app/projects"),
+            ("/ui/showcase", "/app/dashboard"),
             ("/ui/showcase/design", "/app/projects"),
             ("/ui/showcase/acquisition", "/app/monitoring"),
             ("/ui/showcase/results", "/app/projects"),

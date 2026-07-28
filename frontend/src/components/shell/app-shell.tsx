@@ -1,4 +1,4 @@
-import { FlaskConical, Moon, Search, Sun } from "lucide-react";
+import { FlaskConical, LayoutDashboard, Moon, Search, ShieldAlert, Sun } from "lucide-react";
 import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 
@@ -8,7 +8,9 @@ import { cn } from "@/lib/utils";
 import { useUiStore } from "@/store/ui-store";
 
 const navItems = [
+  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/projects", label: "Projects", icon: FlaskConical },
+  { to: "/admin", label: "Admin", icon: ShieldAlert },
 ];
 
 export function AppShell() {

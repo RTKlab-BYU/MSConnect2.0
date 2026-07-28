@@ -33,6 +33,7 @@ router.register("protein-quants", api.ProteinQuantViewSet)
 router.register("peptide-quants", api.PeptideQuantViewSet)
 
 urlpatterns = [
+    path("agents/ping/", api.AgentPingView.as_view()),
     path("agents/heartbeat/", api.AgentHeartbeatView.as_view()),
     path("agents/raw-files/import/", api.AgentRawFileImportView.as_view()),
     path("agents/ingestion-failures/", api.AgentIngestionFailureView.as_view()),

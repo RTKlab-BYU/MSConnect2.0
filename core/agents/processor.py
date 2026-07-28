@@ -2,6 +2,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from django.conf import settings
+
+from core.agents.runtime import capture_runtime_metadata, write_runtime_manifest
 from core.processing.adapters import render_adapter_plan
 
 
@@ -18,6 +21,8 @@ class PreparedJobExecution:
     delimiter: str | None
     derivative_files: list[dict]
     artifact_files: list[dict]
+    runtime_manifest_path: Path
+    runtime_metadata: dict
 
 
 def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJobExecution:
@@ -82,6 +87,23 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
     if delimiter is not None and not isinstance(delimiter, str):
         raise ValueError("Processing pipeline parameters.result_files.delimiter must be a string when provided.")
 
+    runtime_manifest_path = (results_dir / "runtime-manifest.json").resolve()
+    shared_roots = {
+        "raw_file_storage_root": getattr(settings, "RAW_FILE_STORAGE_ROOT", ""),
+        "results_root": str(results_root),
+        "processor_shared_storage_root": getattr(settings, "PROCESSOR_SHARED_STORAGE_ROOT", ""),
+    }
+    runtime_metadata = capture_runtime_metadata(
+        command=command,
+        env=env,
+        working_dir=working_dir,
+        results_dir=results_dir,
+        raw_file_path=placeholders["raw_file_path"],
+        parameters=parameters,
+        shared_roots=shared_roots,
+    )
+    write_runtime_manifest(runtime_manifest_path, runtime_metadata)
+
     return PreparedJobExecution(
         command=command,
         env=env,
@@ -93,7 +115,17 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
         stats_json_path=stats_json_path,
         delimiter=delimiter,
         derivative_files=derivative_files,
-        artifact_files=_resolve_declared_artifacts(artifact_files, results_dir=results_dir, placeholders=placeholders),
+        artifact_files=[
+            *_resolve_declared_artifacts(artifact_files, results_dir=results_dir, placeholders=placeholders),
+            {
+                "artifact_type": "other",
+                "path": str(runtime_manifest_path),
+                "format": "json",
+                "metadata": {"role": "runtime_manifest"},
+            },
+        ],
+        runtime_manifest_path=runtime_manifest_path,
+        runtime_metadata=runtime_metadata,
     )
 
 

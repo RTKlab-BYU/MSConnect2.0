@@ -10,6 +10,7 @@ db.sqlite3
 
 /data/
 incoming/
+findings_workspaces/
 media/
 raw-storage/
 results/

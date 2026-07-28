@@ -6,9 +6,13 @@ import { NotFoundRoute, RouteErrorBoundary, RouteFallback } from "@/components/s
 
 const ProjectsPage = lazy(() => import("@/features/projects/projects-page"));
 const ProjectWorkspacePage = lazy(() => import("@/features/projects/project-workspace-page"));
+const SampleReportPage = lazy(() => import("@/features/projects/sample-report-page"));
+const DashboardPage = lazy(() => import("@/features/dashboard/dashboard-page"));
+const AdminDashboardPage = lazy(() => import("@/features/admin/admin-dashboard-page"));
 const QcPage = lazy(() => import("@/features/qc/qc-page"));
 const MonitoringPage = lazy(() => import("@/features/monitoring/monitoring-page"));
 const ProcessingPage = lazy(() => import("@/features/processing/processing-page"));
+const ProcessingAdminPage = lazy(() => import("@/features/processing/processing-admin-page"));
 const SpectraPage = lazy(() => import("@/features/spectra/spectra-page"));
 const UploadsPage = lazy(() => import("@/features/uploads/uploads-page"));
 const SettingsPage = lazy(() => import("@/features/settings/settings-page"));
@@ -17,7 +21,7 @@ export const router = createBrowserRouter(
   [
     {
       path: "/",
-      element: <Navigate to="/projects" replace />,
+      element: <Navigate to="/dashboard" replace />,
       errorElement: <RouteErrorBoundary />,
     },
     {
@@ -30,6 +34,22 @@ export const router = createBrowserRouter(
       element: <AppShell />,
       errorElement: <RouteErrorBoundary />,
       children: [
+        {
+          path: "dashboard",
+          element: (
+            <Suspense fallback={<RouteFallback label="Loading dashboard" />}>
+              <DashboardPage />
+            </Suspense>
+          ),
+        },
+        {
+          path: "admin",
+          element: (
+            <Suspense fallback={<RouteFallback label="Loading admin dashboard" />}>
+              <AdminDashboardPage />
+            </Suspense>
+          ),
+        },
         {
           path: "projects",
           element: (
@@ -63,6 +83,14 @@ export const router = createBrowserRouter(
           ),
         },
         {
+          path: "processing/admin",
+          element: (
+            <Suspense fallback={<RouteFallback label="Loading processor admin" />}>
+              <ProcessingAdminPage />
+            </Suspense>
+          ),
+        },
+        {
           path: "spectra",
           element: (
             <Suspense fallback={<RouteFallback label="Loading spectra viewer" />}>
@@ -83,6 +111,14 @@ export const router = createBrowserRouter(
           element: (
             <Suspense fallback={<RouteFallback label="Loading project workspace" />}>
               <ProjectWorkspacePage />
+            </Suspense>
+          ),
+        },
+        {
+          path: "projects/:projectId/samples/:sampleId",
+          element: (
+            <Suspense fallback={<RouteFallback label="Loading sample report" />}>
+              <SampleReportPage />
             </Suspense>
           ),
         },

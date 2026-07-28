@@ -1,6 +1,8 @@
 import json
+import platform
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -8,7 +10,9 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from core.agents.client import AgentApiClient
+from core.agents.diagnostics import write_heartbeat_marker
 from core.agents.processor import prepare_job_execution
+from core.models import ProcessingNodeStatus
 
 
 class Command(BaseCommand):
@@ -18,6 +22,7 @@ class Command(BaseCommand):
         parser.add_argument("--once", action="store_true")
         parser.add_argument("--poll-interval", type=int, default=settings.PROCESSOR_POLL_INTERVAL_SECONDS)
         parser.add_argument("--heartbeat-seconds", type=int, default=settings.MSCONNECT_AGENT_HEARTBEAT_SECONDS)
+        parser.add_argument("--engine", default=settings.MSCONNECT_PROCESSOR_ENGINE)
 
     def handle(self, *args, **options):
         if not settings.MSCONNECT_AGENT_TOKEN:
@@ -25,16 +30,42 @@ class Command(BaseCommand):
 
         client = AgentApiClient(base_url=settings.MSCONNECT_API_BASE_URL, token=settings.MSCONNECT_AGENT_TOKEN)
         agent_name = settings.MSCONNECT_AGENT_NAME or socket.gethostname()
+        node_type = (options["engine"] or "processor").strip()
         results_root = Path(settings.RESULTS_ROOT)
         results_root.mkdir(parents=True, exist_ok=True)
         heartbeat_seconds = max(5, int(options["heartbeat_seconds"]))
         last_heartbeat = 0.0
+        last_control_id = ""
+        control_state = "active"
 
         while True:
             now = time.monotonic()
             if now - last_heartbeat >= heartbeat_seconds:
-                self._heartbeat(client, agent_name=agent_name, status="idle")
+                node_payload = self._heartbeat(
+                    client,
+                    agent_name=agent_name,
+                    node_type=node_type,
+                    status=ProcessingNodeStatus.IDLE,
+                    control_state=control_state,
+                )
+                last_control_id, control_state, should_exit = self._handle_control(
+                    node_payload,
+                    client=client,
+                    agent_name=agent_name,
+                    node_type=node_type,
+                    status=ProcessingNodeStatus.IDLE,
+                    control_state=control_state,
+                    last_control_id=last_control_id,
+                )
                 last_heartbeat = now
+                if should_exit:
+                    break
+
+            if control_state in {"paused", "draining"}:
+                if options["once"]:
+                    break
+                time.sleep(max(1, int(options["poll_interval"])))
+                continue
 
             job = client.claim_next_job(node_name=agent_name)
             if not job:
@@ -43,7 +74,13 @@ class Command(BaseCommand):
                 time.sleep(max(1, int(options["poll_interval"])))
                 continue
 
-            self._heartbeat(client, agent_name=agent_name, status="busy")
+            self._heartbeat(
+                client,
+                agent_name=agent_name,
+                node_type=node_type,
+                status=ProcessingNodeStatus.BUSY,
+                control_state=control_state,
+            )
             last_heartbeat = time.monotonic()
 
             try:
@@ -58,15 +95,33 @@ class Command(BaseCommand):
                 }
                 if log_path.exists():
                     failure_payload["log_path"] = str(log_path)
+                manifest_path = (results_root / "jobs" / str(job["id"]) / "runtime-manifest.json").resolve()
+                if manifest_path.exists():
+                    failure_payload["stats"] = {"runtime_manifest_path": str(manifest_path)}
                 client.fail_job(
                     job["id"],
                     failure_payload,
                 )
                 self.stderr.write(self.style.ERROR(f"job {job['id']} failed: {exc}"))
 
-            self._heartbeat(client, agent_name=agent_name, status="idle")
+            node_payload = self._heartbeat(
+                client,
+                agent_name=agent_name,
+                node_type=node_type,
+                status=ProcessingNodeStatus.IDLE,
+                control_state=control_state,
+            )
+            last_control_id, control_state, should_exit = self._handle_control(
+                node_payload,
+                client=client,
+                agent_name=agent_name,
+                node_type=node_type,
+                status=ProcessingNodeStatus.IDLE,
+                control_state=control_state,
+                last_control_id=last_control_id,
+            )
             last_heartbeat = time.monotonic()
-            if options["once"]:
+            if options["once"] or should_exit:
                 break
 
     def _run_job(self, job: dict, execution, client: AgentApiClient, *, agent_name: str):
@@ -130,17 +185,100 @@ class Command(BaseCommand):
                 "delimiter": execution.delimiter or "",
                 "derivatives": derivative_payload,
                 "artifacts": artifact_payload,
-                "stats": stats_payload,
+                "stats": {
+                    **stats_payload,
+                    "runtime": execution.runtime_metadata,
+                    "runtime_manifest_path": str(execution.runtime_manifest_path),
+                },
             },
         )
         self.stdout.write(self.style.SUCCESS(f"completed job {job['id']}"))
 
-    def _heartbeat(self, client: AgentApiClient, *, agent_name: str, status: str):
-        client.heartbeat(
+    def _heartbeat(
+        self,
+        client: AgentApiClient,
+        *,
+        agent_name: str,
+        node_type: str,
+        status: str,
+        control_state: str,
+        metadata: dict | None = None,
+    ):
+        local_ip = self._local_ip()
+        heartbeat_metadata = {
+            "mode": "command-runner",
+            "control_state": control_state,
+            "host_name": socket.gethostname(),
+            **(metadata or {}),
+        }
+        if local_ip:
+            heartbeat_metadata["ip_address"] = local_ip
+        response = client.heartbeat(
             name=agent_name,
-            node_type="processor",
+            node_type=node_type,
             status=status,
             container_image=settings.MSCONNECT_IMAGE,
-            metadata={"mode": "command-runner"},
-            settings={"results_root": settings.RESULTS_ROOT},
+            metadata=heartbeat_metadata,
+            settings={
+                "processor_engine": node_type,
+                "results_root": settings.RESULTS_ROOT,
+                "raw_file_storage_root": settings.RAW_FILE_STORAGE_ROOT,
+                "processor_shared_storage_root": settings.PROCESSOR_SHARED_STORAGE_ROOT,
+                "python_version": sys.version.split()[0],
+                "platform": platform.platform(),
+            },
         )
+        write_heartbeat_marker(agent_name=agent_name, role="processor", status=status, node_type=node_type)
+        return response
+
+    def _handle_control(
+        self,
+        node_payload: dict | None,
+        *,
+        client: AgentApiClient,
+        agent_name: str,
+        node_type: str,
+        status: str,
+        control_state: str,
+        last_control_id: str,
+    ):
+        control = (node_payload or {}).get("active_control") or {}
+        control_id = str(control.get("id") or "")
+        if not control_id or control_id == last_control_id:
+            return last_control_id, control_state, False
+
+        command = str(control.get("command") or "")
+        next_state = control_state
+        should_exit = False
+        if command == "pause":
+            next_state = "paused"
+        elif command == "drain":
+            next_state = "draining"
+        elif command == "resume":
+            next_state = "active"
+        elif command == "stop":
+            next_state = "stopped"
+            should_exit = True
+        elif command == "restart":
+            next_state = "restarting"
+            should_exit = True
+        else:
+            return control_id, control_state, False
+
+        ack_status = ProcessingNodeStatus.OFFLINE if should_exit else status
+        self._heartbeat(
+            client,
+            agent_name=agent_name,
+            node_type=node_type,
+            status=ack_status,
+            control_state=next_state,
+            metadata={"ack_control_id": control_id},
+        )
+        self.stdout.write(f"applied processor control {command}: {next_state}")
+        return control_id, next_state, should_exit
+
+    def _local_ip(self):
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return ""

@@ -1,5 +1,45 @@
 # MSConnect Worklog
 
+## 2026-07-28
+
+### Completed
+
+- Added the post-login `/app/dashboard` project portfolio view with system stats, attention summaries, recent project report cards, and login redirect defaults.
+- Integrated the Findings AI collaboration workflow as a capability app with per-project workspace preparation, indexing, Claude command/walkthrough metadata, and shared/personal storage modes.
+- Expanded project workspaces with selected-run queueing and sample-level continuous report pages for run, raw file, processing, protein, peptide, artifact, and derivative context.
+- Extended processor support for DIA-NN, FragPipe, Skyline, Spectronaut, Proteome Discoverer, and enterprise handoff adapters with runtime manifests, version capture, shared-storage metadata, and processor smoke tests.
+- Added `/app/processing/admin` for live processor inventory, IP address, heartbeat age, health, storage roots, settings/metadata inspection, and admin controls for pause, resume, drain, restart, stop, and mark-offline.
+- Added `/app/admin` as the system-wide admin dashboard with portfolio metrics, feature links, live processor health, heartbeat summaries, processor boot recipes, and an end-to-end readiness runbook.
+- Added web liveness/readiness endpoints, authenticated agent ping, agent preflight checks, heartbeat marker healthchecks, Docker Compose healthchecks, and end-to-end smoke fixture creation/verification commands.
+- Updated README and processor docs with startup, network preflight, shared-storage, Windows worker, and full smoke-test runbooks.
+
+### Verified
+
+- `.venv/bin/python manage.py check`
+- `docker compose config --quiet`
+- `cd frontend && npm run lint`
+- `cd frontend && npm run build`
+- `.venv/bin/ruff check msconnect/health.py core/agents/client.py core/agents/diagnostics.py core/api.py core/urls.py core/management/commands/check_agent_runtime.py core/management/commands/agent_healthcheck.py core/management/commands/create_e2e_smoke_fixture.py core/management/commands/verify_e2e_smoke_fixture.py core/management/commands/run_watcher_agent.py core/management/commands/run_processor_agent.py core/tests_api_permissions.py core/tests_operational.py`
+- `.venv/bin/python manage.py test core.tests_api_permissions core.tests_operational core.tests_processor`
+- `.venv/bin/python manage.py test core.tests_api_permissions.HealthEndpointTests core.tests_api_permissions.AgentApiTests.test_agent_ping_reports_authenticated_role`
+- `.venv/bin/python manage.py test core.tests_operational core.tests_api_permissions.HealthEndpointTests core.tests_api_permissions.AgentApiTests.test_agent_ping_reports_authenticated_role`
+- `.venv/bin/python manage.py test core.tests_processor`
+
+### Current review state
+
+- `/app/dashboard` is the authenticated landing page.
+- `/app/admin` is the system-wide operations hub.
+- `/app/processing/admin` is the focused processor control surface.
+- The default Docker LAN readiness flow is documented and implemented, but the live Docker stack smoke sequence has not been executed in this session.
+- Processor controls are applied between jobs and heartbeats; running vendor subprocesses are not interrupted mid-run.
+
+### Deferred / next session
+
+- Run the full documented Docker smoke sequence against a fresh Compose stack and record the live result.
+- Add production supervisor examples for Windows processors, such as Task Scheduler or service runner wrappers.
+- Add real vendor-engine validation jobs once site-licensed DIA-NN, FragPipe, Skyline, Spectronaut, and Proteome Discoverer installations are available.
+- Expand health/readiness into deployment monitoring alerts when production infrastructure is chosen.
+
 ## 2026-07-23
 
 ### Completed

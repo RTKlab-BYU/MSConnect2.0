@@ -29,6 +29,9 @@ class AgentApiClient:
             },
         )
 
+    def ping(self):
+        return self._request("GET", "/agents/ping/")
+
     def import_raw_file(self, payload: dict):
         return self._request("POST", "/agents/raw-files/import/", payload)
 

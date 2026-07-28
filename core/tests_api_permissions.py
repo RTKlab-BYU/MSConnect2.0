@@ -35,6 +35,38 @@ from core.models import (
 User = get_user_model()
 
 
+class HealthEndpointTests(TestCase):
+    def test_healthz_is_public(self):
+        response = APIClient().get("/healthz/")
+        data = json.loads(response.content)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(data["status"], "ok")
+
+    def test_readyz_reports_storage_and_database(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            incoming = root / "incoming"
+            raw = root / "raw"
+            results = root / "results"
+            media = root / "media"
+            for path in (incoming, raw, results, media):
+                path.mkdir()
+
+            with override_settings(
+                INCOMING_RAW_ROOT=str(incoming),
+                RAW_FILE_STORAGE_ROOT=str(raw),
+                RESULTS_ROOT=str(results),
+                MEDIA_ROOT=str(media),
+            ):
+                response = APIClient().get("/readyz/")
+                data = json.loads(response.content)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(data["status"], "ok")
+        self.assertTrue(data["checks"]["database"]["ok"])
+        self.assertTrue(data["checks"]["results_root"]["ok"])
+
+
 class ApiPermissionTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -257,6 +289,106 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["queued"], 1)
         self.assertEqual(ProcessingJob.objects.filter(run=run, status=ProcessingStatus.QUEUED).count(), 1)
+
+    def test_queue_runs_only_queues_selected_uploaded_runs(self):
+        self.client.force_authenticate(user=self.researcher)
+        quick_response = self.client.post(
+            "/api/projects/quick-start/",
+            data={"title": "Queue Selected Project", "code": "QUEUE-SELECTED"},
+            format="json",
+        )
+        project_id = quick_response.data["project"]["id"]
+        self.client.post(
+            f"/api/projects/{project_id}/import-worklist/",
+            data={
+                "worklist_name": "Queue selected worklist",
+                "rows": [
+                    {
+                        "position": 1,
+                        "sample_name": "Sample-001",
+                        "run_name": "Selected Run 1",
+                        "expected_filename": "Selected_Run_1.raw",
+                        "file_role": "sample",
+                    },
+                    {
+                        "position": 2,
+                        "sample_name": "Sample-002",
+                        "run_name": "Selected Run 2",
+                        "expected_filename": "Selected_Run_2.raw",
+                        "file_role": "sample",
+                    },
+                ],
+            },
+            format="json",
+        )
+        run_1 = Run.objects.get(run_name="Selected Run 1")
+        run_2 = Run.objects.get(run_name="Selected Run 2")
+        raw_1 = RawFile.objects.create(
+            run=run_1,
+            source_path="/incoming/Selected_Run_1.raw",
+            storage_path="/data/raw/Selected_Run_1.raw",
+            filename="Selected_Run_1.raw",
+            checksum_sha256="c" * 64,
+            size_bytes=1024,
+            status="imported",
+            file_role="sample",
+        )
+        RawFile.objects.create(
+            run=run_2,
+            source_path="/incoming/Selected_Run_2.raw",
+            storage_path="/data/raw/Selected_Run_2.raw",
+            filename="Selected_Run_2.raw",
+            checksum_sha256="d" * 64,
+            size_bytes=2048,
+            status="imported",
+            file_role="sample",
+        )
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/queue-runs/",
+            data={"run_ids": [run_1.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["requested"], 1)
+        self.assertEqual(response.data["queued"], 1)
+        self.assertTrue(
+            ProcessingJob.objects.filter(run=run_1, raw_file=raw_1, status=ProcessingStatus.QUEUED).exists()
+        )
+        self.assertFalse(ProcessingJob.objects.filter(run=run_2).exists())
+
+    def test_processing_node_control_is_admin_only_and_reports_health(self):
+        node = ProcessingNode.objects.create(
+            name="diann-win-01",
+            node_type="diann",
+            status="idle",
+            metadata={"ip_address": "10.0.0.7"},
+        )
+
+        self.client.force_authenticate(user=self.researcher)
+        denied_response = self.client.post(
+            f"/api/processing-nodes/{node.id}/control/",
+            data={"command": "pause"},
+            format="json",
+        )
+        self.assertEqual(denied_response.status_code, 403)
+
+        self.client.force_authenticate(user=self.admin)
+        control_response = self.client.post(
+            f"/api/processing-nodes/{node.id}/control/",
+            data={"command": "pause", "reason": "maintenance"},
+            format="json",
+        )
+        overview_response = self.client.get("/api/processing-nodes/overview/")
+
+        self.assertEqual(control_response.status_code, 200)
+        self.assertEqual(control_response.data["ip_address"], "10.0.0.7")
+        self.assertEqual(control_response.data["health"], "red")
+        self.assertEqual(control_response.data["active_control"]["command"], "pause")
+        self.assertEqual(control_response.data["active_control"]["status"], "requested")
+        self.assertEqual(overview_response.status_code, 200)
+        self.assertEqual(overview_response.data["stale"], 1)
 
     def test_pre_acquisition_setup_creates_expected_worklist_and_processing_plan(self):
         self.client.force_authenticate(user=self.researcher)
@@ -499,6 +631,43 @@ class AgentApiTests(TestCase):
         self.client.credentials(HTTP_AUTHORIZATION="Bearer invalid-token")
         response = self.client.post("/api/agents/heartbeat/", data={"name": "bad", "node_type": "watcher"})
         self.assertEqual(response.status_code, 401)
+
+    def test_agent_ping_reports_authenticated_role(self):
+        watcher_response = self._watcher_client().get("/api/agents/ping/")
+        processor_response = self._processor_client().get("/api/agents/ping/")
+
+        self.assertEqual(watcher_response.status_code, 200)
+        self.assertEqual(watcher_response.data["status"], "ok")
+        self.assertEqual(watcher_response.data["agent_role"], "watcher")
+        self.assertEqual(processor_response.status_code, 200)
+        self.assertEqual(processor_response.data["agent_role"], "processor")
+
+    def test_processor_heartbeat_accepts_engine_type_and_acknowledges_control(self):
+        processor = self._processor_client()
+        ProcessingNode.objects.create(
+            name="pd-win-01",
+            node_type="proteome-discoverer",
+            status="idle",
+            metadata={"control": {"id": "ctrl-1", "command": "pause", "status": "requested"}},
+        )
+
+        response = processor.post(
+            "/api/agents/heartbeat/",
+            data={
+                "name": "pd-win-01",
+                "node_type": "proteome-discoverer",
+                "status": "idle",
+                "metadata": {"ack_control_id": "ctrl-1", "ip_address": "10.0.0.9"},
+                "settings": {"processor_shared_storage_root": r"\\nas\msconnect\results"},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["node_type"], "proteome-discoverer")
+        self.assertEqual(response.data["ip_address"], "10.0.0.9")
+        self.assertEqual(response.data["active_control"]["status"], "acknowledged")
+        self.assertEqual(response.data["settings"]["processor_shared_storage_root"], r"\\nas\msconnect\results")
 
     def test_watcher_import_endpoint_is_idempotent(self):
         watcher = self._watcher_client()

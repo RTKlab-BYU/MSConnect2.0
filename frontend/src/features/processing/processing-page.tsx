@@ -1,10 +1,12 @@
 import type { ColumnDef } from "@tanstack/react-table";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
+import { ShieldAlert } from "lucide-react";
 
 import { MetricCard, PageHero } from "@/components/layout/page-section";
 import { SummaryChart } from "@/components/data/summary-chart";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/ui/data-table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -157,6 +159,12 @@ export default function ProcessingPage() {
             <StatusBadge status="assigned" />
             <StatusBadge status="running" />
             <StatusBadge status="retrying" />
+            <Button asChild variant="secondary">
+              <Link to="/processing/admin">
+                <ShieldAlert className="h-4 w-4" />
+                Admin
+              </Link>
+            </Button>
           </>
         }
       />

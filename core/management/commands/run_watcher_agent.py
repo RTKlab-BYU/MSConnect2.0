@@ -6,6 +6,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from core.agents.client import AgentApiClient, AgentApiError
+from core.agents.diagnostics import write_heartbeat_marker
 from ingest.services import (
     DEFAULT_RAW_SUFFIXES,
     build_storage_path,
@@ -96,7 +97,7 @@ class Command(BaseCommand):
             time.sleep(max(1, int(options["interval"])))
 
     def _heartbeat(self, client: AgentApiClient, *, agent_name: str, status: str):
-        client.heartbeat(
+        response = client.heartbeat(
             name=agent_name,
             node_type="watcher",
             status=status,
@@ -104,3 +105,5 @@ class Command(BaseCommand):
             metadata={"mode": "watched-share"},
             settings={"source": settings.INCOMING_RAW_ROOT, "storage": settings.RAW_FILE_STORAGE_ROOT},
         )
+        write_heartbeat_marker(agent_name=agent_name, role="watcher", status=status, node_type="watcher")
+        return response

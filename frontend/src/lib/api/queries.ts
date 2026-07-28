@@ -2,8 +2,11 @@ import { getResource, paginatedResource, patchResource, postResource, type ListP
 import type {
   AcquisitionWorklist,
   ChromatogramsResponse,
+  FindingsWorkspaceResponse,
   InstrumentConfiguration,
   Paginated,
+  PrepareFindingsWorkspacePayload,
+  PrepareFindingsWorkspaceResponse,
   PreAcquisitionSetupPayload,
   PreAcquisitionSetupResponse,
   ProcessingJob,
@@ -35,6 +38,7 @@ export const queryKeys = {
   project: (id: number) => ["project", id] as const,
   projectSummary: (id: number) => ["project", id, "summary"] as const,
   projectResearcherStatus: (id: number) => ["project", id, "researcher-status"] as const,
+  findingsWorkspace: (id: number) => ["project", id, "findings-workspace"] as const,
   rawFiles: (params: ListParams) => ["raw-files", params] as const,
   rawFilesOverview: (params?: ListParams) => ["raw-files", "overview", params] as const,
   rawFileDerivatives: (params?: ListParams) => ["raw-file-derivatives", params] as const,
@@ -71,6 +75,18 @@ export function fetchProjectResearcherStatus(id: number): Promise<ProjectResearc
   return getResource<ProjectResearcherStatus>(`/projects/${id}/researcher-status/`);
 }
 
+export function fetchFindingsWorkspace(projectId: number): Promise<FindingsWorkspaceResponse> {
+  return getResource<FindingsWorkspaceResponse>(`/capabilities/findings-workflow/projects/${projectId}/workspace/`);
+}
+
+export function prepareFindingsWorkspace(projectId: number, payload: PrepareFindingsWorkspacePayload): Promise<PrepareFindingsWorkspaceResponse> {
+  return postResource<PrepareFindingsWorkspaceResponse>(`/capabilities/findings-workflow/projects/${projectId}/workspace/`, payload);
+}
+
+export function indexFindingsWorkspace(workspaceId: number): Promise<FindingsWorkspaceResponse> {
+  return postResource<FindingsWorkspaceResponse>(`/capabilities/findings-workflow/workspaces/${workspaceId}/index/`, {});
+}
+
 export function quickStartProject(payload: ProjectQuickStartPayload): Promise<ProjectQuickStartResponse> {
   return postResource<ProjectQuickStartResponse>("/projects/quick-start/", payload);
 }
@@ -85,6 +101,12 @@ export function importProjectWorklist(projectId: number, payload: WorklistImport
 
 export function queueProjectReadyRuns(projectId: number): Promise<{ queued: number; jobs: ProcessingJob[] }> {
   return postResource(`/projects/${projectId}/queue-ready-runs/`, {});
+}
+
+export function queueProjectRuns(projectId: number, runIds: number): Promise<{ requested: number; queued: number; jobs: ProcessingJob[] }>;
+export function queueProjectRuns(projectId: number, runIds: number[]): Promise<{ requested: number; queued: number; jobs: ProcessingJob[] }>;
+export function queueProjectRuns(projectId: number, runIds: number | number[]): Promise<{ requested: number; queued: number; jobs: ProcessingJob[] }> {
+  return postResource(`/projects/${projectId}/queue-runs/`, { run_ids: Array.isArray(runIds) ? runIds : [runIds] });
 }
 
 export function updateWorklistEntry(id: number, payload: Partial<AcquisitionWorklist> & Record<string, unknown>): Promise<unknown> {
@@ -141,6 +163,14 @@ export function fetchProcessingNodesOverview(params?: ListParams): Promise<Proce
     if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
   });
   return getResource<ProcessingNodeOverview>(`/processing-nodes/overview/${query.toString() ? `?${query}` : ""}`);
+}
+
+export function controlProcessingNode(id: number, payload: { command: "pause" | "resume" | "drain" | "restart" | "stop"; reason?: string }): Promise<ProcessingNode> {
+  return postResource<ProcessingNode>(`/processing-nodes/${id}/control/`, payload);
+}
+
+export function markProcessingNodeOffline(id: number, reason?: string): Promise<ProcessingNode> {
+  return postResource<ProcessingNode>(`/processing-nodes/${id}/mark-offline/`, { reason: reason ?? "" });
 }
 
 export function fetchProcessingPipelines(params?: ListParams): Promise<Paginated<ProcessingPipeline>> {

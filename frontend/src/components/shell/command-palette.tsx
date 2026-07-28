@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Command } from "cmdk";
-import { FlaskConical, HardDrive, Search } from "lucide-react";
+import { Activity, FlaskConical, HardDrive, LayoutDashboard, LineChart, Search, Server, ShieldAlert } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -36,9 +36,29 @@ export function CommandPalette() {
           <Command.List className="max-h-[420px] overflow-y-auto p-2">
             <Command.Empty className="px-3 py-6 text-center text-sm text-muted-foreground">No results found.</Command.Empty>
             <Command.Group heading="Navigation" className="text-xs text-muted-foreground">
+              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/dashboard")}>
+                <LayoutDashboard className="h-4 w-4" />
+                Dashboard
+              </Command.Item>
               <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/projects")}>
                 <FlaskConical className="h-4 w-4" />
                 Projects
+              </Command.Item>
+              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/admin")}>
+                <ShieldAlert className="h-4 w-4" />
+                Admin
+              </Command.Item>
+              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/processing")}>
+                <Activity className="h-4 w-4" />
+                Processing
+              </Command.Item>
+              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/processing/admin")}>
+                <Server className="h-4 w-4" />
+                Processor Admin
+              </Command.Item>
+              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/monitoring")}>
+                <LineChart className="h-4 w-4" />
+                Monitoring
               </Command.Item>
             </Command.Group>
             <Command.Group heading="Projects" className="text-xs text-muted-foreground">
