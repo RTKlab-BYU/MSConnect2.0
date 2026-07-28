@@ -67,6 +67,14 @@ class RawFileDerivativeType(models.TextChoices):
     VENDOR_METADATA = "vendor_metadata", "Vendor metadata"
 
 
+class RawFileArchiveStatus(models.TextChoices):
+    PLANNED = "planned", "Planned"
+    ARCHIVED = "archived", "Archived"
+    RESTORING = "restoring", "Restoring"
+    RESTORED = "restored", "Restored"
+    FAILED = "failed", "Failed"
+
+
 class DerivativeStatus(models.TextChoices):
     QUEUED = "queued", "Queued"
     RUNNING = "running", "Running"
@@ -105,10 +113,19 @@ class DirectUploadStatus(models.TextChoices):
 class RunFileRole(models.TextChoices):
     SAMPLE = "sample", "Sample"
     QC = "qc", "QC"
+    HYE = "hye", "HYE"
+    PRTC = "prtc", "PRTC"
     LIBRARY = "library", "Library"
     BLANK = "blank", "Blank"
+    TRUE_BLANK = "true_blank", "True blank"
     WASH = "wash", "Wash"
     CALIBRATION = "calibration", "Calibration"
+
+
+class QcProgram(models.TextChoices):
+    NONE = "", "None"
+    HYE = "hye", "HYE"
+    PRTC = "prtc", "PRTC"
 
 
 class WorklistStatus(models.TextChoices):
@@ -452,6 +469,7 @@ class Run(TimestampedModel):
     acquisition_ended_at = models.DateTimeField(blank=True, null=True)
     status = models.CharField(max_length=32, choices=RunStatus.choices, default=RunStatus.PLANNED)
     file_role = models.CharField(max_length=32, choices=RunFileRole.choices, default=RunFileRole.SAMPLE)
+    qc_program = models.CharField(max_length=32, choices=QcProgram.choices, blank=True, default=QcProgram.NONE)
     expected_filename = models.CharField(max_length=255, blank=True)
     worklist_position = models.PositiveIntegerField(blank=True, null=True)
     hye_pair_label = models.CharField(max_length=64, blank=True)
@@ -518,6 +536,33 @@ class RawFileDerivative(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.raw_file.filename} {self.derivative_type}"
+
+
+class RawFileArchive(TimestampedModel):
+    raw_file = models.ForeignKey(RawFile, on_delete=models.CASCADE, related_name="archives")
+    status = models.CharField(
+        max_length=32,
+        choices=RawFileArchiveStatus.choices,
+        default=RawFileArchiveStatus.PLANNED,
+    )
+    archive_path = models.TextField()
+    original_storage_path = models.TextField()
+    compression = models.CharField(max_length=32, default="zip")
+    size_bytes = models.PositiveBigIntegerField(blank=True, null=True)
+    checksum_sha256 = models.CharField(max_length=64, blank=True)
+    archived_at = models.DateTimeField(blank=True, null=True)
+    restored_at = models.DateTimeField(blank=True, null=True)
+    error_message = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("raw_file", "-updated_at")
+        constraints = (
+            models.UniqueConstraint(fields=("raw_file", "archive_path"), name="uniq_raw_file_archive_path"),
+        )
+
+    def __str__(self) -> str:
+        return f"{self.raw_file.filename} archive {self.status}"
 
 
 class IngestionFailure(TimestampedModel):
@@ -600,6 +645,7 @@ class WorklistEntry(TimestampedModel):
     run = models.OneToOneField(Run, on_delete=models.PROTECT, related_name="worklist_entry")
     position = models.PositiveIntegerField()
     file_role = models.CharField(max_length=32, choices=RunFileRole.choices, default=RunFileRole.SAMPLE)
+    qc_program = models.CharField(max_length=32, choices=QcProgram.choices, blank=True, default=QcProgram.NONE)
     expected_filename = models.CharField(max_length=255)
     injection_volume_ul = models.FloatField(blank=True, null=True)
     hye_pair_label = models.CharField(max_length=64, blank=True)
@@ -616,11 +662,19 @@ class WorklistEntry(TimestampedModel):
 
     def save(self, *args, **kwargs):
         self.run.file_role = self.file_role
+        self.run.qc_program = self.qc_program or _qc_program_from_role(self.file_role)
         self.run.expected_filename = self.expected_filename
         self.run.worklist_position = self.position
         self.run.hye_pair_label = self.hye_pair_label
         self.run.save(
-            update_fields=["file_role", "expected_filename", "worklist_position", "hye_pair_label", "updated_at"]
+            update_fields=[
+                "file_role",
+                "qc_program",
+                "expected_filename",
+                "worklist_position",
+                "hye_pair_label",
+                "updated_at",
+            ]
         )
         super().save(*args, **kwargs)
 
@@ -630,6 +684,14 @@ class WorklistEntry(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.worklist} #{self.position}: {self.expected_filename}"
+
+
+def _qc_program_from_role(file_role: str) -> str:
+    if file_role == RunFileRole.HYE:
+        return QcProgram.HYE
+    if file_role == RunFileRole.PRTC:
+        return QcProgram.PRTC
+    return QcProgram.NONE
 
 
 class ProcessingPipeline(TimestampedModel):

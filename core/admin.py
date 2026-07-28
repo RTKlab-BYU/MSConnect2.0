@@ -23,6 +23,7 @@ from .models import (
     ProteinIdentification,
     ProteinQuant,
     RawFile,
+    RawFileArchive,
     RawFileDerivative,
     Run,
     Sample,
@@ -111,9 +112,9 @@ class SampleAdmin(admin.ModelAdmin):
 
 @admin.register(Run)
 class RunAdmin(admin.ModelAdmin):
-    list_display = ("worklist_position", "run_name", "sample", "file_role", "configuration", "status")
+    list_display = ("worklist_position", "run_name", "sample", "file_role", "qc_program", "configuration", "status")
     search_fields = ("run_name", "expected_filename", "sample__name", "configuration__name")
-    list_filter = ("status", "file_role", "configuration", "sample__experiment__project__lab")
+    list_filter = ("status", "file_role", "qc_program", "configuration", "sample__experiment__project__lab")
 
 
 @admin.register(RawFile)
@@ -129,6 +130,14 @@ class RawFileDerivativeAdmin(admin.ModelAdmin):
     list_display = ("raw_file", "derivative_type", "status", "format", "size_bytes", "created_by_job", "updated_at")
     search_fields = ("raw_file__filename", "path", "checksum_sha256", "format")
     list_filter = ("derivative_type", "status", "raw_file__run__sample__experiment__project__lab")
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(RawFileArchive)
+class RawFileArchiveAdmin(admin.ModelAdmin):
+    list_display = ("raw_file", "status", "compression", "size_bytes", "archived_at", "restored_at")
+    search_fields = ("raw_file__filename", "archive_path", "original_storage_path", "checksum_sha256")
+    list_filter = ("status", "compression", "raw_file__run__sample__experiment__project__lab")
     readonly_fields = ("created_at", "updated_at")
 
 
@@ -184,9 +193,9 @@ class AcquisitionWorklistAdmin(admin.ModelAdmin):
 
 @admin.register(WorklistEntry)
 class WorklistEntryAdmin(admin.ModelAdmin):
-    list_display = ("worklist", "position", "expected_filename", "file_role", "run", "hye_pair_label")
+    list_display = ("worklist", "position", "expected_filename", "file_role", "qc_program", "run", "hye_pair_label")
     search_fields = ("expected_filename", "run__run_name", "run__sample__name")
-    list_filter = ("file_role", "worklist__experiment__project__lab")
+    list_filter = ("file_role", "qc_program", "worklist__experiment__project__lab")
 
 
 @admin.register(Protein)

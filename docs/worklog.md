@@ -12,6 +12,9 @@
 - Added `/app/admin` as the system-wide admin dashboard with portfolio metrics, feature links, live processor health, heartbeat summaries, processor boot recipes, and an end-to-end readiness runbook.
 - Added web liveness/readiness endpoints, authenticated agent ping, agent preflight checks, heartbeat marker healthchecks, Docker Compose healthchecks, and end-to-end smoke fixture creation/verification commands.
 - Updated README and processor docs with startup, network preflight, shared-storage, Windows worker, and full smoke-test runbooks.
+- Implemented the first three-machine operations slice with engine-aware processor job claiming, explicit HYE/PRTC/true-blank run roles, `qc_program` tagging, raw-file archive tracking, and role-specific deployment env templates.
+- Updated worklist import and project workspace parsing so vendor role strings such as HYE, PRTC, and true blank normalize into canonical run/worklist metadata while preserving HYE dashboard compatibility.
+- Added `docs/three-machine-deployment.md` for the server, uploader/watcher, and processor-node topology, including shared-storage contracts and the cross-host smoke-test sequence.
 
 ### Verified
 
@@ -24,6 +27,13 @@
 - `.venv/bin/python manage.py test core.tests_api_permissions.HealthEndpointTests core.tests_api_permissions.AgentApiTests.test_agent_ping_reports_authenticated_role`
 - `.venv/bin/python manage.py test core.tests_operational core.tests_api_permissions.HealthEndpointTests core.tests_api_permissions.AgentApiTests.test_agent_ping_reports_authenticated_role`
 - `.venv/bin/python manage.py test core.tests_processor`
+- `.venv/bin/python manage.py makemigrations --check --dry-run`
+- `.venv/bin/python manage.py test`
+- `.venv/bin/python manage.py test core.tests_api_permissions.AgentApiTests core.tests_processor`
+- `.venv/bin/python manage.py test core.tests_api_permissions.ApiPermissionTests.test_pre_acquisition_setup_creates_expected_worklist_and_processing_plan core.tests_api_permissions.AgentApiTests`
+- `.venv/bin/ruff check core/api.py core/tests_api_permissions.py core/admin.py`
+- `cd frontend && npm run lint`
+- `cd frontend && npm run build`
 
 ### Current review state
 
@@ -32,6 +42,9 @@
 - `/app/processing/admin` is the focused processor control surface.
 - The default Docker LAN readiness flow is documented and implemented, but the live Docker stack smoke sequence has not been executed in this session.
 - Processor controls are applied between jobs and heartbeats; running vendor subprocesses are not interrupted mid-run.
+- Jobs with `parameters.adapter` or `parameters.required_engine` now require a compatible processor node type; legacy generic command pipelines remain claimable by the default processor for smoke tests.
+- Raw-file archive state is modeled and exposed for operators, but the actual zip/restore worker automation is still pending.
+- Whole-repo Ruff still has unrelated pre-existing lint failures in findings-workflow and processor smoke utility files; touched Python files pass Ruff.
 
 ### Deferred / next session
 
@@ -39,6 +52,7 @@
 - Add production supervisor examples for Windows processors, such as Task Scheduler or service runner wrappers.
 - Add real vendor-engine validation jobs once site-licensed DIA-NN, FragPipe, Skyline, Spectronaut, and Proteome Discoverer installations are available.
 - Expand health/readiness into deployment monitoring alerts when production infrastructure is chosen.
+- Add actual archive/restore worker commands that create and validate zip archives from `RawFileArchive` records.
 
 ## 2026-07-23
 

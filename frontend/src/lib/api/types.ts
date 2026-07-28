@@ -74,6 +74,7 @@ export type WorklistImportRow = {
   sample_name: string;
   expected_filename: string;
   file_role: RawFile["file_role"];
+  qc_program?: "" | "hye" | "prtc";
   status?: Run["status"];
   well?: string;
   plate?: string;
@@ -155,7 +156,7 @@ export type RawFile = {
   acquired_at: string | null;
   imported_at: string | null;
   status: "discovered" | "validated" | "imported" | "processed" | "failed";
-  file_role: "sample" | "qc" | "library" | "blank" | "wash" | "calibration";
+  file_role: "sample" | "qc" | "hye" | "prtc" | "library" | "blank" | "true_blank" | "wash" | "calibration";
   match_confidence: number | null;
   failure_reason: string;
   metadata: Record<string, unknown>;
@@ -259,6 +260,7 @@ export type ProcessingJob = {
   raw_file_filename: string;
   pipeline_name: string;
   pipeline_version: string;
+  required_engine: string;
   status: "queued" | "assigned" | "running" | "complete" | "failed" | "retrying";
   started_at: string | null;
   finished_at: string | null;
@@ -383,6 +385,7 @@ export type Run = {
   acquisition_ended_at: string | null;
   status: "planned" | "acquired" | "imported" | "processed" | "failed";
   file_role: RawFile["file_role"];
+  qc_program: "" | "hye" | "prtc";
   expected_filename: string;
   worklist_position: number | null;
   hye_pair_label: string;

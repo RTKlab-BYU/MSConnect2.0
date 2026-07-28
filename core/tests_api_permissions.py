@@ -23,9 +23,11 @@ from core.models import (
     ProcessingStatus,
     Project,
     ProteinQuant,
+    QcProgram,
     RawFile,
     RawFileDerivative,
     Run,
+    RunFileRole,
     Sample,
     University,
     UserProfile,
@@ -421,7 +423,14 @@ class ApiPermissionTests(TestCase):
         worklist = AcquisitionWorklist.objects.get(experiment__project=project)
         self.assertEqual(worklist.status, "ready")
         self.assertEqual(worklist.entries.count(), 8)
-        self.assertEqual(worklist.entries.filter(file_role="qc", hye_pair_label="HYE-01").count(), 2)
+        self.assertEqual(
+            worklist.entries.filter(
+                file_role=RunFileRole.HYE,
+                qc_program=QcProgram.HYE,
+                hye_pair_label="HYE-01",
+            ).count(),
+            2,
+        )
 
         pipeline = ProcessingPipeline.objects.get(name="DIA-NN", version="1.9")
         self.assertEqual(pipeline.parameters["fasta_path"], "/data/reference/hye.fasta")
@@ -669,6 +678,93 @@ class AgentApiTests(TestCase):
         self.assertEqual(response.data["active_control"]["status"], "acknowledged")
         self.assertEqual(response.data["settings"]["processor_shared_storage_root"], r"\\nas\msconnect\results")
 
+    def test_processor_claim_respects_required_engine(self):
+        processor = self._processor_client()
+        ProcessingNode.objects.create(name="diann-1", node_type="diann", status="idle")
+        ProcessingNode.objects.create(name="skyline-1", node_type="skyline", status="idle")
+        raw_file = RawFile.objects.create(
+            run=self.run,
+            source_path="/incoming/SampleA_run07.raw",
+            storage_path="/data/raw/aa/sample.raw",
+            filename="SampleA_run07.raw",
+            checksum_sha256="9" * 64,
+            size_bytes=1024,
+            status="imported",
+        )
+        pipeline = ProcessingPipeline.objects.create(
+            name="Skyline",
+            version="24.1",
+            parameters={"adapter": "skyline", "document": "/shared/project.sky"},
+        )
+        job = ProcessingJob.objects.create(
+            run=self.run,
+            pipeline=pipeline,
+            raw_file=raw_file,
+            status=ProcessingStatus.QUEUED,
+        )
+
+        incompatible = processor.post(
+            "/api/processing-jobs/claim-next/",
+            data={"node_name": "diann-1"},
+            format="json",
+        )
+        self.assertEqual(incompatible.status_code, 204)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingStatus.QUEUED)
+
+        compatible = processor.post(
+            "/api/processing-jobs/claim-next/",
+            data={"node_name": "skyline-1"},
+            format="json",
+        )
+        self.assertEqual(compatible.status_code, 200)
+        self.assertEqual(compatible.data["id"], job.id)
+        self.assertEqual(compatible.data["metadata"]["required_engine"], "skyline")
+
+    def test_worklist_import_stores_qc_program_and_extended_roles(self):
+        self.client.force_authenticate(user=self.pi_user)
+        response = self.client.post(
+            f"/api/projects/{self.project.id}/import-worklist/",
+            data={
+                "worklist_name": "Vendor sequence",
+                "rows": [
+                    {
+                        "position": 1,
+                        "sample_name": "PRTC-Std",
+                        "expected_filename": "PRTC-Std.raw",
+                        "file_role": "prtc",
+                    },
+                    {
+                        "position": 2,
+                        "sample_name": "Blank-01",
+                        "expected_filename": "Blank-01.raw",
+                        "file_role": "true blank",
+                    },
+                    {
+                        "position": 3,
+                        "sample_name": "HYE-A",
+                        "expected_filename": "HYE-A.raw",
+                        "file_role": "qc",
+                        "qc_program": "hye",
+                        "hye_pair_label": "HYE-01",
+                    },
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        prtc_run = Run.objects.get(expected_filename="PRTC-Std.raw")
+        blank_run = Run.objects.get(expected_filename="Blank-01.raw")
+        hye_run = Run.objects.get(expected_filename="HYE-A.raw")
+        self.assertEqual(prtc_run.file_role, RunFileRole.PRTC)
+        self.assertEqual(prtc_run.qc_program, QcProgram.PRTC)
+        self.assertTrue(prtc_run.metadata["synthetic_peptides_present"])
+        self.assertEqual(blank_run.file_role, RunFileRole.TRUE_BLANK)
+        self.assertEqual(blank_run.qc_program, QcProgram.NONE)
+        self.assertEqual(hye_run.file_role, RunFileRole.QC)
+        self.assertEqual(hye_run.qc_program, QcProgram.HYE)
+
     def test_watcher_import_endpoint_is_idempotent(self):
         watcher = self._watcher_client()
         with TemporaryDirectory() as storage_dir:
@@ -851,6 +947,7 @@ class AgentApiTests(TestCase):
 
     def test_processor_complete_records_derivative_and_spectra_api_reads_index(self):
         processor = self._processor_client()
+        ProcessingNode.objects.create(name="proc-2", node_type="msconvert", status="idle")
         raw_file = RawFile.objects.create(
             run=self.run,
             source_path="/incoming/SampleA_run07.raw",

@@ -85,6 +85,8 @@ The deployment now runs three repo-embedded application services from the same i
 
 All three services stay in the same repo and can be deployed together from one tag and one image.
 
+For the first multi-host operational layout, see `docs/three-machine-deployment.md` and the role-specific environment templates under `docs/env.*.example`.
+
 `watcher` and `processor` wait for the `web` healthcheck before starting, and their API client retries transient connection and HTTP 5xx errors. This keeps local three-container simulations from failing during Django migration/startup races.
 
 Health and readiness endpoints:

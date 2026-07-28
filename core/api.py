@@ -50,7 +50,9 @@ from .models import (
     Protein,
     ProteinIdentification,
     ProteinQuant,
+    QcProgram,
     RawFile,
+    RawFileArchive,
     RawFileDerivative,
     RawFileDerivativeType,
     RawFileStatus,
@@ -193,7 +195,8 @@ class WorklistImportRowSerializer(serializers.Serializer):
     run_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
     sample_name = serializers.CharField(max_length=255)
     expected_filename = serializers.CharField(max_length=255)
-    file_role = serializers.ChoiceField(choices=RunFileRole.choices, default=RunFileRole.SAMPLE)
+    file_role = serializers.CharField(max_length=32, default=RunFileRole.SAMPLE)
+    qc_program = serializers.CharField(max_length=32, required=False, allow_blank=True)
     status = serializers.ChoiceField(choices=RunStatus.choices, required=False)
     well = serializers.CharField(max_length=32, required=False, allow_blank=True)
     plate = serializers.CharField(max_length=128, required=False, allow_blank=True)
@@ -216,6 +219,9 @@ class WorklistImportSerializer(serializers.Serializer):
         filenames = [row["expected_filename"] for row in rows]
         if len(filenames) != len(set(filenames)):
             raise ValidationError("Expected filenames must be unique within the worklist.")
+        for row in rows:
+            row["file_role"] = _normalize_run_file_role(row.get("file_role"))
+            row["qc_program"] = _normalize_qc_program(row.get("qc_program"), row["file_role"])
         return rows
 
 
@@ -279,6 +285,16 @@ class RawFileDerivativeSerializer(BaseSerializer):
 
     class Meta(BaseSerializer.Meta):
         model = RawFileDerivative
+        fields = "__all__"
+
+
+class RawFileArchiveSerializer(BaseSerializer):
+    raw_file_filename = serializers.CharField(source="raw_file.filename", read_only=True)
+    project_id = serializers.IntegerField(source="raw_file.run.sample.experiment.project_id", read_only=True)
+    project_code = serializers.CharField(source="raw_file.run.sample.experiment.project.code", read_only=True)
+
+    class Meta(BaseSerializer.Meta):
+        model = RawFileArchive
         fields = "__all__"
 
 
@@ -383,10 +399,14 @@ class ProcessingJobSerializer(BaseSerializer):
     raw_file_filename = serializers.CharField(source="raw_file.filename", read_only=True)
     pipeline_name = serializers.CharField(source="pipeline.name", read_only=True)
     pipeline_version = serializers.CharField(source="pipeline.version", read_only=True)
+    required_engine = serializers.SerializerMethodField()
 
     class Meta(BaseSerializer.Meta):
         model = ProcessingJob
         fields = "__all__"
+
+    def get_required_engine(self, obj):
+        return _required_engine_for_job(obj)
 
 
 class ProcessingJobArtifactSerializer(BaseSerializer):
@@ -466,6 +486,33 @@ def _ensure_dict(value, *, field_name: str) -> dict:
     if not isinstance(value, dict):
         raise ValidationError({field_name: "Expected an object."})
     return value
+
+
+def _normalize_qc_program(value: str | None, file_role: str = "") -> str:
+    normalized = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"none", "na", "n/a"}:
+        normalized = ""
+    if file_role == RunFileRole.HYE:
+        return QcProgram.HYE
+    if file_role == RunFileRole.PRTC:
+        return QcProgram.PRTC
+    if normalized in {choice for choice, _label in QcProgram.choices}:
+        return normalized
+    return QcProgram.NONE
+
+
+def _normalize_run_file_role(value: str | None) -> str:
+    normalized = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "trueblank": RunFileRole.TRUE_BLANK,
+        "true_blank": RunFileRole.TRUE_BLANK,
+        "hye_qc": RunFileRole.HYE,
+        "prtc_qc": RunFileRole.PRTC,
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized in {choice for choice, _label in RunFileRole.choices}:
+        return normalized
+    return RunFileRole.SAMPLE
 
 
 REFERENCE_PRESETS = {
@@ -879,7 +926,14 @@ def _queue_processing_job_for_raw_file(raw_file: RawFile) -> ProcessingJob | Non
         return None
 
     Run.objects.filter(pk=raw_file.run_id).update(status=RunStatus.IMPORTED, updated_at=timezone.now())
-    if raw_file.file_role not in {RunFileRole.SAMPLE, RunFileRole.QC, RunFileRole.LIBRARY}:
+    processable_roles = {
+        RunFileRole.SAMPLE,
+        RunFileRole.QC,
+        RunFileRole.HYE,
+        RunFileRole.PRTC,
+        RunFileRole.LIBRARY,
+    }
+    if raw_file.file_role not in processable_roles:
         return None
 
     entry = (
@@ -909,10 +963,55 @@ def _queue_processing_job_for_raw_file(raw_file: RawFile) -> ProcessingJob | Non
                 "queued_by": "watcher_agent",
                 "worklist_entry_id": entry.id,
                 "worklist_position": entry.position,
+                "required_engine": _required_engine_for_pipeline(pipeline),
             },
         },
     )
     return job
+
+
+def _required_engine_for_pipeline(pipeline: ProcessingPipeline | None) -> str:
+    if not pipeline:
+        return ""
+    parameters = pipeline.parameters or {}
+    value = parameters.get("required_engine")
+    if value:
+        return _normalize_engine(value)
+    adapter = parameters.get("adapter")
+    if adapter:
+        return _normalize_engine(adapter)
+    return ""
+
+
+def _required_engine_for_job(job: ProcessingJob) -> str:
+    metadata = job.metadata or {}
+    value = metadata.get("required_engine") or metadata.get("engine")
+    if value:
+        return _normalize_engine(value)
+    return _required_engine_for_pipeline(getattr(job, "pipeline", None))
+
+
+def _normalize_engine(value) -> str:
+    return str(value or "").strip().lower().replace("_", "-")
+
+
+def _engine_aliases(engine: str) -> set[str]:
+    normalized = _normalize_engine(engine)
+    aliases = {normalized}
+    if normalized in {"processor", "generic", "command-runner"}:
+        aliases.update({"", "processor", "generic", "command-runner"})
+    if normalized in {"diann", "dia-nn", "dia_nn"}:
+        aliases.update({"diann", "dia-nn"})
+    if normalized in {"msconvert", "pwiz", "proteowizard"}:
+        aliases.update({"msconvert", "pwiz", "proteowizard"})
+    return aliases
+
+
+def _node_can_run_job(node: ProcessingNode, job: ProcessingJob) -> bool:
+    required_engine = _required_engine_for_job(job)
+    if not required_engine:
+        return True
+    return required_engine in _engine_aliases(node.node_type)
 
 
 def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
@@ -920,7 +1019,7 @@ def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
         "id": job.id,
         "status": job.status,
         "created_at": job.created_at,
-        "metadata": job.metadata,
+        "metadata": {**(job.metadata or {}), "required_engine": _required_engine_for_job(job)},
         "run": {
             "id": job.run_id,
             "name": job.run.run_name,
@@ -1150,10 +1249,19 @@ class ProcessingJobClaimView(AgentApiView):
             candidate_ids = list(
                 ProcessingJob.objects.filter(status=candidate_status)
                 .order_by("created_at", "id")
-                .values_list("id", flat=True)[:20]
+                .values_list("id", flat=True)[:200]
             )
             for candidate_id in candidate_ids:
                 with transaction.atomic():
+                    job = (
+                        ProcessingJob.objects.select_related(
+                            "pipeline",
+                        )
+                        .filter(id=candidate_id, status=candidate_status)
+                        .first()
+                    )
+                    if not job or not _node_can_run_job(node, job):
+                        continue
                     updated = ProcessingJob.objects.filter(id=candidate_id, status=candidate_status).update(
                         status=ProcessingStatus.ASSIGNED,
                         node_id=node.id,
@@ -1199,8 +1307,6 @@ class ProcessingJobClaimView(AgentApiView):
                 "last_heartbeat_at": timezone.now(),
             },
         )
-        if node.node_type != "processor":
-            raise ValidationError({"node_name": "node_name belongs to a non-processor node."})
         return node
 
 
@@ -1552,7 +1658,7 @@ class QcApiMixin:
         qc_entries = []
         for worklist in worklists:
             for entry in worklist.entries.all():
-                if entry.file_role == RunFileRole.QC:
+                if entry.file_role in {RunFileRole.QC, RunFileRole.HYE} or entry.qc_program == QcProgram.HYE:
                     qc_entries.append(entry)
 
         run_ids = [entry.run_id for entry in qc_entries]
@@ -1591,7 +1697,7 @@ class QcApiMixin:
             seen_labels = set()
             for entry in worklist.entries.all():
                 if (
-                    entry.file_role == RunFileRole.QC
+                    (entry.file_role in {RunFileRole.QC, RunFileRole.HYE} or entry.qc_program == QcProgram.HYE)
                     and entry.hye_pair_label
                     and entry.hye_pair_label not in seen_labels
                 ):
@@ -1600,7 +1706,9 @@ class QcApiMixin:
 
             entries_by_label = {}
             for entry in worklist.entries.all():
-                if entry.file_role != RunFileRole.QC or not entry.hye_pair_label:
+                if not entry.hye_pair_label:
+                    continue
+                if entry.file_role not in {RunFileRole.QC, RunFileRole.HYE} and entry.qc_program != QcProgram.HYE:
                     continue
                 label_entries = entries_by_label.setdefault(entry.hye_pair_label, {})
                 label_entries[entry.run.sample.name] = entry
@@ -2046,6 +2154,8 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     **(row.get("metadata") or {}),
                     "setup_source": "worklist_import",
                     "condition": row.get("condition", ""),
+                    "qc_program": row.get("qc_program", ""),
+                    "synthetic_peptides_present": row.get("qc_program") == QcProgram.PRTC,
                     "plate_id": row.get("plate", ""),
                     **_well_coordinates(row.get("well", "")),
                 }
@@ -2068,9 +2178,22 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     run.sample = sample
                     run.run_name = run_name
                     run.status = row.get("status", run.status)
+                    run.file_role = row["file_role"]
+                    run.qc_program = row.get("qc_program", "")
                     run.metadata = {**(run.metadata or {}), **metadata, "expected_filename": row["expected_filename"]}
-                    run.save(update_fields=["sample", "run_name", "status", "metadata", "updated_at"])
+                    run.save(
+                        update_fields=[
+                            "sample",
+                            "run_name",
+                            "status",
+                            "file_role",
+                            "qc_program",
+                            "metadata",
+                            "updated_at",
+                        ]
+                    )
                     entry.file_role = row["file_role"]
+                    entry.qc_program = row.get("qc_program", "")
                     entry.expected_filename = row["expected_filename"]
                     entry.hye_pair_label = row.get("hye_pair_label", "")
                     entry.notes = row.get("notes", "")
@@ -2088,6 +2211,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                         run_name=run_name,
                         status=row.get("status", RunStatus.PLANNED),
                         file_role=row["file_role"],
+                        qc_program=row.get("qc_program", ""),
                         expected_filename=row["expected_filename"],
                         worklist_position=row["position"],
                         hye_pair_label=row.get("hye_pair_label", ""),
@@ -2098,6 +2222,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                         run=run,
                         position=row["position"],
                         file_role=row["file_role"],
+                        qc_program=row.get("qc_program", ""),
                         expected_filename=row["expected_filename"],
                         hye_pair_label=row.get("hye_pair_label", ""),
                         block_label=f"Block {math.ceil(row['position'] / 24)}",
@@ -2382,24 +2507,28 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         position = 0
         pair_index = 0
 
-        def add_entry(sample, role=RunFileRole.SAMPLE, hye_pair_label=""):
+        def add_entry(sample, role=RunFileRole.SAMPLE, hye_pair_label="", qc_program=""):
             nonlocal position
             position += 1
             sample_well = sample.metadata.get("well") or _well_for_position(position, data["plate_type"])
             well_metadata = _well_coordinates(str(sample_well))
             expected_filename = f"{_filename_token(project.code)}_{position:03d}_{_filename_token(sample.name)}.raw"
+            normalized_qc_program = _normalize_qc_program(qc_program, role)
             run = Run.objects.create(
                 sample=sample,
                 configuration=configuration,
                 run_name=f"{project.code}-{position:03d}-{sample.name}",
                 status=RunStatus.PLANNED,
                 file_role=role,
+                qc_program=normalized_qc_program,
                 expected_filename=expected_filename,
                 worklist_position=position,
                 hye_pair_label=hye_pair_label,
                 metadata={
                     "setup_source": "pre_acquisition_setup",
                     "expected_filename": expected_filename,
+                    "qc_program": normalized_qc_program,
+                    "synthetic_peptides_present": normalized_qc_program == QcProgram.PRTC,
                     "plate_type": data["plate_type"],
                     **well_metadata,
                 },
@@ -2409,11 +2538,14 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 run=run,
                 position=position,
                 file_role=role,
+                qc_program=normalized_qc_program,
                 expected_filename=expected_filename,
                 hye_pair_label=hye_pair_label,
                 block_label=f"Block {math.ceil(position / 24)}",
                 metadata={
                     "setup_source": "pre_acquisition_setup",
+                    "qc_program": normalized_qc_program,
+                    "synthetic_peptides_present": normalized_qc_program == QcProgram.PRTC,
                     "sample_name": sample.name,
                     "sample_external_id": sample.external_id,
                     "condition": sample.metadata.get("condition", ""),
@@ -2432,8 +2564,8 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             if data["hye_interval"] and index % data["hye_interval"] == 0:
                 pair_index += 1
                 label = f"HYE-{pair_index:02d}"
-                add_entry(hye_samples["HYE-A"], role=RunFileRole.QC, hye_pair_label=label)
-                add_entry(hye_samples["HYE-B"], role=RunFileRole.QC, hye_pair_label=label)
+                add_entry(hye_samples["HYE-A"], role=RunFileRole.HYE, hye_pair_label=label, qc_program=QcProgram.HYE)
+                add_entry(hye_samples["HYE-B"], role=RunFileRole.HYE, hye_pair_label=label, qc_program=QcProgram.HYE)
 
         return list(sample_lookup.values()) + list(hye_samples.values()), runs, entries
 
@@ -2807,6 +2939,31 @@ class RawFileViewSet(AuthenticatedModelViewSet):
                 "chromatograms": index_payload.get("chromatograms", {"tic": [], "bpc": []}),
             }
         )
+
+
+class RawFileArchiveViewSet(AuthenticatedModelViewSet):
+    queryset = RawFileArchive.objects.select_related(
+        "raw_file",
+        "raw_file__run",
+        "raw_file__run__sample",
+        "raw_file__run__sample__experiment",
+        "raw_file__run__sample__experiment__project",
+    )
+    serializer_class = RawFileArchiveSerializer
+    scope_lab_lookup = "raw_file__run__sample__experiment__project__lab_id"
+    write_scope_lab_path = "raw_file.run.sample.experiment.project.lab"
+    search_fields = ("raw_file__filename", "archive_path", "original_storage_path", "checksum_sha256")
+    ordering_fields = ("status", "compression", "size_bytes", "archived_at", "restored_at", "created_at", "updated_at")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        raw_file_filter = self.request.query_params.get("raw_file")
+        if raw_file_filter:
+            queryset = queryset.filter(raw_file_id=raw_file_filter)
+        status_filter = self.request.query_params.get("status")
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        return queryset
 
 
 class DirectUploadSessionViewSet(AuthenticatedModelViewSet):

@@ -28,7 +28,7 @@ import { queryClient } from "@/lib/api/query-client";
 import { formatBytes, formatDate } from "@/lib/format";
 import type { FindingsWorkspace, ProjectResearcherRun, WorklistImportRow } from "@/lib/api/types";
 
-const roleOptions = ["sample", "qc", "library", "blank", "wash", "calibration"] as const;
+const roleOptions = ["sample", "qc", "hye", "prtc", "library", "blank", "true_blank", "wash", "calibration"] as const;
 const runStatusOptions = ["planned", "acquired", "imported", "processed", "failed"] as const;
 
 type EditDraft = {
@@ -701,14 +701,17 @@ function parseWorklistText(text: string): WorklistImportRow[] {
     const expectedFilename = value(["expected_filename", "expected file", "filename", "file", "raw file", "raw_file"]);
     if (!expectedFilename) return [];
     const positionValue = Number(value(["position", "order", "injection", "index", "pos"]));
-    const roleValue = value(["file_role", "role", "type"]).toLowerCase();
+    const roleValue = value(["file_role", "role", "type"]).toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
     const fileRole = roleOptions.includes(roleValue as WorklistImportRow["file_role"]) ? roleValue as WorklistImportRow["file_role"] : "sample";
+    const qcProgramValue = value(["qc_program", "qc program", "qc", "program"]).toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+    const qcProgram = qcProgramValue === "hye" || fileRole === "hye" ? "hye" : qcProgramValue === "prtc" || fileRole === "prtc" ? "prtc" : "";
     return {
       position: Number.isFinite(positionValue) && positionValue > 0 ? positionValue : index + 1,
       sample_name: sampleName,
       run_name: value(["run_name", "run", "injection_name"]) || sampleName,
       expected_filename: expectedFilename,
       file_role: fileRole,
+      qc_program: qcProgram,
       condition: value(["condition", "group"]),
       well: value(["well", "vial", "autosampler_vial"]),
       plate: value(["plate", "plate_id"]),
