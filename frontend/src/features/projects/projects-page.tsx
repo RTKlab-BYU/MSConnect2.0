@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { createPreAcquisitionSetup, fetchInstrumentConfigurations, fetchProjects, queryKeys } from "@/lib/api/queries";
+import { createPreAcquisitionSetup, fetchInstrumentConfigurations, fetchProjects, quickStartProject, queryKeys } from "@/lib/api/queries";
 import { queryClient } from "@/lib/api/query-client";
 import { projectColumns } from "@/features/projects/table-columns";
 
@@ -37,6 +37,12 @@ export default function ProjectsPage() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [quickStartOpen, setQuickStartOpen] = useState(false);
+  const [quickStartError, setQuickStartError] = useState("");
+  const [quickStartForm, setQuickStartForm] = useState({
+    title: "Untitled DIA Project",
+    code: "",
+  });
   const [step, setStep] = useState(0);
   const [setupError, setSetupError] = useState("");
   const [projectForm, setProjectForm] = useState({
@@ -89,6 +95,17 @@ export default function ProjectsPage() {
       setSetupError(error instanceof Error ? error.message : "Could not create pre-acquisition project.");
     },
   });
+  const quickStartMutation = useMutation({
+    mutationFn: quickStartProject,
+    onSuccess: async (response) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.projects(params) });
+      setQuickStartOpen(false);
+      navigate(`/projects/${response.project.id}`);
+    },
+    onError: (error) => {
+      setQuickStartError(error instanceof Error ? error.message : "Could not create quick-start project.");
+    },
+  });
 
   function submitSetup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -123,6 +140,15 @@ export default function ProjectsPage() {
     });
   }
 
+  function submitQuickStart(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setQuickStartError("");
+    quickStartMutation.mutate({
+      title: quickStartForm.title,
+      code: quickStartForm.code || undefined,
+    });
+  }
+
   return (
     <div className="grid gap-4">
       <Breadcrumbs items={[{ label: "Projects" }]} />
@@ -133,11 +159,40 @@ export default function ProjectsPage() {
         actions={
           <>
             <StatusBadge status="active" />
-            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <Dialog open={quickStartOpen} onOpenChange={setQuickStartOpen}>
               <DialogTrigger asChild>
                 <Button>
                   <Plus className="h-4 w-4" />
-                  New project
+                  Quick start
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Quick start project</DialogTitle>
+                  <DialogDescription>Create the project now, then import or edit the LC-MS worklist from the project page.</DialogDescription>
+                </DialogHeader>
+                <form className="grid gap-3" onSubmit={submitQuickStart}>
+                  <TextField label="Project title" value={quickStartForm.title} onChange={(title) => setQuickStartForm((current) => ({ ...current, title }))} />
+                  <label className="grid gap-1 text-sm font-bold">
+                    Project code
+                    <Input value={quickStartForm.code} placeholder="Auto-generated if blank" onChange={(event) => setQuickStartForm((current) => ({ ...current, code: event.target.value }))} />
+                  </label>
+                  {quickStartError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{quickStartError}</div> : null}
+                  <div className="flex justify-end gap-2 border-t pt-3">
+                    <Button type="button" variant="secondary" onClick={() => setQuickStartOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button type="submit" disabled={quickStartMutation.isPending}>
+                      {quickStartMutation.isPending ? "Creating..." : "Create project"}
+                    </Button>
+                  </div>
+                </form>
+              </DialogContent>
+            </Dialog>
+            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="secondary">
+                  Advanced setup
                 </Button>
               </DialogTrigger>
               <DialogContent className="max-h-[92vh] max-w-5xl overflow-auto rounded-3xl p-6">

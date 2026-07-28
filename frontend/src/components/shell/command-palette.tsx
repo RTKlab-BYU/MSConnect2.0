@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Command } from "cmdk";
-import { Activity, BarChart3, CheckCircle2, FlaskConical, HardDrive, Search, Settings, UploadCloud } from "lucide-react";
+import { FlaskConical, HardDrive, Search } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -39,30 +39,6 @@ export function CommandPalette() {
               <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/projects")}>
                 <FlaskConical className="h-4 w-4" />
                 Projects
-              </Command.Item>
-              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/qc")}>
-                <CheckCircle2 className="h-4 w-4" />
-                QC
-              </Command.Item>
-              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/settings")}>
-                <Settings className="h-4 w-4" />
-                Settings
-              </Command.Item>
-              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/monitoring")}>
-                <Activity className="h-4 w-4" />
-                Monitoring
-              </Command.Item>
-              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/processing")}>
-                <HardDrive className="h-4 w-4" />
-                Processing
-              </Command.Item>
-              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/spectra")}>
-                <BarChart3 className="h-4 w-4" />
-                Spectra
-              </Command.Item>
-              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/uploads")}>
-                <UploadCloud className="h-4 w-4" />
-                Uploads
               </Command.Item>
             </Command.Group>
             <Command.Group heading="Projects" className="text-xs text-muted-foreground">

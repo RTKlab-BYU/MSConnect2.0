@@ -115,6 +115,149 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(summary_response.data["raw_file_count"], 0)
         self.assertEqual(summary_response.data["processing_job_count"], 0)
 
+    def test_quick_start_creates_project_and_default_experiment(self):
+        self.client.force_authenticate(user=self.researcher)
+
+        response = self.client.post(
+            "/api/projects/quick-start/",
+            data={"title": "Researcher Quick Project", "code": "QUICK-01"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        project = Project.objects.get(code="QUICK-01")
+        self.assertEqual(project.lab_id, self.lab_a.id)
+        self.assertEqual(project.pi_id, self.researcher.id)
+        self.assertEqual(Experiment.objects.get(project=project).name, "Default experiment")
+
+    def test_worklist_import_creates_and_updates_project_runs(self):
+        self.client.force_authenticate(user=self.researcher)
+        quick_response = self.client.post(
+            "/api/projects/quick-start/",
+            data={"title": "Worklist Import Project", "code": "WL-IMPORT"},
+            format="json",
+        )
+        project_id = quick_response.data["project"]["id"]
+        payload = {
+            "worklist_name": "Instrument worklist",
+            "rows": [
+                {
+                    "position": 1,
+                    "sample_name": "Sample-001",
+                    "run_name": "Run-001",
+                    "expected_filename": "Run_001.raw",
+                    "file_role": "sample",
+                    "condition": "healthy",
+                    "well": "A01",
+                },
+                {
+                    "position": 2,
+                    "sample_name": "HYE-A",
+                    "run_name": "HYE-A-001",
+                    "expected_filename": "HYE_A_001.raw",
+                    "file_role": "qc",
+                    "hye_pair_label": "HYE-01",
+                    "well": "A02",
+                },
+            ],
+        }
+
+        first = self.client.post(f"/api/projects/{project_id}/import-worklist/", data=payload, format="json")
+        second_payload = {
+            **payload,
+            "rows": [
+                {**payload["rows"][0], "expected_filename": "Run_001_REINJECT.raw", "status": "planned"},
+                payload["rows"][1],
+            ],
+        }
+        second = self.client.post(f"/api/projects/{project_id}/import-worklist/", data=second_payload, format="json")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        worklist = AcquisitionWorklist.objects.get(name="Instrument worklist")
+        self.assertEqual(worklist.entries.count(), 2)
+        self.assertEqual(Run.objects.filter(sample__experiment__project_id=project_id).count(), 2)
+        first_entry = worklist.entries.get(position=1)
+        self.assertEqual(first_entry.expected_filename, "Run_001_REINJECT.raw")
+        self.assertEqual(first_entry.run.expected_filename, "Run_001_REINJECT.raw")
+        self.assertEqual(first_entry.metadata["well"], "A01")
+
+    def test_researcher_status_returns_single_page_run_rows(self):
+        self.client.force_authenticate(user=self.researcher)
+        quick_response = self.client.post(
+            "/api/projects/quick-start/",
+            data={"title": "Status Project", "code": "STATUS-01"},
+            format="json",
+        )
+        project_id = quick_response.data["project"]["id"]
+        self.client.post(
+            f"/api/projects/{project_id}/import-worklist/",
+            data={
+                "worklist_name": "Status worklist",
+                "rows": [
+                    {
+                        "position": 1,
+                        "sample_name": "Sample-001",
+                        "run_name": "Status Run 1",
+                        "expected_filename": "Status_Run_1.raw",
+                        "file_role": "sample",
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        response = self.client.get(f"/api/projects/{project_id}/researcher-status/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["project"]["code"], "STATUS-01")
+        self.assertEqual(response.data["system_health"]["status"], "yellow")
+        self.assertEqual(len(response.data["runs"]), 1)
+        self.assertEqual(response.data["runs"][0]["run"]["expected_filename"], "Status_Run_1.raw")
+        self.assertEqual(response.data["runs"][0]["worklist_name"], "Status worklist")
+
+    def test_queue_ready_runs_queues_uploaded_unqueued_runs(self):
+        self.client.force_authenticate(user=self.researcher)
+        quick_response = self.client.post(
+            "/api/projects/quick-start/",
+            data={"title": "Queue Ready Project", "code": "QUEUE-READY"},
+            format="json",
+        )
+        project_id = quick_response.data["project"]["id"]
+        self.client.post(
+            f"/api/projects/{project_id}/import-worklist/",
+            data={
+                "worklist_name": "Queue worklist",
+                "rows": [
+                    {
+                        "position": 1,
+                        "sample_name": "Sample-001",
+                        "run_name": "Queue Run 1",
+                        "expected_filename": "Queue_Run_1.raw",
+                        "file_role": "sample",
+                    }
+                ],
+            },
+            format="json",
+        )
+        run = Run.objects.get(run_name="Queue Run 1")
+        RawFile.objects.create(
+            run=run,
+            source_path="/incoming/Queue_Run_1.raw",
+            storage_path="/data/raw/Queue_Run_1.raw",
+            filename="Queue_Run_1.raw",
+            checksum_sha256="b" * 64,
+            size_bytes=1024,
+            status="imported",
+            file_role="sample",
+        )
+
+        response = self.client.post(f"/api/projects/{project_id}/queue-ready-runs/", data={}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["queued"], 1)
+        self.assertEqual(ProcessingJob.objects.filter(run=run, status=ProcessingStatus.QUEUED).count(), 1)
+
     def test_pre_acquisition_setup_creates_expected_worklist_and_processing_plan(self):
         self.client.force_authenticate(user=self.researcher)
 

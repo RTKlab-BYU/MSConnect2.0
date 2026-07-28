@@ -1,4 +1,4 @@
-import { getResource, paginatedResource, postResource, type ListParams } from "@/lib/api/client";
+import { getResource, paginatedResource, patchResource, postResource, type ListParams } from "@/lib/api/client";
 import type {
   AcquisitionWorklist,
   ChromatogramsResponse,
@@ -12,6 +12,9 @@ import type {
   ProcessingNodeOverview,
   ProcessingPipeline,
   Project,
+  ProjectQuickStartPayload,
+  ProjectQuickStartResponse,
+  ProjectResearcherStatus,
   ProjectSummary,
   QcDetails,
   QcOverview,
@@ -23,12 +26,15 @@ import type {
   Sample,
   SpectraResponse,
   SpectrumDetailResponse,
+  WorklistImportPayload,
+  WorklistImportResponse,
 } from "@/lib/api/types";
 
 export const queryKeys = {
   projects: (params?: ListParams) => ["projects", params] as const,
   project: (id: number) => ["project", id] as const,
   projectSummary: (id: number) => ["project", id, "summary"] as const,
+  projectResearcherStatus: (id: number) => ["project", id, "researcher-status"] as const,
   rawFiles: (params: ListParams) => ["raw-files", params] as const,
   rawFilesOverview: (params?: ListParams) => ["raw-files", "overview", params] as const,
   rawFileDerivatives: (params?: ListParams) => ["raw-file-derivatives", params] as const,
@@ -61,8 +67,32 @@ export function fetchProjectSummary(id: number): Promise<ProjectSummary> {
   return getResource<ProjectSummary>(`/projects/${id}/summary/`);
 }
 
+export function fetchProjectResearcherStatus(id: number): Promise<ProjectResearcherStatus> {
+  return getResource<ProjectResearcherStatus>(`/projects/${id}/researcher-status/`);
+}
+
+export function quickStartProject(payload: ProjectQuickStartPayload): Promise<ProjectQuickStartResponse> {
+  return postResource<ProjectQuickStartResponse>("/projects/quick-start/", payload);
+}
+
 export function createPreAcquisitionSetup(payload: PreAcquisitionSetupPayload): Promise<PreAcquisitionSetupResponse> {
   return postResource<PreAcquisitionSetupResponse>("/projects/pre-acquisition-setup/", payload);
+}
+
+export function importProjectWorklist(projectId: number, payload: WorklistImportPayload): Promise<WorklistImportResponse> {
+  return postResource<WorklistImportResponse>(`/projects/${projectId}/import-worklist/`, payload);
+}
+
+export function queueProjectReadyRuns(projectId: number): Promise<{ queued: number; jobs: ProcessingJob[] }> {
+  return postResource(`/projects/${projectId}/queue-ready-runs/`, {});
+}
+
+export function updateWorklistEntry(id: number, payload: Partial<AcquisitionWorklist> & Record<string, unknown>): Promise<unknown> {
+  return patchResource(`/worklist-entries/${id}/`, payload);
+}
+
+export function updateRun(id: number, payload: Partial<Run>): Promise<Run> {
+  return patchResource<Run>(`/runs/${id}/`, payload);
 }
 
 export function fetchRawFiles(params: ListParams): Promise<Paginated<RawFile>> {

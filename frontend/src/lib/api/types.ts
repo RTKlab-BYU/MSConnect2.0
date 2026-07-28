@@ -55,6 +55,47 @@ export type PreAcquisitionSetupResponse = {
   expected_filenames: string[];
 };
 
+export type ProjectQuickStartPayload = {
+  title: string;
+  code?: string;
+};
+
+export type ProjectQuickStartResponse = {
+  project: Project;
+  experiment: {
+    id: EntityId;
+    name: string;
+  };
+};
+
+export type WorklistImportRow = {
+  position: number;
+  run_name?: string;
+  sample_name: string;
+  expected_filename: string;
+  file_role: RawFile["file_role"];
+  status?: Run["status"];
+  well?: string;
+  plate?: string;
+  condition?: string;
+  hye_pair_label?: string;
+  notes?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type WorklistImportPayload = {
+  worklist_name: string;
+  experiment_name?: string;
+  rows: WorklistImportRow[];
+};
+
+export type WorklistImportResponse = {
+  worklist: AcquisitionWorklist;
+  samples_imported: number;
+  runs_imported: number;
+  worklist_entries_imported: number;
+};
+
 export type InstrumentConfiguration = {
   id: EntityId;
   facility: EntityId;
@@ -370,6 +411,41 @@ export type RunSummary = {
     artifact_count: number;
     derivative_count: number;
   };
+};
+
+export type ProjectResearcherRun = {
+  run: Run;
+  sample: Sample;
+  worklist_entry_id: EntityId | null;
+  worklist_name: string;
+  raw_file: RawFile | null;
+  raw_file_count: number;
+  processing_job: ProcessingJob | null;
+  processing_job_count: number;
+  stats: {
+    protein_quant_count: number;
+    peptide_quant_count: number;
+    reported_protein_count: number;
+    reported_peptide_count: number;
+    reported_precursor_count: number;
+    ms1_feature_count: number;
+    ms2_spectra_count: number;
+    indexed_spectra_count: number;
+    indexed_ms1_spectra_count: number;
+    indexed_ms2_spectra_count: number;
+  };
+};
+
+export type ProjectResearcherStatus = {
+  project: Project;
+  summary: ProjectSummary;
+  system_health: {
+    status: "green" | "yellow" | "red";
+    failed_jobs: number;
+    active_jobs: number;
+    missing_raw_files: number;
+  };
+  runs: ProjectResearcherRun[];
 };
 
 export type AcquisitionWorklist = {

@@ -68,3 +68,10 @@ export async function postResource<T>(path: string, body: unknown) {
     body: JSON.stringify(body),
   });
 }
+
+export async function patchResource<T>(path: string, body: unknown) {
+  return apiFetch<T>(path, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}

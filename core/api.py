@@ -182,6 +182,43 @@ class ProjectPreAcquisitionSetupSerializer(serializers.Serializer):
         return attrs
 
 
+class ProjectQuickStartSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=255)
+    code = serializers.CharField(max_length=80, required=False, allow_blank=True)
+    lab = serializers.PrimaryKeyRelatedField(queryset=Lab.objects.all(), required=False)
+
+
+class WorklistImportRowSerializer(serializers.Serializer):
+    position = serializers.IntegerField(min_value=1)
+    run_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    sample_name = serializers.CharField(max_length=255)
+    expected_filename = serializers.CharField(max_length=255)
+    file_role = serializers.ChoiceField(choices=RunFileRole.choices, default=RunFileRole.SAMPLE)
+    status = serializers.ChoiceField(choices=RunStatus.choices, required=False)
+    well = serializers.CharField(max_length=32, required=False, allow_blank=True)
+    plate = serializers.CharField(max_length=128, required=False, allow_blank=True)
+    condition = serializers.CharField(max_length=128, required=False, allow_blank=True)
+    hye_pair_label = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    metadata = serializers.DictField(required=False)
+
+
+class WorklistImportSerializer(serializers.Serializer):
+    worklist_name = serializers.CharField(max_length=255, default="Imported LC-MS worklist")
+    experiment_name = serializers.CharField(max_length=255, default="Default experiment")
+    diann_version = serializers.CharField(max_length=128, default="1.9")
+    rows = WorklistImportRowSerializer(many=True)
+
+    def validate_rows(self, rows):
+        positions = [row["position"] for row in rows]
+        if len(positions) != len(set(positions)):
+            raise ValidationError("Worklist positions must be unique.")
+        filenames = [row["expected_filename"] for row in rows]
+        if len(filenames) != len(set(filenames)):
+            raise ValidationError("Expected filenames must be unique within the worklist.")
+        return rows
+
+
 class ProjectIntakeQueueSerializer(BaseSerializer):
     lab_name = serializers.CharField(source="lab.name", read_only=True)
     submitted_by_username = serializers.CharField(source="submitted_by.username", read_only=True)
@@ -1724,6 +1761,42 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             queryset = queryset.filter(lab_id=lab_filter)
         return queryset
 
+    @action(detail=False, methods=["post"], url_path="quick-start")
+    def quick_start(self, request):
+        serializer = ProjectQuickStartSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        lab = data.get("lab") or self._default_lab_for_user(request.user)
+        if lab is None:
+            raise ValidationError({"lab": "No lab was provided and no active lab membership was found."})
+        if not is_admin(request.user) and lab.id not in set(active_lab_ids(request.user)):
+            raise PermissionDenied("This project targets a lab outside your membership scope.")
+
+        with transaction.atomic():
+            code = data.get("code") or self._next_quick_start_code(data["title"])
+            project = Project.objects.create(
+                lab=lab,
+                title=data["title"],
+                code=code,
+                pi=getattr(lab, "pi", None) or request.user,
+                description="Quick-start project. Import or generate a worklist to establish run ground truth.",
+            )
+            experiment = Experiment.objects.create(
+                project=project,
+                name="Default experiment",
+                created_by=request.user,
+                metadata={"setup_source": "quick_start"},
+            )
+
+        return Response(
+            {
+                "project": ProjectSerializer(project).data,
+                "experiment": ExperimentSerializer(experiment).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
     @action(detail=True, methods=["get"])
     def summary(self, request, pk=None):
         project = self.get_object()
@@ -1767,6 +1840,233 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 "jobs_by_status": list(jobs.values("status").annotate(count=Count("id")).order_by("status")),
                 "worklists_by_status": list(worklists.values("status").annotate(count=Count("id")).order_by("status")),
             }
+        )
+
+    @action(detail=True, methods=["get"], url_path="researcher-status")
+    def researcher_status(self, request, pk=None):
+        project = self.get_object()
+        summary_response = self.summary(request, pk=pk)
+        summary = summary_response.data
+        runs = (
+            Run.objects.filter(sample__experiment__project=project)
+            .select_related("sample", "sample__experiment")
+            .prefetch_related("raw_files", "processing_jobs", "processing_jobs__artifacts")
+            .order_by("worklist_position", "run_name", "id")
+        )
+        rows = []
+        failed_count = 0
+        active_count = 0
+        for run in runs:
+            raw_files = list(run.raw_files.order_by("-imported_at", "filename"))
+            latest_raw = raw_files[0] if raw_files else None
+            jobs = list(run.processing_jobs.order_by("-created_at"))
+            latest_job = jobs[0] if jobs else None
+            job_stats = _aggregate_job_stats(jobs)
+            failed_count += 1 if latest_job and latest_job.status == ProcessingStatus.FAILED else 0
+            active_count += 1 if latest_job and latest_job.status in {
+                ProcessingStatus.QUEUED,
+                ProcessingStatus.ASSIGNED,
+                ProcessingStatus.RUNNING,
+                ProcessingStatus.RETRYING,
+            } else 0
+            entry = getattr(run, "worklist_entry", None)
+            rows.append(
+                {
+                    "run": RunSerializer(run).data,
+                    "sample": SampleSerializer(run.sample).data,
+                    "worklist_entry_id": entry.id if entry else None,
+                    "worklist_name": entry.worklist.name if entry else "",
+                    "raw_file": RawFileSerializer(latest_raw).data if latest_raw else None,
+                    "raw_file_count": len(raw_files),
+                    "processing_job": ProcessingJobSerializer(latest_job).data if latest_job else None,
+                    "processing_job_count": len(jobs),
+                    "stats": {
+                        "protein_quant_count": ProteinQuant.objects.filter(job__in=jobs).count(),
+                        "peptide_quant_count": PeptideQuant.objects.filter(job__in=jobs).count(),
+                        **job_stats,
+                        **_safe_spectrum_counts_for_raw_files(raw_files),
+                    },
+                }
+            )
+
+        health = "green"
+        if failed_count:
+            health = "red"
+        elif summary["missing_raw_file_count"] or active_count:
+            health = "yellow"
+
+        return Response(
+            {
+                "project": ProjectSerializer(project).data,
+                "summary": summary,
+                "system_health": {
+                    "status": health,
+                    "failed_jobs": failed_count,
+                    "active_jobs": active_count,
+                    "missing_raw_files": summary["missing_raw_file_count"],
+                },
+                "runs": rows,
+            }
+        )
+
+    @action(detail=True, methods=["post"], url_path="import-worklist")
+    def import_worklist(self, request, pk=None):
+        project = self.get_object()
+        serializer = WorklistImportSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        with transaction.atomic():
+            experiment, _created = Experiment.objects.get_or_create(
+                project=project,
+                name=data["experiment_name"],
+                defaults={
+                    "created_by": request.user,
+                    "metadata": {"setup_source": "worklist_import"},
+                },
+            )
+            pipeline = self._create_or_update_diann_pipeline(
+                {
+                    "organisms": ["human", "yeast", "ecoli"],
+                    "diann_settings": {},
+                    "diann_version": data["diann_version"],
+                    "processing_preset": "Standard DIA-NN plasma",
+                }
+            )
+            worklist, _created = AcquisitionWorklist.objects.get_or_create(
+                experiment=experiment,
+                name=data["worklist_name"],
+                defaults={
+                    "status": WorklistStatus.READY,
+                    "generated_by": request.user,
+                    "notes": "Imported from LC-MS worklist file.",
+                    "metadata": {
+                        "setup_source": "worklist_import",
+                        "processing_pipeline_id": pipeline.id,
+                        "processing_plan": pipeline.parameters,
+                        "watcher_matching": "expected_filename",
+                    },
+                },
+            )
+            worklist.status = WorklistStatus.READY
+            worklist.generated_by = worklist.generated_by or request.user
+            worklist.metadata = {
+                **(worklist.metadata or {}),
+                "setup_source": "worklist_import",
+                "processing_pipeline_id": pipeline.id,
+                "processing_plan": pipeline.parameters,
+                "watcher_matching": "expected_filename",
+            }
+            worklist.save(update_fields=["status", "generated_by", "metadata", "updated_at"])
+
+            existing_by_position = {
+                entry.position: entry for entry in worklist.entries.select_related("run", "run__sample")
+            }
+            samples = []
+            runs = []
+            entries = []
+            for row in sorted(data["rows"], key=lambda item: item["position"]):
+                metadata = {
+                    **(row.get("metadata") or {}),
+                    "setup_source": "worklist_import",
+                    "condition": row.get("condition", ""),
+                    "plate_id": row.get("plate", ""),
+                    **_well_coordinates(row.get("well", "")),
+                }
+                sample, _created = Sample.objects.get_or_create(
+                    experiment=experiment,
+                    name=row["sample_name"],
+                    defaults={
+                        "external_id": f"{project.code}-{row['sample_name']}",
+                        "submitted_by": request.user,
+                        "metadata": metadata,
+                    },
+                )
+                sample.metadata = {**(sample.metadata or {}), **metadata}
+                sample.save(update_fields=["metadata", "updated_at"])
+
+                run_name = row.get("run_name") or f"{project.code}-{row['position']:03d}-{sample.name}"
+                entry = existing_by_position.get(row["position"])
+                if entry:
+                    run = entry.run
+                    run.sample = sample
+                    run.run_name = run_name
+                    run.status = row.get("status", run.status)
+                    run.metadata = {**(run.metadata or {}), **metadata, "expected_filename": row["expected_filename"]}
+                    run.save(update_fields=["sample", "run_name", "status", "metadata", "updated_at"])
+                    entry.file_role = row["file_role"]
+                    entry.expected_filename = row["expected_filename"]
+                    entry.hye_pair_label = row.get("hye_pair_label", "")
+                    entry.notes = row.get("notes", "")
+                    entry.metadata = {
+                        **(entry.metadata or {}),
+                        **metadata,
+                        "sample_name": sample.name,
+                        "sample_external_id": sample.external_id,
+                        "watcher_match_key": row["expected_filename"],
+                    }
+                    entry.save()
+                else:
+                    run = Run.objects.create(
+                        sample=sample,
+                        run_name=run_name,
+                        status=row.get("status", RunStatus.PLANNED),
+                        file_role=row["file_role"],
+                        expected_filename=row["expected_filename"],
+                        worklist_position=row["position"],
+                        hye_pair_label=row.get("hye_pair_label", ""),
+                        metadata={**metadata, "expected_filename": row["expected_filename"]},
+                    )
+                    entry = WorklistEntry.objects.create(
+                        worklist=worklist,
+                        run=run,
+                        position=row["position"],
+                        file_role=row["file_role"],
+                        expected_filename=row["expected_filename"],
+                        hye_pair_label=row.get("hye_pair_label", ""),
+                        block_label=f"Block {math.ceil(row['position'] / 24)}",
+                        notes=row.get("notes", ""),
+                        metadata={
+                            **metadata,
+                            "sample_name": sample.name,
+                            "sample_external_id": sample.external_id,
+                            "watcher_match_key": row["expected_filename"],
+                        },
+                    )
+                samples.append(sample)
+                runs.append(run)
+                entries.append(entry)
+
+        return Response(
+            {
+                "worklist": AcquisitionWorklistSerializer(worklist).data,
+                "samples_imported": len({sample.id for sample in samples}),
+                "runs_imported": len({run.id for run in runs}),
+                "worklist_entries_imported": len({entry.id for entry in entries}),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"], url_path="queue-ready-runs")
+    def queue_ready_runs(self, request, pk=None):
+        project = self.get_object()
+        raw_files = RawFile.objects.filter(
+            run__sample__experiment__project=project,
+            run__isnull=False,
+            run__processing_jobs__isnull=True,
+        ).select_related("run")
+        queued_jobs = []
+        for raw_file in raw_files:
+            job = _queue_processing_job_for_raw_file(raw_file)
+            if job:
+                queued_jobs.append(job)
+
+        return Response(
+            {
+                "queued": len(queued_jobs),
+                "jobs": ProcessingJobSerializer(queued_jobs, many=True).data,
+            },
+            status=status.HTTP_200_OK,
         )
 
     @action(detail=False, methods=["post"], url_path="pre-acquisition-setup")
@@ -1859,6 +2159,17 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         if is_admin(user):
             return Lab.objects.order_by("id").first()
         return None
+
+    def _next_quick_start_code(self, title):
+        prefix = _filename_token(title)[:12] or "PROJECT"
+        today = timezone.now().strftime("%y%m%d")
+        base = f"{prefix}-{today}"
+        candidate = base
+        index = 1
+        while Project.objects.filter(code=candidate).exists():
+            index += 1
+            candidate = f"{base}-{index}"
+        return candidate
 
     def _create_or_update_diann_pipeline(self, data):
         reference_assets = _resolve_reference_assets(data)

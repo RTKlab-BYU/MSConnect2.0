@@ -1,212 +1,140 @@
-import type { ColumnDef } from "@tanstack/react-table";
-import { useQuery } from "@tanstack/react-query";
-import { Activity, BarChart3, Eye, FileArchive, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { BarChart3, CheckCircle2, FileUp, HardDrive, Save, Settings2 } from "lucide-react";
+import type { FormEvent } from "react";
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { MetricCard, PageHero } from "@/components/layout/page-section";
-import { SummaryChart } from "@/components/data/summary-chart";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { DataTable } from "@/components/ui/data-table";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ChromatogramPanel } from "@/features/visualization/chromatogram-panel";
-import { VizPlanningPanel } from "@/features/visualization/viz-planning-panel";
 import {
-  fetchAcquisitions,
-  fetchProcessingJobs,
-  fetchProject,
-  fetchProjectSummary,
-  fetchRawFiles,
-  fetchRunSummary,
-  fetchRuns,
-  fetchSamples,
+  fetchProjectResearcherStatus,
+  importProjectWorklist,
+  queueProjectReadyRuns,
   queryKeys,
+  updateRun,
+  updateWorklistEntry,
 } from "@/lib/api/queries";
+import { queryClient } from "@/lib/api/query-client";
 import { formatBytes, formatDate } from "@/lib/format";
-import type { ProcessingJobArtifact, RawFileDerivative, Run, Sample } from "@/lib/api/types";
-import {
-  acquisitionColumns,
-  processingJobColumns,
-  rawFileColumns,
-  runColumns,
-  sampleColumns,
-} from "@/features/projects/table-columns";
+import type { ProjectResearcherRun, WorklistImportRow } from "@/lib/api/types";
+
+const roleOptions = ["sample", "qc", "library", "blank", "wash", "calibration"] as const;
+const runStatusOptions = ["planned", "acquired", "imported", "processed", "failed"] as const;
+
+type EditDraft = {
+  runId: number;
+  worklistEntryId: number | null;
+  runName: string;
+  position: string;
+  expectedFilename: string;
+  fileRole: string;
+  status: string;
+  hyePairLabel: string;
+  notes: string;
+};
 
 export default function ProjectWorkspacePage() {
   const projectId = Number(useParams().projectId);
-  const [activeTab, setActiveTab] = useState("raw-files");
-  const [rawSearch, setRawSearch] = useState("");
-  const [rawStatus, setRawStatus] = useState("all");
-  const [jobStatus, setJobStatus] = useState("all");
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
-  const commonParams = useMemo(() => ({ project: projectId, page: 1, page_size: 100 }), [projectId]);
-  const rawParams = useMemo(
-    () => ({
-      ...commonParams,
-      search: rawSearch,
-      status: rawStatus === "all" ? "" : rawStatus,
-    }),
-    [commonParams, rawSearch, rawStatus],
-  );
-  const jobParams = useMemo(
-    () => ({
-      ...commonParams,
-      status: jobStatus === "all" ? "" : jobStatus,
-    }),
-    [commonParams, jobStatus],
-  );
+  const [worklistOpen, setWorklistOpen] = useState(false);
+  const [worklistName, setWorklistName] = useState("Imported LC-MS worklist");
+  const [worklistRows, setWorklistRows] = useState<WorklistImportRow[]>([]);
+  const [worklistError, setWorklistError] = useState("");
+  const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
 
-  const projectQuery = useQuery({
-    queryKey: queryKeys.project(projectId),
-    queryFn: () => fetchProject(projectId),
-    enabled: Number.isFinite(projectId),
-  });
-  const summaryQuery = useQuery({
-    queryKey: queryKeys.projectSummary(projectId),
-    queryFn: () => fetchProjectSummary(projectId),
-    enabled: Number.isFinite(projectId),
-    refetchInterval: 60_000,
-  });
-  const rawFilesQuery = useQuery({
-    queryKey: queryKeys.rawFiles(rawParams),
-    queryFn: () => fetchRawFiles(rawParams),
-    enabled: Number.isFinite(projectId),
-    refetchInterval: 45_000,
-  });
-  const jobsQuery = useQuery({
-    queryKey: queryKeys.processingJobs(jobParams),
-    queryFn: () => fetchProcessingJobs(jobParams),
+  const statusQuery = useQuery({
+    queryKey: queryKeys.projectResearcherStatus(projectId),
+    queryFn: () => fetchProjectResearcherStatus(projectId),
     enabled: Number.isFinite(projectId),
     refetchInterval: 30_000,
   });
-  const samplesQuery = useQuery({
-    queryKey: queryKeys.samples(commonParams),
-    queryFn: () => fetchSamples(commonParams),
-    enabled: Number.isFinite(projectId),
+  const data = statusQuery.data;
+  const project = data?.project;
+  const runs = data?.runs ?? [];
+  const selectedRun = runs.find((row) => row.run.id === selectedRunId) ?? runs[0];
+  const readyToProcess = runs.filter((row) => row.raw_file && !row.processing_job);
+  const failedRows = runs.filter((row) => row.processing_job?.status === "failed" || row.run.status === "failed");
+
+  const importMutation = useMutation({
+    mutationFn: () => importProjectWorklist(projectId, { worklist_name: worklistName, rows: worklistRows }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.projectResearcherStatus(projectId) });
+      setWorklistOpen(false);
+      setWorklistRows([]);
+      setWorklistError("");
+    },
+    onError: (error) => setWorklistError(error instanceof Error ? error.message : "Could not import worklist."),
   });
-  const runsQuery = useQuery({
-    queryKey: queryKeys.runs(commonParams),
-    queryFn: () => fetchRuns(commonParams),
-    enabled: Number.isFinite(projectId),
+  const queueMutation = useMutation({
+    mutationFn: () => queueProjectReadyRuns(projectId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.projectResearcherStatus(projectId) });
+    },
   });
-  const acquisitionsQuery = useQuery({
-    queryKey: queryKeys.acquisitions(commonParams),
-    queryFn: () => fetchAcquisitions(commonParams),
-    enabled: Number.isFinite(projectId),
-  });
-  const runSummaryQuery = useQuery({
-    queryKey: queryKeys.runSummary(selectedRunId ?? 0),
-    queryFn: () => fetchRunSummary(selectedRunId ?? 0),
-    enabled: Boolean(selectedRunId),
-    refetchInterval: 45_000,
+  const editMutation = useMutation({
+    mutationFn: async (draft: EditDraft) => {
+      await updateRun(draft.runId, {
+        run_name: draft.runName,
+        status: draft.status as ProjectResearcherRun["run"]["status"],
+      });
+      if (draft.worklistEntryId) {
+        await updateWorklistEntry(draft.worklistEntryId, {
+          position: Number(draft.position),
+          expected_filename: draft.expectedFilename,
+          file_role: draft.fileRole,
+          hye_pair_label: draft.hyePairLabel,
+          notes: draft.notes,
+        });
+      }
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.projectResearcherStatus(projectId) });
+      setEditDraft(null);
+    },
   });
 
-  const project = projectQuery.data;
-  const summary = summaryQuery.data;
-  const runs = useMemo(() => runsQuery.data?.results ?? [], [runsQuery.data?.results]);
-  const selectedRunSummary = runSummaryQuery.data;
-  const selectedRunRawFile = selectedRunSummary?.raw_files[0];
+  const health = data?.system_health.status ?? "yellow";
+  const healthLabel = health === "green" ? "System green" : health === "red" ? "System red" : "System yellow";
+  const healthClass = health === "green" ? "border-emerald-300 bg-emerald-50 text-emerald-900" : health === "red" ? "border-rose-300 bg-rose-50 text-rose-900" : "border-amber-300 bg-amber-50 text-amber-950";
 
-  useEffect(() => {
-    if (!selectedRunId && runs.length) {
-      setSelectedRunId(runs[0].id);
+  function onWorklistFile(file: File | undefined) {
+    if (!file) return;
+    setWorklistError("");
+    file
+      .text()
+      .then((text) => setWorklistRows(parseWorklistText(text)))
+      .catch((error) => setWorklistError(error instanceof Error ? error.message : "Could not read worklist file."));
+  }
+
+  function submitWorklist(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!worklistRows.length) {
+      setWorklistError("Choose a CSV or TSV worklist before importing.");
+      return;
     }
-  }, [runs, selectedRunId]);
+    importMutation.mutate();
+  }
 
-  const inspectRun = (runId: number) => {
-    setSelectedRunId(runId);
-    setActiveTab("run-detail");
-  };
-
-  const sampleInspectColumns = useMemo<ColumnDef<Sample>[]>(
-    () => [
-      ...sampleColumns,
-      {
-        id: "inspect",
-        header: "Inspect",
-        cell: ({ row }) => {
-          const run = runs.find((item) => item.sample === row.original.id);
-          return (
-            <Button size="sm" variant="secondary" disabled={!run} onClick={() => run && inspectRun(run.id)}>
-              <Eye className="h-3.5 w-3.5" />
-              Run
-            </Button>
-          );
-        },
-      },
-    ],
-    [runs],
-  );
-
-  const runInspectColumns = useMemo<ColumnDef<Run>[]>(
-    () => [
-      ...runColumns,
-      {
-        id: "inspect",
-        header: "Inspect",
-        cell: ({ row }) => (
-          <Button size="sm" variant="secondary" onClick={() => inspectRun(row.original.id)}>
-            <Eye className="h-3.5 w-3.5" />
-            Details
-          </Button>
-        ),
-      },
-    ],
-    [],
-  );
-
-  const derivativeColumns = useMemo<ColumnDef<RawFileDerivative>[]>(
-    () => [
-      { accessorKey: "derivative_type", header: "Type" },
-      {
-        accessorKey: "status",
-        header: "Status",
-        cell: ({ row }) => <StatusBadge status={row.original.status} />,
-      },
-      { accessorKey: "format", header: "Format" },
-      {
-        accessorKey: "size_bytes",
-        header: "Size",
-        cell: ({ row }) => (row.original.size_bytes ? formatBytes(row.original.size_bytes) : "-"),
-      },
-      {
-        accessorKey: "updated_at",
-        header: "Updated",
-        cell: ({ row }) => formatDate(row.original.updated_at),
-      },
-      { accessorKey: "path", header: "Path" },
-    ],
-    [],
-  );
-
-  const artifactColumns = useMemo<ColumnDef<ProcessingJobArtifact>[]>(
-    () => [
-      { accessorKey: "artifact_type", header: "Artifact" },
-      { accessorKey: "format", header: "Format" },
-      {
-        accessorKey: "size_bytes",
-        header: "Size",
-        cell: ({ row }) => (row.original.size_bytes ? formatBytes(row.original.size_bytes) : "-"),
-      },
-      {
-        accessorKey: "retained",
-        header: "Retained",
-        cell: ({ row }) => (row.original.retained ? "Yes" : "No"),
-      },
-      {
-        accessorKey: "updated_at",
-        header: "Updated",
-        cell: ({ row }) => formatDate(row.original.updated_at),
-      },
-      { accessorKey: "path", header: "Path" },
-    ],
-    [],
-  );
+  function startEdit(row: ProjectResearcherRun) {
+    setEditDraft({
+      runId: row.run.id,
+      worklistEntryId: row.worklist_entry_id,
+      runName: row.run.run_name,
+      position: String(row.run.worklist_position ?? ""),
+      expectedFilename: row.run.expected_filename,
+      fileRole: row.run.file_role,
+      status: row.run.status,
+      hyePairLabel: row.run.hye_pair_label,
+      notes: "",
+    });
+    setSelectedRunId(row.run.id);
+  }
 
   return (
     <div className="grid gap-4">
@@ -218,316 +146,327 @@ export default function ProjectWorkspacePage() {
       />
 
       <PageHero
-        eyebrow="Project workspace"
+        eyebrow="Researcher project"
         title={project?.code ?? "Loading project"}
-        description={project?.title ?? "Retrieving project metadata."}
+        description={project?.title ?? "Retrieving project status."}
         actions={
           <>
             {project ? <StatusBadge status={project.status} /> : null}
-            <Button asChild variant="secondary" size="sm">
-              <Link to={`/qc?project=${projectId}`}>View QC</Link>
-            </Button>
-            <Button asChild variant="secondary" size="sm">
-              <Link to={`/processing?project=${projectId}`}>View Processing</Link>
-            </Button>
+            <span className={`inline-flex h-9 items-center rounded-md border px-3 text-sm font-bold ${healthClass}`}>{healthLabel}</span>
+            <Dialog open={worklistOpen} onOpenChange={setWorklistOpen}>
+              <DialogTrigger asChild>
+                <Button>
+                  <FileUp className="h-4 w-4" />
+                  Import worklist
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-h-[90vh] max-w-4xl overflow-auto">
+                <DialogHeader>
+                  <DialogTitle>Import LC-MS worklist</DialogTitle>
+                  <DialogDescription>Upload a CSV or TSV worklist to create or update the project run ground truth.</DialogDescription>
+                </DialogHeader>
+                <form className="grid gap-4" onSubmit={submitWorklist}>
+                  <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+                    <Input value={worklistName} onChange={(event) => setWorklistName(event.target.value)} />
+                    <Input type="file" accept=".csv,.tsv,.txt" onChange={(event) => onWorklistFile(event.target.files?.[0])} />
+                  </div>
+                  <WorklistPreview rows={worklistRows} />
+                  {worklistError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{worklistError}</div> : null}
+                  <div className="flex justify-end gap-2 border-t pt-3">
+                    <Button type="button" variant="secondary" onClick={() => setWorklistOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button type="submit" disabled={importMutation.isPending || !worklistRows.length}>
+                      {importMutation.isPending ? "Importing..." : "Import worklist"}
+                    </Button>
+                  </div>
+                </form>
+              </DialogContent>
+            </Dialog>
           </>
         }
       />
 
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-        <MetricCard label="Raw Files" value={summary?.raw_file_count ?? "-"} detail="matched files" />
-        <MetricCard label="Processing Jobs" value={summary?.processing_job_count ?? "-"} detail="DIA / quant jobs" />
-        <MetricCard label="Samples" value={summary?.sample_count ?? "-"} detail="registered samples" />
-        <MetricCard label="Runs" value={summary?.run_count ?? "-"} detail="planned/acquired" />
-        <MetricCard label="Missing Raw" value={summary?.missing_raw_file_count ?? "-"} detail="worklist gaps" />
-      </section>
-
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-        <MetricCard
-          label="Proteins"
-          value={summary?.reported_protein_count || summary?.protein_quant_count || "-"}
-          detail={`${summary?.protein_quant_count ?? 0} quant rows`}
-        />
-        <MetricCard
-          label="Peptides"
-          value={summary?.reported_peptide_count || summary?.peptide_quant_count || "-"}
-          detail={`${summary?.peptide_quant_count ?? 0} quant rows`}
-        />
-        <MetricCard
-          label="Precursors"
-          value={summary?.reported_precursor_count || "-"}
-          detail="reported by engine"
-        />
-        <MetricCard label="MS1" value={summary?.ms1_feature_count || summary?.indexed_ms1_spectra_count || "-"} detail="features / scans" />
-        <MetricCard label="MS2" value={summary?.ms2_spectra_count || summary?.indexed_ms2_spectra_count || "-"} detail="spectra" />
-        <MetricCard label="Outputs" value={summary?.artifact_count ?? "-"} detail={`${summary?.derivative_count ?? 0} derivatives`} />
+        <MetricCard label="Project Status" value={project?.status ?? "-"} detail="research workflow" />
+        <MetricCard label="Runs" value={data?.summary.run_count ?? "-"} detail="planned/acquired" />
+        <MetricCard label="Raw Files" value={data?.summary.raw_file_count ?? "-"} detail={`${data?.summary.missing_raw_file_count ?? 0} missing`} />
+        <MetricCard label="Queue" value={data?.system_health.active_jobs ?? "-"} detail="active jobs" />
+        <MetricCard label="Failed" value={failedRows.length} detail="runs needing review" />
+        <MetricCard label="Ready" value={readyToProcess.length} detail="uploaded, not queued" />
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-2">
-        <SummaryChart
-          title="Raw Files by Status"
-          data={(summary?.raw_files_by_status ?? []).map((row) => ({ label: row.status, count: row.count }))}
-        />
-        <SummaryChart
-          title="Processing Jobs by Status"
-          data={(summary?.jobs_by_status ?? []).map((row) => ({ label: row.status, count: row.count }))}
-        />
-      </section>
-
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
-          <TabsTrigger value="raw-files">Raw Files</TabsTrigger>
-          <TabsTrigger value="jobs">Processing Jobs</TabsTrigger>
-          <TabsTrigger value="analysis">Analysis Viz</TabsTrigger>
-          <TabsTrigger value="run-detail">Run Detail</TabsTrigger>
-          <TabsTrigger value="samples">Samples</TabsTrigger>
-          <TabsTrigger value="runs">Runs</TabsTrigger>
-          <TabsTrigger value="acquisitions">Acquisitions</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="raw-files">
-          <Card className="mb-3">
-            <CardHeader>
-              <CardTitle>Raw files</CardTitle>
-              <CardDescription>Search and filter matched raw files without leaving the project workspace.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-3 md:grid-cols-[1fr_220px]">
-                <div className="relative">
-                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    className="pl-9"
-                    placeholder="Search filename, checksum, storage path..."
-                    value={rawSearch}
-                    onChange={(event) => setRawSearch(event.target.value)}
-                  />
-                </div>
-                <Select value={rawStatus} onValueChange={setRawStatus}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Status" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All statuses</SelectItem>
-                    <SelectItem value="discovered">Discovered</SelectItem>
-                    <SelectItem value="validated">Validated</SelectItem>
-                    <SelectItem value="imported">Imported</SelectItem>
-                    <SelectItem value="processed">Processed</SelectItem>
-                    <SelectItem value="failed">Failed</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </CardContent>
-          </Card>
-          <DataTable
-            columns={rawFileColumns}
-            data={rawFilesQuery.data?.results ?? []}
-            emptyLabel={rawFilesQuery.isLoading ? "Loading raw files..." : "No raw files found."}
-          />
-        </TabsContent>
-
-        <TabsContent value="jobs">
-          <Card className="mb-3">
-            <CardHeader>
-              <CardTitle>Processing jobs</CardTitle>
-              <CardDescription>
-                Track queued, assigned, running, complete, failed, and retrying jobs.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Select value={jobStatus} onValueChange={setJobStatus}>
-                <SelectTrigger className="max-w-[240px]">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All statuses</SelectItem>
-                  <SelectItem value="queued">Queued</SelectItem>
-                  <SelectItem value="assigned">Assigned</SelectItem>
-                  <SelectItem value="running">Running</SelectItem>
-                  <SelectItem value="complete">Complete</SelectItem>
-                  <SelectItem value="failed">Failed</SelectItem>
-                  <SelectItem value="retrying">Retrying</SelectItem>
-                </SelectContent>
-              </Select>
-            </CardContent>
-          </Card>
-          <DataTable
-            columns={processingJobColumns}
-            data={jobsQuery.data?.results ?? []}
-            emptyLabel={jobsQuery.isLoading ? "Loading processing jobs..." : "No processing jobs found."}
-          />
-        </TabsContent>
-
-        <TabsContent value="analysis">
-          <div className="grid gap-4">
-            <ChromatogramPanel rawFile={rawFilesQuery.data?.results[0]} />
-            <VizPlanningPanel />
-            <Card>
-              <CardHeader>
-                <CardTitle>Linked analysis selection</CardTitle>
-                <CardDescription>
-                  Retention-time selection can drive future spectrum, UMAP, heatmap, and metadata panels.
-                </CardDescription>
-              </CardHeader>
-            </Card>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="run-detail">
-          <div className="grid gap-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Run detail</CardTitle>
-                <CardDescription>Select a project run to inspect processing stats, retained outputs, and spectra context.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-                  <Select value={selectedRunId ? String(selectedRunId) : ""} onValueChange={(value) => setSelectedRunId(Number(value))}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Choose run" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {runs.map((run) => (
-                        <SelectItem key={run.id} value={String(run.id)}>
-                          {run.worklist_position ? `${run.worklist_position}. ` : ""}
-                          {run.run_name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button asChild variant="secondary" disabled={!selectedRunRawFile}>
-                    <Link to={selectedRunRawFile ? `/spectra?rawFile=${selectedRunRawFile.id}` : "/spectra"}>
-                      <Activity className="h-4 w-4" />
-                      Spectra
-                    </Link>
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-              <MetricCard label="Raw Files" value={selectedRunSummary?.stats.raw_file_count ?? "-"} detail={selectedRunRawFile?.filename ?? "selected run"} />
-              <MetricCard label="Jobs" value={selectedRunSummary?.stats.processing_job_count ?? "-"} detail="processing attempts" />
-              <MetricCard label="Proteins" value={selectedRunSummary?.stats.reported_protein_count || selectedRunSummary?.stats.protein_quant_count || "-"} detail="reported / imported" />
-              <MetricCard label="Peptides" value={selectedRunSummary?.stats.reported_peptide_count || selectedRunSummary?.stats.peptide_quant_count || "-"} detail="reported / imported" />
-              <MetricCard label="MS1" value={selectedRunSummary?.stats.ms1_feature_count || selectedRunSummary?.stats.indexed_ms1_spectra_count || "-"} detail="features / scans" />
-              <MetricCard label="MS2" value={selectedRunSummary?.stats.ms2_spectra_count || selectedRunSummary?.stats.indexed_ms2_spectra_count || "-"} detail="spectra" />
-            </section>
-
-            <div className="grid gap-4 xl:grid-cols-2">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <BarChart3 className="h-4 w-4" />
-                    Processing stats
-                  </CardTitle>
-                  <CardDescription>
-                    {selectedRunSummary
-                      ? `${selectedRunSummary.stats.indexed_spectra_count} indexed spectra, ${selectedRunSummary.stats.artifact_count} retained artifacts.`
-                      : "Choose a run to load its processing summary."}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <dl className="grid gap-2 text-sm sm:grid-cols-2">
-                    <div>
-                      <dt className="text-muted-foreground">Sample</dt>
-                      <dd className="font-semibold">{selectedRunSummary?.sample.name ?? "-"}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Status</dt>
-                      <dd>{selectedRunSummary ? <StatusBadge status={selectedRunSummary.run.status} /> : "-"}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Protein IDs</dt>
-                      <dd className="font-semibold">{selectedRunSummary?.stats.protein_identification_count ?? "-"}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Peptide IDs</dt>
-                      <dd className="font-semibold">{selectedRunSummary?.stats.peptide_identification_count ?? "-"}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Derivatives</dt>
-                      <dd className="font-semibold">{selectedRunSummary?.stats.derivative_count ?? "-"}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Raw file</dt>
-                      <dd className="truncate font-semibold">{selectedRunRawFile?.filename ?? "-"}</dd>
-                    </div>
-                  </dl>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <FileArchive className="h-4 w-4" />
-                    Processing jobs
-                  </CardTitle>
-                  <CardDescription>Pipeline executions tied to the selected run.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <DataTable
-                    columns={processingJobColumns}
-                    data={selectedRunSummary?.processing_jobs ?? []}
-                    emptyLabel={runSummaryQuery.isLoading ? "Loading jobs..." : "No jobs for this run."}
-                  />
-                </CardContent>
-              </Card>
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle>Runs</CardTitle>
+              <CardDescription>Each row is a planned LC-MS injection with raw-file, queue, and result status.</CardDescription>
             </div>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Retained artifacts</CardTitle>
-                <CardDescription>DIA-NN reports, imported tables, logs, and enterprise handoff outputs stay attached here.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <DataTable
-                  columns={artifactColumns}
-                  data={selectedRunSummary?.artifacts ?? []}
-                  emptyLabel={runSummaryQuery.isLoading ? "Loading artifacts..." : "No retained artifacts for this run."}
-                />
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Spectra derivatives</CardTitle>
-                <CardDescription>mzML, spectrum index, and preview derivatives available for the selected run.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <DataTable
-                  columns={derivativeColumns}
-                  data={selectedRunSummary?.derivatives ?? []}
-                  emptyLabel={runSummaryQuery.isLoading ? "Loading derivatives..." : "No spectra derivatives for this run."}
-                />
-              </CardContent>
-            </Card>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" disabled={!readyToProcess.length || queueMutation.isPending} onClick={() => queueMutation.mutate()}>
+                <CheckCircle2 className="h-4 w-4" />
+                {queueMutation.isPending ? "Queueing..." : "Queue ready runs"}
+              </Button>
+              <Button asChild variant="secondary">
+                <Link to={`/uploads?project=${projectId}`}>
+                  <HardDrive className="h-4 w-4" />
+                  Upload files
+                </Link>
+              </Button>
+              <Button asChild variant="secondary">
+                <Link to={`/qc?project=${projectId}`}>
+                  <BarChart3 className="h-4 w-4" />
+                  QC
+                </Link>
+              </Button>
+            </div>
           </div>
-        </TabsContent>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto rounded-lg border">
+            <table className="w-full min-w-[1120px] text-sm">
+              <thead className="bg-secondary/65 text-left text-xs uppercase tracking-[0.08em] text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-3">Order</th>
+                  <th className="px-3 py-3">Run</th>
+                  <th className="px-3 py-3">Sample</th>
+                  <th className="px-3 py-3">Raw File</th>
+                  <th className="px-3 py-3">Run</th>
+                  <th className="px-3 py-3">Queue</th>
+                  <th className="px-3 py-3">Proteins</th>
+                  <th className="px-3 py-3">Peptides</th>
+                  <th className="px-3 py-3">MS1</th>
+                  <th className="px-3 py-3">MS2</th>
+                  <th className="px-3 py-3">Updated</th>
+                  <th className="px-3 py-3">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((row) => (
+                  <tr
+                    key={row.run.id}
+                    className={`border-t hover:bg-secondary/35 ${selectedRun?.run.id === row.run.id ? "bg-secondary/45" : ""}`}
+                    onClick={() => setSelectedRunId(row.run.id)}
+                  >
+                    <td className="px-3 py-3 font-mono">{row.run.worklist_position ?? "-"}</td>
+                    <td className="px-3 py-3">
+                      <div className="font-semibold">{row.run.run_name}</div>
+                      <div className="max-w-[220px] truncate text-xs text-muted-foreground">{row.run.expected_filename || "No expected filename"}</div>
+                    </td>
+                    <td className="px-3 py-3">{row.sample.name}</td>
+                    <td className="px-3 py-3">{row.raw_file ? <StatusBadge status={row.raw_file.status} /> : <span className="text-muted-foreground">Missing</span>}</td>
+                    <td className="px-3 py-3"><StatusBadge status={row.run.status} /></td>
+                    <td className="px-3 py-3">{row.processing_job ? <StatusBadge status={row.processing_job.status} /> : <span className="text-muted-foreground">Not queued</span>}</td>
+                    <td className="px-3 py-3">{row.stats.reported_protein_count || row.stats.protein_quant_count || "-"}</td>
+                    <td className="px-3 py-3">{row.stats.reported_peptide_count || row.stats.peptide_quant_count || "-"}</td>
+                    <td className="px-3 py-3">{row.stats.ms1_feature_count || row.stats.indexed_ms1_spectra_count || "-"}</td>
+                    <td className="px-3 py-3">{row.stats.ms2_spectra_count || row.stats.indexed_ms2_spectra_count || "-"}</td>
+                    <td className="px-3 py-3">{formatDate(row.run.updated_at)}</td>
+                    <td className="px-3 py-3">
+                      <Button size="sm" variant="secondary" onClick={(event) => { event.stopPropagation(); startEdit(row); }}>
+                        <Settings2 className="h-3.5 w-3.5" />
+                        Edit
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+                {!runs.length ? (
+                  <tr>
+                    <td className="px-3 py-8 text-center text-muted-foreground" colSpan={12}>
+                      Import a worklist to establish the planned LC-MS runs for this project.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
 
-        <TabsContent value="samples">
-          <DataTable
-            columns={sampleInspectColumns}
-            data={samplesQuery.data?.results ?? []}
-            emptyLabel={samplesQuery.isLoading ? "Loading samples..." : "No samples found."}
-          />
-        </TabsContent>
+      {selectedRun ? <RunDetail row={selectedRun} onEdit={() => startEdit(selectedRun)} /> : null}
 
-        <TabsContent value="runs">
-          <DataTable
-            columns={runInspectColumns}
-            data={runsQuery.data?.results ?? []}
-            emptyLabel={runsQuery.isLoading ? "Loading runs..." : "No runs found."}
-          />
-        </TabsContent>
-
-        <TabsContent value="acquisitions">
-          <DataTable
-            columns={acquisitionColumns}
-            data={acquisitionsQuery.data?.results ?? []}
-            emptyLabel={acquisitionsQuery.isLoading ? "Loading acquisitions..." : "No acquisition worklists found."}
-          />
-        </TabsContent>
-      </Tabs>
+      <Dialog open={Boolean(editDraft)} onOpenChange={(open) => !open && setEditDraft(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit run</DialogTitle>
+            <DialogDescription>Update the worklist ground truth for this injection.</DialogDescription>
+          </DialogHeader>
+          {editDraft ? (
+            <form
+              className="grid gap-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                editMutation.mutate(editDraft);
+              }}
+            >
+              <TextField label="Run name" value={editDraft.runName} onChange={(runName) => setEditDraft((current) => current && { ...current, runName })} />
+              <TextField label="Order" type="number" value={editDraft.position} onChange={(position) => setEditDraft((current) => current && { ...current, position })} />
+              <TextField label="Expected filename" value={editDraft.expectedFilename} onChange={(expectedFilename) => setEditDraft((current) => current && { ...current, expectedFilename })} />
+              <label className="grid gap-1 text-sm font-bold">
+                Role
+                <Select value={editDraft.fileRole} onValueChange={(fileRole) => setEditDraft((current) => current && { ...current, fileRole })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{roleOptions.map((role) => <SelectItem key={role} value={role}>{role}</SelectItem>)}</SelectContent>
+                </Select>
+              </label>
+              <label className="grid gap-1 text-sm font-bold">
+                Status
+                <Select value={editDraft.status} onValueChange={(status) => setEditDraft((current) => current && { ...current, status })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{runStatusOptions.map((status) => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent>
+                </Select>
+              </label>
+              <TextField label="HYE pair" value={editDraft.hyePairLabel} onChange={(hyePairLabel) => setEditDraft((current) => current && { ...current, hyePairLabel })} />
+              <TextField label="Notes" value={editDraft.notes} onChange={(notes) => setEditDraft((current) => current && { ...current, notes })} />
+              <div className="flex justify-end gap-2 border-t pt-3">
+                <Button type="button" variant="secondary" onClick={() => setEditDraft(null)}>Cancel</Button>
+                <Button type="submit" disabled={editMutation.isPending}>
+                  <Save className="h-4 w-4" />
+                  {editMutation.isPending ? "Saving..." : "Save"}
+                </Button>
+              </div>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
+}
+
+function RunDetail({ row, onEdit }: { row: ProjectResearcherRun; onEdit: () => void }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle>{row.run.run_name}</CardTitle>
+            <CardDescription>{row.worklist_name || "No worklist"} · {row.run.expected_filename || "No expected filename"}</CardDescription>
+          </div>
+          <Button variant="secondary" onClick={onEdit}>
+            <Settings2 className="h-4 w-4" />
+            Edit run
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-4 lg:grid-cols-3">
+        <div className="rounded-lg border p-3">
+          <div className="text-xs font-bold uppercase text-muted-foreground">Raw file</div>
+          <div className="mt-2 font-semibold">{row.raw_file?.filename ?? "Missing"}</div>
+          <div className="mt-1 text-sm text-muted-foreground">{row.raw_file ? formatBytes(row.raw_file.size_bytes) : "Waiting for upload or watcher import"}</div>
+        </div>
+        <div className="rounded-lg border p-3">
+          <div className="text-xs font-bold uppercase text-muted-foreground">Processing</div>
+          <div className="mt-2">{row.processing_job ? <StatusBadge status={row.processing_job.status} /> : <span className="text-sm text-muted-foreground">Not queued</span>}</div>
+          <div className="mt-1 text-sm text-muted-foreground">{row.processing_job?.pipeline_name ?? "Queue when raw file is ready"}</div>
+        </div>
+        <div className="rounded-lg border p-3">
+          <div className="text-xs font-bold uppercase text-muted-foreground">Spectra</div>
+          <div className="mt-2 font-semibold">{row.stats.indexed_spectra_count || row.stats.ms2_spectra_count || "-"}</div>
+          <div className="mt-1 text-sm text-muted-foreground">
+            {row.raw_file ? <Link className="font-medium text-primary" to={`/spectra?rawFile=${row.raw_file.id}`}>Open spectra viewer</Link> : "No raw file yet"}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function WorklistPreview({ rows }: { rows: WorklistImportRow[] }) {
+  if (!rows.length) {
+    return <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No rows parsed yet. Expected columns include sample, run, filename, role, condition, well, and position.</div>;
+  }
+  return (
+    <div className="max-h-72 overflow-auto rounded-lg border">
+      <table className="w-full min-w-[760px] text-sm">
+        <thead className="bg-secondary/65 text-left text-xs uppercase text-muted-foreground">
+          <tr>
+            <th className="px-3 py-2">Order</th>
+            <th className="px-3 py-2">Run</th>
+            <th className="px-3 py-2">Sample</th>
+            <th className="px-3 py-2">Filename</th>
+            <th className="px-3 py-2">Role</th>
+            <th className="px-3 py-2">Well</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 20).map((row) => (
+            <tr key={`${row.position}-${row.expected_filename}`} className="border-t">
+              <td className="px-3 py-2">{row.position}</td>
+              <td className="px-3 py-2">{row.run_name || "-"}</td>
+              <td className="px-3 py-2">{row.sample_name}</td>
+              <td className="px-3 py-2">{row.expected_filename}</td>
+              <td className="px-3 py-2">{row.file_role}</td>
+              <td className="px-3 py-2">{row.well || "-"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.length > 20 ? <div className="border-t px-3 py-2 text-xs text-muted-foreground">{rows.length - 20} more rows will be imported.</div> : null}
+    </div>
+  );
+}
+
+function TextField(props: { label: string; value: string; onChange: (value: string) => void; type?: string }) {
+  return (
+    <label className="grid gap-1 text-sm font-bold">
+      {props.label}
+      <Input type={props.type ?? "text"} value={props.value} onChange={(event) => props.onChange(event.target.value)} required />
+    </label>
+  );
+}
+
+function parseWorklistText(text: string): WorklistImportRow[] {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length < 2) return [];
+  const delimiter = lines[0].includes("\t") ? "\t" : ",";
+  const headers = parseDelimitedLine(lines[0], delimiter).map((header) => header.trim().toLowerCase());
+  return lines.slice(1).flatMap((line, index) => {
+    const values = parseDelimitedLine(line, delimiter).map((value) => value.trim());
+    const value = (candidates: string[]) => {
+      const headerIndex = headers.findIndex((header) => candidates.includes(header));
+      return headerIndex >= 0 ? values[headerIndex] ?? "" : "";
+    };
+    const sampleName = value(["sample_name", "sample", "sample id", "sample_id", "name"]) || `Sample-${String(index + 1).padStart(3, "0")}`;
+    const expectedFilename = value(["expected_filename", "expected file", "filename", "file", "raw file", "raw_file"]);
+    if (!expectedFilename) return [];
+    const positionValue = Number(value(["position", "order", "injection", "index", "pos"]));
+    const roleValue = value(["file_role", "role", "type"]).toLowerCase();
+    const fileRole = roleOptions.includes(roleValue as WorklistImportRow["file_role"]) ? roleValue as WorklistImportRow["file_role"] : "sample";
+    return {
+      position: Number.isFinite(positionValue) && positionValue > 0 ? positionValue : index + 1,
+      sample_name: sampleName,
+      run_name: value(["run_name", "run", "injection_name"]) || sampleName,
+      expected_filename: expectedFilename,
+      file_role: fileRole,
+      condition: value(["condition", "group"]),
+      well: value(["well", "vial", "autosampler_vial"]),
+      plate: value(["plate", "plate_id"]),
+      hye_pair_label: value(["hye_pair_label", "hye pair", "qc_pair"]),
+      metadata: Object.fromEntries(headers.map((header, headerIndex) => [header, values[headerIndex] ?? ""])),
+    };
+  });
+}
+
+function parseDelimitedLine(line: string, delimiter: string) {
+  const values: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+    if (char === "\"" && quoted && next === "\"") {
+      current += "\"";
+      index += 1;
+    } else if (char === "\"") {
+      quoted = !quoted;
+    } else if (char === delimiter && !quoted) {
+      values.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  values.push(current);
+  return values;
 }
