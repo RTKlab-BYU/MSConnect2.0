@@ -1,12 +1,16 @@
 import { AlertTriangle, FileUp, RotateCcw, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { PageHero } from "@/components/layout/page-section";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { useQuery } from "@tanstack/react-query";
+import { fetchProjectResearcherStatus, queryKeys } from "@/lib/api/queries";
 import { completeDirectUploadSession, createDirectUploadSession } from "@/lib/api/uploads";
 import { formatBytes, formatDate } from "@/lib/format";
 import { useUploadStore, type UploadFileRecord } from "@/store/upload-store";
@@ -33,9 +37,13 @@ async function sha256(file: File) {
 }
 
 export default function UploadsPage() {
+  const [searchParams] = useSearchParams();
+  const initialProjectId = searchParams.get("project") ?? "";
+  const initialRunId = searchParams.get("run") ?? "none";
   const inputRef = useRef<HTMLInputElement>(null);
   const fileObjectsRef = useRef(new Map<string, File>());
-  const [projectId, setProjectId] = useState("");
+  const [projectId, setProjectId] = useState(initialProjectId);
+  const [selectedRunId, setSelectedRunId] = useState(initialRunId);
   const files = useUploadStore((state) => state.files);
   const stageFiles = useUploadStore((state) => state.stageFiles);
   const prepareFile = useUploadStore((state) => state.prepareFile);
@@ -47,6 +55,14 @@ export default function UploadsPage() {
   const markBackendBlocked = useUploadStore((state) => state.markBackendBlocked);
   const retry = useUploadStore((state) => state.retry);
   const remove = useUploadStore((state) => state.remove);
+  const selectedProjectId = Number(projectId);
+  const projectStatusQuery = useQuery({
+    queryKey: queryKeys.projectResearcherStatus(selectedProjectId),
+    queryFn: () => fetchProjectResearcherStatus(selectedProjectId),
+    enabled: Boolean(selectedProjectId),
+  });
+  const projectRuns = projectStatusQuery.data?.runs ?? [];
+  const selectedRun = projectRuns.find((row) => String(row.run.id) === selectedRunId);
 
   async function startUpload(file: UploadFileRecord) {
     const project = Number(projectId);
@@ -63,10 +79,12 @@ export default function UploadsPage() {
     try {
       const session = await createDirectUploadSession({
         project,
+        run: selectedRun ? selectedRun.run.id : null,
         filename: file.name,
         size_bytes: file.size,
         content_type: file.type || "application/octet-stream",
         chunk_size_bytes: file.chunkSize,
+        file_role: selectedRun?.run.file_role,
       });
       attachDirectUploadSession(file.id, session.id, session.storage_key);
       markUploading(file.id);
@@ -98,9 +116,16 @@ export default function UploadsPage() {
       <Breadcrumbs items={[{ label: "Uploads" }]} />
 
       <PageHero
-        eyebrow="Distributed ingest"
-        title="Uploads"
-        description="Stage raw files, prepare chunk manifests, and track upload state without crowding the workspace."
+        eyebrow="Project ingest"
+        title="Upload raw files"
+        description="Attach files to a project and, when available, map them directly to planned LC-MS runs."
+        actions={
+          projectId ? (
+            <Button asChild variant="secondary">
+              <Link to={`/projects/${projectId}`}>Back to project</Link>
+            </Button>
+          ) : null
+        }
       />
 
       <Card>
@@ -127,18 +152,41 @@ export default function UploadsPage() {
               event.currentTarget.value = "";
             }}
           />
-          <div className="grid gap-3 md:grid-cols-[240px_auto]">
+          <div className="grid gap-3 md:grid-cols-[220px_minmax(240px,1fr)_auto]">
             <Input
               inputMode="numeric"
               placeholder="Project ID"
               value={projectId}
-              onChange={(event) => setProjectId(event.target.value)}
+              onChange={(event) => {
+                setProjectId(event.target.value);
+                setSelectedRunId("none");
+              }}
             />
+            <Select value={selectedRunId} onValueChange={setSelectedRunId} disabled={!projectRuns.length}>
+              <SelectTrigger>
+                <SelectValue placeholder={projectRuns.length ? "Attach to planned run" : "No planned runs loaded"} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Project only</SelectItem>
+                {projectRuns.map((row) => (
+                  <SelectItem key={row.run.id} value={String(row.run.id)}>
+                    {row.run.worklist_position ? `${row.run.worklist_position}. ` : ""}
+                    {row.run.run_name}
+                    {row.run.expected_filename ? ` - ${row.run.expected_filename}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button onClick={() => inputRef.current?.click()}>
               <FileUp className="h-4 w-4" />
               Select files
             </Button>
           </div>
+          {selectedRun ? (
+            <div className="mt-3 rounded-lg border bg-secondary/25 px-3 py-2 text-sm text-muted-foreground">
+              Files will attach to <span className="font-semibold text-foreground">{selectedRun.run.run_name}</span> as <span className="font-semibold text-foreground">{selectedRun.run.file_role}</span>.
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

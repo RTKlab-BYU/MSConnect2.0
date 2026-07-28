@@ -284,7 +284,7 @@ export default function ProjectWorkspacePage() {
         </CardContent>
       </Card>
 
-      {selectedRun ? <RunDetail row={selectedRun} onEdit={() => startEdit(selectedRun)} /> : null}
+      {selectedRun ? <RunDetail projectId={projectId} row={selectedRun} onEdit={() => startEdit(selectedRun)} /> : null}
 
       <Dialog open={Boolean(editDraft)} onOpenChange={(open) => !open && setEditDraft(null)}>
         <DialogContent>
@@ -334,7 +334,7 @@ export default function ProjectWorkspacePage() {
   );
 }
 
-function RunDetail({ row, onEdit }: { row: ProjectResearcherRun; onEdit: () => void }) {
+function RunDetail({ projectId, row, onEdit }: { projectId: number; row: ProjectResearcherRun; onEdit: () => void }) {
   return (
     <Card>
       <CardHeader>
@@ -353,7 +353,15 @@ function RunDetail({ row, onEdit }: { row: ProjectResearcherRun; onEdit: () => v
         <div className="rounded-lg border p-3">
           <div className="text-xs font-bold uppercase text-muted-foreground">Raw file</div>
           <div className="mt-2 font-semibold">{row.raw_file?.filename ?? "Missing"}</div>
-          <div className="mt-1 text-sm text-muted-foreground">{row.raw_file ? formatBytes(row.raw_file.size_bytes) : "Waiting for upload or watcher import"}</div>
+          <div className="mt-1 text-sm text-muted-foreground">
+            {row.raw_file ? (
+              formatBytes(row.raw_file.size_bytes)
+            ) : (
+              <Link className="font-medium text-primary" to={`/uploads?project=${projectId}&run=${row.run.id}`}>
+                Upload for this run
+              </Link>
+            )}
+          </div>
         </div>
         <div className="rounded-lg border p-3">
           <div className="text-xs font-bold uppercase text-muted-foreground">Processing</div>
