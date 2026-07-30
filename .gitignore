@@ -14,6 +14,8 @@ findings_workspaces/
 media/
 raw-storage/
 results/
+archives/
+backups/
 staticfiles/
 
 node_modules/

@@ -53,6 +53,7 @@ from .models import (
     QcProgram,
     RawFile,
     RawFileArchive,
+    RawFileArchiveCopy,
     RawFileDerivative,
     RawFileDerivativeType,
     RawFileStatus,
@@ -295,6 +296,15 @@ class RawFileArchiveSerializer(BaseSerializer):
 
     class Meta(BaseSerializer.Meta):
         model = RawFileArchive
+        fields = "__all__"
+
+
+class RawFileArchiveCopySerializer(BaseSerializer):
+    raw_file_filename = serializers.CharField(source="archive.raw_file.filename", read_only=True)
+    archive_status = serializers.CharField(source="archive.status", read_only=True)
+
+    class Meta(BaseSerializer.Meta):
+        model = RawFileArchiveCopy
         fields = "__all__"
 
 
@@ -2960,6 +2970,35 @@ class RawFileArchiveViewSet(AuthenticatedModelViewSet):
         raw_file_filter = self.request.query_params.get("raw_file")
         if raw_file_filter:
             queryset = queryset.filter(raw_file_id=raw_file_filter)
+        status_filter = self.request.query_params.get("status")
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        return queryset
+
+
+class RawFileArchiveCopyViewSet(AuthenticatedModelViewSet):
+    queryset = RawFileArchiveCopy.objects.select_related(
+        "archive",
+        "archive__raw_file",
+        "archive__raw_file__run",
+        "archive__raw_file__run__sample",
+        "archive__raw_file__run__sample__experiment",
+        "archive__raw_file__run__sample__experiment__project",
+    )
+    serializer_class = RawFileArchiveCopySerializer
+    scope_lab_lookup = "archive__raw_file__run__sample__experiment__project__lab_id"
+    write_scope_lab_path = "archive.raw_file.run.sample.experiment.project.lab"
+    search_fields = ("archive__raw_file__filename", "path", "storage_root", "checksum_sha256")
+    ordering_fields = ("status", "copy_role", "size_bytes", "verified_at", "created_at", "updated_at")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        archive_filter = self.request.query_params.get("archive")
+        if archive_filter:
+            queryset = queryset.filter(archive_id=archive_filter)
+        raw_file_filter = self.request.query_params.get("raw_file")
+        if raw_file_filter:
+            queryset = queryset.filter(archive__raw_file_id=raw_file_filter)
         status_filter = self.request.query_params.get("status")
         if status_filter:
             queryset = queryset.filter(status=status_filter)

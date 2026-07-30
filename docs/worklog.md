@@ -1,5 +1,49 @@
 # MSConnect Worklog
 
+## 2026-07-29
+
+### Completed
+
+- Added a tagged operations smoke fixture and verifier for multi-project sample, HYE, PRTC, library, blank, and wash run flows.
+- Proved the watcher-to-processor path in Docker with generated incoming files, matched worklist runs, role/QC tag propagation, raw-storage import, queued jobs, completed jobs, artifacts, runtime manifests, and imported protein/peptide quants.
+- Added lab-drive archive and backup support without S3/MinIO: configurable archive/backup roots, capacity thresholds, zip archive creation, checksum verification, restore verification, and per-copy redundancy tracking.
+- Added `RawFileArchiveCopy` so each logical raw archive can record independent physical archive and backup copies with path, status, checksum, size, root, and verification timestamp.
+- Added storage/operator commands for archiving, archive verification, capacity reporting, processor workspace cleanup, engine-specific fixture setup, and consolidated operations reports.
+- Added Compose wiring for `archive-worker` and `processor-skyline`, while keeping `processor-diann`, generic `processor`, watcher, web, and nginx flows intact.
+- Added real-engine worklist/pipeline fixture setup for DIA-NN and Skyline jobs so files placed in `incoming/` can route to `diann` and `skyline` processor nodes when site-approved binaries/images and assets are available.
+- Updated README, Make targets, environment templates, admin/API routes, and operational tests for the new archive/backup and engine-routing workflows.
+
+### Verified
+
+- `docker compose build web archive-worker`
+- `docker compose config --services`
+- `docker compose --profile engines --profile conversion config --services`
+- `docker compose run --rm --no-deps web python manage.py makemigrations --check --dry-run`
+- `docker compose run --rm --no-deps web python manage.py test core.tests_operational`
+- `docker compose run --rm --no-deps web python manage.py test`
+- `docker compose up -d web nginx`
+- `docker compose exec web python manage.py check`
+- `docker compose exec web python manage.py storage_capacity_report --projected-files 120 --average-raw-gb 4`
+- `docker compose run --rm archive-worker python manage.py archive_raw_files --raw-file-id 154`
+- `docker compose run --rm archive-worker python manage.py archive_raw_files --raw-file-id 155`
+- `docker compose exec web python manage.py verify_archives --raw-file-id 154 --restore-test`
+- `docker compose exec web python manage.py verify_archives --raw-file-id 155 --restore-test`
+- `docker compose exec web python manage.py generate_operations_report --output /app/data/operations-report-final.txt --tail 8`
+
+### Current review state
+
+- Docker storage reporting shows the current local Docker-mounted filesystem at warning threshold, which validates the capacity alerting path.
+- Two small tagged raw files were archived and verified with both archive and backup copies; active raw-storage copies were intentionally retained.
+- `archive-worker` can run one-shot or loop mode and records failures without deleting originals.
+- `processor-skyline` is wired as an engine-profile service, but real Skyline execution still depends on a site-approved Skyline/SkylineCmd image and valid `.sky` document.
+- `processor-diann` is already wired, but real DIA-NN execution still depends on a site-approved DIA-NN binary/image and valid FASTA/library settings.
+
+### Deferred / next session
+
+- Provide real DIA-NN and Skyline assets and run true vendor-engine jobs through the new engine-specific fixture.
+- Add first-class UI views for storage capacity, archive copies, and restore/verification status.
+- Define retention rules for when verified archived raw files may become cold-only and when active raw-storage copies can be removed.
+
 ## 2026-07-28
 
 ### Completed

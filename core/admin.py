@@ -24,6 +24,7 @@ from .models import (
     ProteinQuant,
     RawFile,
     RawFileArchive,
+    RawFileArchiveCopy,
     RawFileDerivative,
     Run,
     Sample,
@@ -138,6 +139,14 @@ class RawFileArchiveAdmin(admin.ModelAdmin):
     list_display = ("raw_file", "status", "compression", "size_bytes", "archived_at", "restored_at")
     search_fields = ("raw_file__filename", "archive_path", "original_storage_path", "checksum_sha256")
     list_filter = ("status", "compression", "raw_file__run__sample__experiment__project__lab")
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(RawFileArchiveCopy)
+class RawFileArchiveCopyAdmin(admin.ModelAdmin):
+    list_display = ("archive", "copy_role", "status", "size_bytes", "verified_at", "storage_root")
+    search_fields = ("archive__raw_file__filename", "path", "storage_root", "checksum_sha256")
+    list_filter = ("copy_role", "status")
     readonly_fields = ("created_at", "updated_at")
 
 

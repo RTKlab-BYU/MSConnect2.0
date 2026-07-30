@@ -9,13 +9,18 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${MSCONNECT_MEDIA_HOST_PATH:-./media}:/app/media
       - ${MSCONNECT_STATIC_HOST_PATH:-./staticfiles}:/app/staticfiles
-      - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming:ro
+      - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
     ports:
       - "${MSCONNECT_WEB_PORT:-8000}:8000"
     expose:
@@ -44,11 +49,15 @@ services:
     environment:
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_WATCHER_TOKEN:-watcher-token}
       MSCONNECT_AGENT_NAME: ${WATCHER_AGENT_NAME:-watcher-1}
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming:ro
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
     depends_on:
       web:
         condition: service_healthy
@@ -71,11 +80,15 @@ services:
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
       MSCONNECT_AGENT_NAME: ${PROCESSOR_AGENT_NAME:-processor-1}
       MSCONNECT_PROCESSOR_ENGINE: ${PROCESSOR_ENGINE:-processor}
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming:ro
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
     depends_on:
       web:
         condition: service_healthy
@@ -103,10 +116,14 @@ services:
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
       MSCONNECT_AGENT_NAME: ${DIANN_AGENT_NAME:-diann-1}
       MSCONNECT_PROCESSOR_ENGINE: diann
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
     depends_on:
       web:
         condition: service_healthy
@@ -134,10 +151,14 @@ services:
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
       MSCONNECT_AGENT_NAME: ${FRAGPIPE_AGENT_NAME:-fragpipe-1}
       MSCONNECT_PROCESSOR_ENGINE: fragpipe
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
     depends_on:
       web:
         condition: service_healthy
@@ -164,10 +185,14 @@ services:
       MSCONNECT_AGENT_NAME: ${PWIZ_AGENT_NAME:-pwiz-1}
       MSCONNECT_PROCESSOR_ENGINE: msconvert
       MSCONNECT_MSCONVERT_EXECUTABLE: msconvert
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
     depends_on:
       web:
         condition: service_healthy
@@ -177,6 +202,58 @@ services:
       timeout: 10s
       retries: 3
       start_period: 45s
+
+  processor-skyline:
+    profiles: ["engines"]
+    image: ${MSCONNECT_SKYLINE_IMAGE:-msconnect:local}
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${SKYLINE_AGENT_NAME:-skyline-1}
+      MSCONNECT_PROCESSOR_ENGINE: skyline
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "agent_healthcheck", "--role", "processor"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  archive-worker:
+    image: ${MSCONNECT_IMAGE:-msconnect:local}
+    build: .
+    command: >
+      sh -c "python manage.py archive_raw_files --loop --interval ${ARCHIVE_WORKER_INTERVAL_SECONDS:-300}"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw:ro
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
+    depends_on:
+      web:
+        condition: service_healthy
 
   nginx:
     image: nginx:1.27-alpine

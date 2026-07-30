@@ -69,9 +69,19 @@ class RawFileDerivativeType(models.TextChoices):
 
 class RawFileArchiveStatus(models.TextChoices):
     PLANNED = "planned", "Planned"
+    ARCHIVING = "archiving", "Archiving"
     ARCHIVED = "archived", "Archived"
+    VERIFYING = "verifying", "Verifying"
+    VERIFIED = "verified", "Verified"
     RESTORING = "restoring", "Restoring"
     RESTORED = "restored", "Restored"
+    FAILED = "failed", "Failed"
+
+
+class RawFileArchiveCopyStatus(models.TextChoices):
+    PLANNED = "planned", "Planned"
+    COPYING = "copying", "Copying"
+    VERIFIED = "verified", "Verified"
     FAILED = "failed", "Failed"
 
 
@@ -563,6 +573,32 @@ class RawFileArchive(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.raw_file.filename} archive {self.status}"
+
+
+class RawFileArchiveCopy(TimestampedModel):
+    archive = models.ForeignKey(RawFileArchive, on_delete=models.CASCADE, related_name="copies")
+    copy_role = models.CharField(max_length=32, default="archive")
+    storage_root = models.TextField()
+    path = models.TextField()
+    status = models.CharField(
+        max_length=32,
+        choices=RawFileArchiveCopyStatus.choices,
+        default=RawFileArchiveCopyStatus.PLANNED,
+    )
+    size_bytes = models.PositiveBigIntegerField(blank=True, null=True)
+    checksum_sha256 = models.CharField(max_length=64, blank=True)
+    verified_at = models.DateTimeField(blank=True, null=True)
+    error_message = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("archive", "copy_role", "path")
+        constraints = (
+            models.UniqueConstraint(fields=("archive", "path"), name="uniq_raw_file_archive_copy_path"),
+        )
+
+    def __str__(self) -> str:
+        return f"{self.archive_id} {self.copy_role} {self.status}"
 
 
 class IngestionFailure(TimestampedModel):

@@ -197,6 +197,65 @@ docker compose exec web python manage.py verify_e2e_smoke_fixture --code E2E-SMO
 
 After a successful run, `/app/admin` and `/app/processing/admin` should show green live nodes, current IPs, heartbeat age, and the completed smoke job artifacts.
 
+## Tagged Operations Smoke Test
+
+Use this flow when validating several projects and experiments with sample, HYE, PRTC, library, blank, and wash runs. It uses generated placeholder raw-like files and the repo's generic demo processor, so it does not require licensed DIA-NN or vendor tools.
+
+```sh
+docker compose up -d --build web watcher processor nginx
+docker compose exec web python manage.py migrate
+docker compose exec web python manage.py create_tagged_operations_fixture --code-prefix OPS-TAGGED
+docker compose run --rm watcher python manage.py run_watcher_agent --once --match-run-by-name
+for i in $(seq 1 12); do docker compose run --rm processor python manage.py run_processor_agent --once; done
+docker compose exec web python manage.py verify_tagged_operations_fixture --code-prefix OPS-TAGGED
+```
+
+The verifier checks current migrations, watcher imports, run/raw role alignment, HYE and PRTC `qc_program` tags, processable job queueing, completed processor jobs, result imports, artifacts, runtime manifests, and agent heartbeats.
+
+## Lab-Drive Archive and Backup
+
+MSConnect can archive imported raw files to lab-owned mounted drives without S3 or MinIO. Configure active raw storage, archive roots, and backup roots with environment variables:
+
+```sh
+RAW_FILE_STORAGE_ROOT=/data/raw
+RESULTS_ROOT=/data/results
+MSCONNECT_ARCHIVE_ROOTS=/data/archive
+MSCONNECT_BACKUP_ROOTS=/data/backup
+MSCONNECT_STORAGE_WARN_PERCENT=80
+MSCONNECT_STORAGE_BLOCK_PERCENT=95
+```
+
+Archive workers create zip files from managed raw files or vendor directories, verify checksums, and record both the logical `RawFileArchive` and each physical `RawFileArchiveCopy`. Active raw files are retained by default; only temporary processor workspaces are eligible for cleanup.
+
+```sh
+docker compose exec web python manage.py storage_capacity_report --projected-files 120 --average-raw-gb 4
+docker compose run --rm archive-worker python manage.py archive_raw_files --limit 50
+docker compose exec web python manage.py verify_archives --restore-test
+docker compose exec web python manage.py generate_operations_report --output /app/data/operations-report.txt
+```
+
+For continuous archive processing, start the archive worker with the rest of the stack:
+
+```sh
+docker compose up -d web watcher processor archive-worker nginx
+```
+
+For real engine routing, create DIA-NN and Skyline worklists from filenames already placed under `incoming/`:
+
+```sh
+docker compose exec web python manage.py create_engine_operations_fixture \
+  --code OPS-ENGINES \
+  --diann-file SampleA.mzML \
+  --diann-fasta /data/shared/reference/human.fasta \
+  --diann-library /data/shared/reference/project.speclib \
+  --skyline-file SampleA.mzML \
+  --skyline-document /data/shared/skyline/project.sky
+
+docker compose --profile engines up -d processor-diann processor-skyline
+```
+
+DIA-NN jobs require a compatible `diann` processor node and Skyline jobs require a compatible `skyline` processor node. The generic processor remains available for command-runner smoke jobs.
+
 ## Agent Auth
 
 Watcher and processor containers authenticate to the main API with static bearer tokens:

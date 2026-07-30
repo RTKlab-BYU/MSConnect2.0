@@ -1,4 +1,4 @@
-.PHONY: build up down logs migrate test lint frontend-lint ci-local install-hooks shell createsuperuser watcher processor deploy-tag
+.PHONY: build up down logs migrate test lint frontend-lint ci-local install-hooks shell createsuperuser watcher processor tagged-fixture tagged-process tagged-verify archive capacity verify-archives operations-report deploy-tag
 
 build:
 	docker compose build
@@ -47,6 +47,27 @@ watcher:
 
 processor:
 	docker compose run --rm processor python manage.py run_processor_agent --once
+
+tagged-fixture:
+	docker compose exec web python manage.py create_tagged_operations_fixture --code-prefix OPS-TAGGED
+
+tagged-process:
+	for i in $$(seq 1 12); do docker compose run --rm processor python manage.py run_processor_agent --once; done
+
+tagged-verify:
+	docker compose exec web python manage.py verify_tagged_operations_fixture --code-prefix OPS-TAGGED
+
+archive:
+	docker compose run --rm archive-worker python manage.py archive_raw_files --limit 50
+
+capacity:
+	docker compose exec web python manage.py storage_capacity_report
+
+verify-archives:
+	docker compose exec web python manage.py verify_archives --restore-test
+
+operations-report:
+	docker compose exec web python manage.py generate_operations_report --output /app/data/operations-report.txt
 
 deploy-tag:
 	docker compose pull
