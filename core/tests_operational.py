@@ -260,28 +260,86 @@ class OperationalSmokeCommandTests(TestCase):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             skyline_document = root / "project.sky"
+            fragpipe_workflow = root / "fragpipe.workflow"
             skyline_document.write_text("skyline", encoding="utf-8")
+            fragpipe_workflow.write_text("fragpipe", encoding="utf-8")
             with override_settings(INCOMING_RAW_ROOT=str(root / "incoming")):
                 call_command(
                     "create_engine_operations_fixture",
                     code="OPS-ENGINE-UNIT",
                     diann_file=["DIA-NN-01.mzML"],
+                    fragpipe_file=["FragPipe-01.mzML"],
+                    fragpipe_workflow=str(fragpipe_workflow),
                     skyline_file=["Skyline-01.mzML"],
                     skyline_document=str(skyline_document),
                     create_placeholders=True,
                 )
 
             project = Project.objects.get(code="OPS-ENGINE-UNIT")
-            self.assertEqual(project.experiments.count(), 2)
+            self.assertEqual(project.experiments.count(), 3)
             diann_pipeline = ProcessingPipeline.objects.get(name="Real DIA-NN")
+            fragpipe_pipeline = ProcessingPipeline.objects.get(name="Real FragPipe")
             skyline_pipeline = ProcessingPipeline.objects.get(name="Real Skyline")
             self.assertEqual(diann_pipeline.parameters["required_engine"], "diann")
+            self.assertEqual(fragpipe_pipeline.parameters["required_engine"], "fragpipe")
+            self.assertEqual(fragpipe_pipeline.parameters["workflow"], str(fragpipe_workflow))
             self.assertEqual(skyline_pipeline.parameters["required_engine"], "skyline")
             self.assertEqual(
                 WorklistEntry.objects.filter(worklist__metadata__required_engine="diann").get().expected_filename,
                 "DIA-NN-01.mzML",
             )
             self.assertEqual(
+                WorklistEntry.objects.filter(worklist__metadata__required_engine="fragpipe").get().expected_filename,
+                "FragPipe-01.mzML",
+            )
+            self.assertEqual(
                 WorklistEntry.objects.filter(worklist__metadata__required_engine="skyline").get().expected_filename,
                 "Skyline-01.mzML",
             )
+
+    def test_processor_registry_create_pipeline_pins_engine_profile(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            settings_file = root / "diann-settings.json"
+            settings_file.write_text('{"options": ["--threads", "8"]}', encoding="utf-8")
+            with override_settings(PROCESSOR_SHARED_STORAGE_ROOT=str(root / "shared")):
+                call_command("processor_registry", "init")
+                call_command(
+                    "processor_registry",
+                    "add-settings",
+                    "--engine",
+                    "diann",
+                    "--key",
+                    "standard",
+                    "--json-file",
+                    str(settings_file),
+                )
+                call_command(
+                    "processor_registry",
+                    "add-engine",
+                    "--engine",
+                    "diann",
+                    "--version",
+                    "2.1.0",
+                    "--image",
+                    "registry.example.org/msconnect/processor-diann:2.1.0",
+                    "--executable",
+                    "diann",
+                )
+                call_command(
+                    "processor_registry",
+                    "create-pipeline",
+                    "--engine",
+                    "diann",
+                    "--version",
+                    "MSConnect DIA-NN 2.1.0",
+                    "--engine-version",
+                    "2.1.0",
+                    "--settings-key",
+                    "standard",
+                )
+
+            pipeline = ProcessingPipeline.objects.get(name="Real DIA-NN", version="MSConnect DIA-NN 2.1.0")
+            self.assertEqual(pipeline.container_image, "registry.example.org/msconnect/processor-diann:2.1.0")
+            self.assertEqual(pipeline.parameters["required_engine_version"], "2.1.0")
+            self.assertEqual(pipeline.parameters["engine_profile"]["image"], pipeline.container_image)

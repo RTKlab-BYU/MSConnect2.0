@@ -410,6 +410,7 @@ class ProcessingJobSerializer(BaseSerializer):
     pipeline_name = serializers.CharField(source="pipeline.name", read_only=True)
     pipeline_version = serializers.CharField(source="pipeline.version", read_only=True)
     required_engine = serializers.SerializerMethodField()
+    required_engine_version = serializers.SerializerMethodField()
 
     class Meta(BaseSerializer.Meta):
         model = ProcessingJob
@@ -417,6 +418,9 @@ class ProcessingJobSerializer(BaseSerializer):
 
     def get_required_engine(self, obj):
         return _required_engine_for_job(obj)
+
+    def get_required_engine_version(self, obj):
+        return _required_engine_version_for_job(obj)
 
 
 class ProcessingJobArtifactSerializer(BaseSerializer):
@@ -449,6 +453,7 @@ class QcDetailsSerializer(serializers.Serializer):
     thresholds = serializers.DictField()
     empty_message = serializers.CharField(allow_blank=True)
     pairs = serializers.ListField(child=serializers.DictField(), allow_empty=True)
+    runs = serializers.ListField(child=serializers.DictField(), allow_empty=True, required=False)
 
 
 class ProteinSerializer(BaseSerializer):
@@ -745,6 +750,16 @@ def _numeric_stat(stats: dict, *keys: str) -> int:
     return 0
 
 
+def _float_stat(stats: dict, *keys: str) -> float | None:
+    for key in keys:
+        value = stats.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
 def _aggregate_job_stats(jobs) -> dict[str, int]:
     totals = {
         "reported_protein_count": 0,
@@ -946,6 +961,23 @@ def _queue_processing_job_for_raw_file(raw_file: RawFile) -> ProcessingJob | Non
     if raw_file.file_role not in processable_roles:
         return None
 
+    prtc_pipeline = _prtc_skyline_pipeline_for_raw_file(raw_file)
+    if prtc_pipeline:
+        job, _created = ProcessingJob.objects.get_or_create(
+            run_id=raw_file.run_id,
+            raw_file=raw_file,
+            pipeline=prtc_pipeline,
+            defaults={
+                "status": ProcessingStatus.QUEUED,
+                "metadata": {
+                    "queued_by": "watcher_agent",
+                    "routing": "prtc_skyline",
+                    "required_engine": _required_engine_for_pipeline(prtc_pipeline),
+                },
+            },
+        )
+        return job
+
     entry = (
         WorklistEntry.objects.select_related("worklist")
         .filter(run_id=raw_file.run_id)
@@ -980,6 +1012,19 @@ def _queue_processing_job_for_raw_file(raw_file: RawFile) -> ProcessingJob | Non
     return job
 
 
+def _prtc_skyline_pipeline_for_raw_file(raw_file: RawFile) -> ProcessingPipeline | None:
+    pipeline_id = str(getattr(settings, "MSCONNECT_PRTC_SKYLINE_PIPELINE_ID", "") or "").strip()
+    if not pipeline_id:
+        return None
+    qc_program = getattr(raw_file.run, "qc_program", "") if raw_file.run_id else ""
+    if raw_file.file_role != RunFileRole.PRTC and qc_program != QcProgram.PRTC:
+        return None
+    try:
+        return ProcessingPipeline.objects.get(pk=int(pipeline_id))
+    except (TypeError, ValueError, ProcessingPipeline.DoesNotExist):
+        return None
+
+
 def _required_engine_for_pipeline(pipeline: ProcessingPipeline | None) -> str:
     if not pipeline:
         return ""
@@ -1001,6 +1046,21 @@ def _required_engine_for_job(job: ProcessingJob) -> str:
     return _required_engine_for_pipeline(getattr(job, "pipeline", None))
 
 
+def _required_engine_version_for_pipeline(pipeline: ProcessingPipeline | None) -> str:
+    if not pipeline:
+        return ""
+    parameters = pipeline.parameters or {}
+    return str(parameters.get("required_engine_version") or parameters.get("engine_version") or "").strip()
+
+
+def _required_engine_version_for_job(job: ProcessingJob) -> str:
+    metadata = job.metadata or {}
+    value = metadata.get("required_engine_version") or metadata.get("engine_version")
+    if value:
+        return str(value).strip()
+    return _required_engine_version_for_pipeline(getattr(job, "pipeline", None))
+
+
 def _normalize_engine(value) -> str:
     return str(value or "").strip().lower().replace("_", "-")
 
@@ -1014,6 +1074,10 @@ def _engine_aliases(engine: str) -> set[str]:
         aliases.update({"diann", "dia-nn"})
     if normalized in {"msconvert", "pwiz", "proteowizard"}:
         aliases.update({"msconvert", "pwiz", "proteowizard"})
+    if normalized in {"pd", "proteome-discoverer", "proteomediscoverer"}:
+        aliases.update({"pd", "proteome-discoverer", "proteomediscoverer"})
+    if normalized in {"spectronaut", "spectronaut-cli"}:
+        aliases.update({"spectronaut", "spectronaut-cli"})
     return aliases
 
 
@@ -1021,7 +1085,24 @@ def _node_can_run_job(node: ProcessingNode, job: ProcessingJob) -> bool:
     required_engine = _required_engine_for_job(job)
     if not required_engine:
         return True
-    return required_engine in _engine_aliases(node.node_type)
+    if required_engine not in _engine_aliases(node.node_type):
+        return False
+    required_version = _required_engine_version_for_job(job)
+    if not required_version:
+        return True
+    return required_version == _node_engine_version(node)
+
+
+def _node_engine_version(node: ProcessingNode) -> str:
+    node_settings = node.settings or {}
+    node_metadata = node.metadata or {}
+    return str(
+        node_settings.get("processor_engine_version")
+        or node_settings.get("engine_version")
+        or node_metadata.get("processor_engine_version")
+        or node_metadata.get("engine_version")
+        or ""
+    ).strip()
 
 
 def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
@@ -1029,7 +1110,11 @@ def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
         "id": job.id,
         "status": job.status,
         "created_at": job.created_at,
-        "metadata": {**(job.metadata or {}), "required_engine": _required_engine_for_job(job)},
+        "metadata": {
+            **(job.metadata or {}),
+            "required_engine": _required_engine_for_job(job),
+            "required_engine_version": _required_engine_version_for_job(job),
+        },
         "run": {
             "id": job.run_id,
             "name": job.run.run_name,
@@ -1635,31 +1720,77 @@ class QcApiMixin:
         return self.hye_payload()
 
     def prtc_payload(self):
-        empty_message = (
+        entries = []
+        for worklist in self.scoped_worklists():
+            entries.extend(
+                entry
+                for entry in worklist.entries.all()
+                if entry.file_role == RunFileRole.PRTC or entry.qc_program == QcProgram.PRTC
+            )
+        run_ids = [entry.run_id for entry in entries if entry.run_id]
+        jobs = list(
+            ProcessingJob.objects.filter(
+                run_id__in=run_ids,
+                status=ProcessingStatus.COMPLETE,
+            )
+            .select_related("run", "raw_file", "pipeline")
+            .order_by("-finished_at", "-id")
+        )
+        configured = bool(entries)
+        empty_message = "" if configured else (
             "PRTC spiked-in standards are scaffolded in the QC workspace "
             "but no tagged PRTC dataset is available yet."
         )
+        runs = []
+        status_counts = {}
+        for job in jobs:
+            stats = job.stats or {}
+            status_value = str(stats.get("status") or stats.get("skyline_prtc", {}).get("status") or "unknown")
+            status_counts[status_value] = status_counts.get(status_value, 0) + 1
+            runs.append(
+                {
+                    "job_id": job.id,
+                    "run_id": job.run_id,
+                    "run_name": job.run.run_name,
+                    "filename": job.raw_file.filename,
+                    "status": status_value,
+                    "expected_peptide_count": _numeric_stat(stats, "expected_peptide_count"),
+                    "detected_peptide_count": _numeric_stat(stats, "detected_peptide_count"),
+                    "missing_peptide_count": _numeric_stat(stats, "missing_peptide_count"),
+                    "out_of_tolerance_peptide_count": _numeric_stat(stats, "out_of_tolerance_peptide_count"),
+                    "total_area": _float_stat(stats, "total_area"),
+                    "mean_rt_shift_seconds": _float_stat(stats, "mean_rt_shift_seconds"),
+                    "max_abs_rt_shift_seconds": _float_stat(stats, "max_abs_rt_shift_seconds"),
+                    "missing_peptides": stats.get("missing_peptides") or [],
+                    "out_of_tolerance_peptides": stats.get("out_of_tolerance_peptides") or [],
+                    "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+                }
+            )
+        missing_raw_count = max(0, len(entries) - len({job.run_id for job in jobs}))
         return {
             "overview": {
                 "program": "prtc",
-                "configured": False,
-                "qc_injection_count": 0,
-                "complete_pair_count": 0,
-                "out_of_spec_pair_count": 0,
-                "missing_raw_file_count": 0,
-                "latest_completed_at": None,
-                "pair_status_counts": [],
+                "configured": configured,
+                "qc_injection_count": len(entries),
+                "complete_pair_count": len(jobs),
+                "out_of_spec_pair_count": sum(count for key, count in status_counts.items() if key not in {"pass"}),
+                "missing_raw_file_count": missing_raw_count,
+                "latest_completed_at": jobs[0].finished_at.isoformat() if jobs and jobs[0].finished_at else None,
+                "pair_status_counts": [
+                    {"status": key, "count": count} for key, count in sorted(status_counts.items())
+                ],
                 "empty_message": empty_message,
             },
             "details": {
                 "program": "prtc",
-                "configured": False,
+                "configured": configured,
                 "thresholds": {
                     "pass_relative_error": self.pass_relative_error,
                     "warning_relative_error": self.warning_relative_error,
                 },
                 "empty_message": empty_message,
                 "pairs": [],
+                "runs": runs,
             },
         }
 

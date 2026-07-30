@@ -5,7 +5,7 @@ ARG FRAGPIPE_URL=""
 USER root
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl unzip openjdk-17-jre-headless \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip default-jre-headless \
     && rm -rf /var/lib/apt/lists/* \
     && if [ -n "$FRAGPIPE_URL" ]; then \
       curl -fsSL "$FRAGPIPE_URL" -o /tmp/fragpipe.zip \

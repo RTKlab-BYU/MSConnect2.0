@@ -521,7 +521,7 @@ export type QcOverview = {
   missing_raw_file_count: number;
   latest_completed_at: string | null;
   pair_status_counts: Array<{
-    status: "pass" | "warning" | "failed" | "incomplete";
+    status: "pass" | "warn" | "warning" | "fail" | "failed" | "incomplete" | "unknown";
     count: number;
   }>;
   empty_message: string;
@@ -567,4 +567,23 @@ export type QcDetails = {
   };
   empty_message: string;
   pairs: QcPair[];
+  runs?: QcPrtcRun[];
+};
+
+export type QcPrtcRun = {
+  job_id: EntityId;
+  run_id: EntityId;
+  run_name: string;
+  filename: string;
+  status: "pass" | "warn" | "warning" | "fail" | "failed" | "incomplete" | "unknown";
+  expected_peptide_count: number;
+  detected_peptide_count: number;
+  missing_peptide_count: number;
+  out_of_tolerance_peptide_count: number;
+  total_area: number | null;
+  mean_rt_shift_seconds: number | null;
+  max_abs_rt_shift_seconds: number | null;
+  missing_peptides: string[];
+  out_of_tolerance_peptides: string[];
+  finished_at: string | null;
 };

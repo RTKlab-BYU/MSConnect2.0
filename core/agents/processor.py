@@ -6,6 +6,7 @@ from django.conf import settings
 
 from core.agents.runtime import capture_runtime_metadata, write_runtime_manifest
 from core.processing.adapters import render_adapter_plan
+from core.processing.registry import resolve_pipeline_parameters
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,8 @@ class PreparedJobExecution:
     delimiter: str | None
     derivative_files: list[dict]
     artifact_files: list[dict]
+    postprocess: str
+    parameters: dict
     runtime_manifest_path: Path
     runtime_metadata: dict
 
@@ -30,6 +33,10 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
     raw_file = job_payload.get("raw_file") or {}
     run = job_payload.get("run") or {}
     parameters = pipeline.get("parameters") or {}
+    parameters = resolve_pipeline_parameters(
+        parameters,
+        engine=parameters.get("required_engine") or parameters.get("adapter") or "",
+    )
     results_dir = (results_root / "jobs" / str(job_payload["id"])).resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
     log_path = (results_dir / "process.log").resolve()
@@ -124,6 +131,8 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
                 "metadata": {"role": "runtime_manifest"},
             },
         ],
+        postprocess=str(parameters.get("postprocess") or ""),
+        parameters=parameters,
         runtime_manifest_path=runtime_manifest_path,
         runtime_metadata=runtime_metadata,
     )

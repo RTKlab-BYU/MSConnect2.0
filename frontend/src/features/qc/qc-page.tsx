@@ -63,6 +63,7 @@ export default function QcPage() {
   const overview = overviewQuery.data;
   const details = detailsQuery.data;
   const pairStatusData = (overview?.pair_status_counts ?? []).map((row) => ({ label: row.status, count: row.count }));
+  const prtcRuns = details?.runs ?? [];
   const passThreshold = details ? Math.round(details.thresholds.pass_relative_error * 100) : 20;
   const warningThreshold = details ? Math.round(details.thresholds.warning_relative_error * 100) : 50;
 
@@ -263,39 +264,105 @@ export default function QcPage() {
           )}
         </TabsContent>
 
-        <TabsContent value="prtc">
+        <TabsContent value="prtc" className="grid gap-4">
           <Card>
             <CardHeader>
               <CardTitle>PRTC standards</CardTitle>
               <CardDescription>
-                The QC workspace is ready for PRTC spiked-in standards, but this environment does not yet expose tagged PRTC inputs or acceptance thresholds.
+                Skyline PRTC monitoring for the configured 15-peptide standard set.
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3">
-              <div className="rounded-2xl border bg-secondary/20 p-4 text-sm text-muted-foreground">
-                {overview?.empty_message || "PRTC metrics will appear here once standards are modeled and uploaded into the main API."}
-              </div>
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-2xl border bg-secondary/20 px-3 py-3">
-                  <div className="text-xs font-bold uppercase text-muted-foreground">Transitions</div>
-                  <div className="mt-2 text-xl font-bold">-</div>
-                  <div className="mt-1 text-sm text-muted-foreground">placeholder for monitored standards</div>
+                  <div className="text-xs font-bold uppercase text-muted-foreground">Completed PRTC</div>
+                  <div className="mt-2 text-xl font-bold">{prtcRuns.length}</div>
+                  <div className="mt-1 text-sm text-muted-foreground">Skyline jobs with saved stats</div>
                 </div>
                 <div className="rounded-2xl border bg-secondary/20 px-3 py-3">
-                  <div className="text-xs font-bold uppercase text-muted-foreground">Retention Shift</div>
-                  <div className="mt-2 text-xl font-bold">-</div>
-                  <div className="mt-1 text-sm text-muted-foreground">future system suitability trend</div>
+                  <div className="text-xs font-bold uppercase text-muted-foreground">Detected Peptides</div>
+                  <div className="mt-2 text-xl font-bold">
+                    {prtcRuns[0] ? `${prtcRuns[0].detected_peptide_count}/${prtcRuns[0].expected_peptide_count}` : "-"}
+                  </div>
+                  <div className="mt-1 text-sm text-muted-foreground">latest completed injection</div>
                 </div>
                 <div className="rounded-2xl border bg-secondary/20 px-3 py-3">
-                  <div className="text-xs font-bold uppercase text-muted-foreground">Intensity CV</div>
-                  <div className="mt-2 text-xl font-bold">-</div>
-                  <div className="mt-1 text-sm text-muted-foreground">future batch consistency metric</div>
+                  <div className="text-xs font-bold uppercase text-muted-foreground">Max RT Shift</div>
+                  <div className="mt-2 text-xl font-bold">{formatMetric(prtcRuns[0]?.max_abs_rt_shift_seconds, "s")}</div>
+                  <div className="mt-1 text-sm text-muted-foreground">latest completed injection</div>
                 </div>
               </div>
             </CardContent>
           </Card>
+
+          {prtcRuns.length ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Skyline PRTC runs</CardTitle>
+                <CardDescription>Per-upload Skyline report stats saved by processor jobs.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[980px] text-sm">
+                    <thead className="text-left text-xs uppercase text-muted-foreground">
+                      <tr>
+                        <th className="border-b px-2 py-2">Run</th>
+                        <th className="border-b px-2 py-2">Status</th>
+                        <th className="border-b px-2 py-2">Peptides</th>
+                        <th className="border-b px-2 py-2">Total Area</th>
+                        <th className="border-b px-2 py-2">Mean RT Shift</th>
+                        <th className="border-b px-2 py-2">Max RT Shift</th>
+                        <th className="border-b px-2 py-2">Missing</th>
+                        <th className="border-b px-2 py-2">Completed</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {prtcRuns.map((run) => (
+                        <tr key={run.job_id} className="border-b last:border-b-0">
+                          <td className="px-2 py-2">
+                            <div className="font-medium">{run.run_name || run.filename}</div>
+                            <div className="text-xs text-muted-foreground">{run.filename}</div>
+                          </td>
+                          <td className="px-2 py-2">
+                            <StatusBadge status={run.status === "fail" ? "failed" : run.status} />
+                          </td>
+                          <td className="px-2 py-2">
+                            {run.detected_peptide_count}/{run.expected_peptide_count}
+                          </td>
+                          <td className="px-2 py-2">{formatMetric(run.total_area)}</td>
+                          <td className="px-2 py-2">{formatMetric(run.mean_rt_shift_seconds, "s")}</td>
+                          <td className="px-2 py-2">{formatMetric(run.max_abs_rt_shift_seconds, "s")}</td>
+                          <td className="px-2 py-2">
+                            {[...run.missing_peptides, ...run.out_of_tolerance_peptides].join(", ") || "-"}
+                          </td>
+                          <td className="px-2 py-2">{formatDate(run.finished_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardHeader>
+                <CardTitle>No PRTC Skyline results</CardTitle>
+                <CardDescription>
+                  {overview?.empty_message || "PRTC metrics will appear after PRTC uploads are processed by Skyline."}
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          )}
         </TabsContent>
       </Tabs>
     </div>
   );
+}
+
+function formatMetric(value: number | null | undefined, suffix = "") {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+  const formatted = Math.abs(value) >= 1000 ? value.toExponential(2) : value.toFixed(2);
+  return suffix ? `${formatted} ${suffix}` : formatted;
 }

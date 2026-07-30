@@ -13,6 +13,7 @@ from core.agents.client import AgentApiClient
 from core.agents.diagnostics import write_heartbeat_marker
 from core.agents.processor import prepare_job_execution
 from core.models import ProcessingNodeStatus
+from core.processing.postprocess import run_postprocess
 
 
 class Command(BaseCommand):
@@ -148,6 +149,14 @@ class Command(BaseCommand):
             )
             return
 
+        postprocess_stats = {}
+        if execution.postprocess:
+            postprocess_stats = run_postprocess(
+                name=execution.postprocess,
+                parameters=execution.parameters,
+                results_dir=execution.results_dir,
+            )
+
         for artifact in (execution.protein_table_path, execution.peptide_table_path, execution.stats_json_path):
             if artifact and not artifact.exists():
                 raise CommandError(f"Expected result artifact was not created: {artifact}")
@@ -170,6 +179,7 @@ class Command(BaseCommand):
                 stats_payload = json.load(stats_file)
             if not isinstance(stats_payload, dict):
                 raise CommandError(f"Expected stats JSON object in {execution.stats_json_path}")
+        stats_payload = {**stats_payload, **postprocess_stats}
 
         client.complete_job(
             job["id"],
@@ -209,6 +219,8 @@ class Command(BaseCommand):
             "mode": "command-runner",
             "control_state": control_state,
             "host_name": socket.gethostname(),
+            "processor_engine_version": settings.MSCONNECT_PROCESSOR_ENGINE_VERSION,
+            "processor_engine_profile": settings.MSCONNECT_PROCESSOR_ENGINE_PROFILE,
             **(metadata or {}),
         }
         if local_ip:
@@ -221,6 +233,8 @@ class Command(BaseCommand):
             metadata=heartbeat_metadata,
             settings={
                 "processor_engine": node_type,
+                "processor_engine_version": settings.MSCONNECT_PROCESSOR_ENGINE_VERSION,
+                "processor_engine_profile": settings.MSCONNECT_PROCESSOR_ENGINE_PROFILE,
                 "results_root": settings.RESULTS_ROOT,
                 "raw_file_storage_root": settings.RAW_FILE_STORAGE_ROOT,
                 "processor_shared_storage_root": settings.PROCESSOR_SHARED_STORAGE_ROOT,

@@ -1,5 +1,52 @@
 # MSConnect Worklog
 
+## 2026-07-30
+
+### Completed
+
+- Added the central processor registry for versioned engine profiles, shared reference assets, and engine settings under `PROCESSOR_SHARED_STORAGE_ROOT`.
+- Built and validated a real DIA-NN 2.0 Linux processor image from the DIA-NN 2.0 Academia Linux ZIP, including .NET 8 and runtime dependency handling.
+- Registered `diann/2.0` in shared processor storage and started the `processor-diann` Compose service with engine version/profile metadata.
+- Added a real Skyline 26.1 processor image based on the ProteoWizard/Skyline vendor-license container, with MSConnect Python runtime and a `SkylineCmd` Wine wrapper.
+- Registered `skyline/26.1.0` in shared processor storage and started the `processor-skyline` Compose service.
+- Added Skyline PRTC postprocessing: Skyline report CSV to normalized peptide table, PRTC stats JSON, imported peptide quant rows, and saved `ProcessingJob.stats`.
+- Added upload-time PRTC routing through `MSCONNECT_PRTC_SKYLINE_PIPELINE_ID`, while leaving routine sample/HYE/library runs on the existing worklist pipeline path.
+- Replaced the placeholder PRTC QC API/UI with Skyline PRTC run summaries, peptide counts, missing/out-of-tolerance peptides, area, and retention-shift metrics.
+- Updated processor docs, env examples, Compose profiles, and added a PRTC 15-peptide Skyline settings template.
+
+### Verified
+
+- `docker build -f docker/processor/diann.Dockerfile --build-arg DIANN_VERSION=2.0 --build-arg DIANN_LINUX_URL=https://github.com/vdemichev/DiaNN/releases/download/2.0/DIA-NN-2.0-Academia-Linux.zip -t msconnect-processor-diann:2.0 .`
+- `docker run --rm msconnect-processor-diann:2.0 diann`
+- `docker compose --profile engines build processor-skyline`
+- `docker run --rm msconnect-processor-skyline:26.1 python manage.py check`
+- `docker run --rm msconnect-processor-skyline:26.1 SkylineCmd --help`
+- `docker compose --profile engines run --rm --no-deps processor-skyline SkylineCmd --version`
+- `docker compose run --rm --no-deps web python manage.py processor_registry validate-engine --engine skyline --version 26.1.0 --require-image`
+- `docker compose --profile engines up -d web nginx watcher processor-diann processor-skyline`
+- `docker compose ps web nginx watcher processor-diann processor-skyline`
+- `docker compose exec processor-skyline python manage.py agent_healthcheck --role processor`
+- `docker compose exec watcher python manage.py agent_healthcheck --role watcher`
+- `curl -I http://localhost:8080/app/qc?program=prtc`
+- `ruff check core/processing/postprocess.py core/agents/processor.py core/management/commands/run_processor_agent.py core/processing/adapters.py core/api.py core/tests_processor.py core/tests_api_permissions.py`
+- `.venv/bin/python manage.py test`
+- `cd frontend && npm run lint`
+- `cd frontend && npm run build`
+- `docker compose -f docker-compose.yml -f compose.engines.example.yml config --quiet`
+
+### Current review state
+
+- Local live stack is up with `web`, `nginx`, `watcher`, `processor-diann`, and `processor-skyline` healthy.
+- Built image IDs: `msconnect-processor-diann:2.0` -> `sha256:e1b89b2a6108b2258a520378971381c42bd0c82aa78251db736b9572342f2078`; `msconnect-processor-skyline:26.1` -> `sha256:e9daf2898471cfdef16c69998dc4df77556b60cb16a78718df98a6b11fb308c3`.
+- `shared/config/processor-registry.json` is local runtime state and is intentionally not committed.
+- Skyline PRTC processing is code-complete but still needs the lab-approved `prtc-15.sky`, real 15 peptide definitions, and a created `Skyline PRTC` pipeline ID configured in `MSCONNECT_PRTC_SKYLINE_PIPELINE_ID`.
+
+### Deferred / next session
+
+- Register the real `skyline_document/prtc-15`, replace the example PRTC peptide settings with lab-approved sequences/transitions, create the production `Skyline PRTC` pipeline, and run a real PRTC raw/mzML upload through watcher -> Skyline -> QC UI.
+- Add a UI/admin action for selecting the active PRTC Skyline pipeline instead of configuring `MSCONNECT_PRTC_SKYLINE_PIPELINE_ID` by environment variable.
+- Run true vendor-engine jobs for FragPipe and enterprise workers once site-approved installers/images are available.
+
 ## 2026-07-29
 
 ### Completed

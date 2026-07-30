@@ -1,0 +1,80 @@
+services:
+  processor-diann-2-0:
+    image: ${MSCONNECT_DIANN_2_0_IMAGE:-registry.example.org/msconnect/processor-diann:2.0}
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${DIANN_2_0_AGENT_NAME:-diann-2-0-01}
+      MSCONNECT_PROCESSOR_ENGINE: diann
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: "2.0"
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: diann:2.0
+      MSCONNECT_IMAGE: ${MSCONNECT_DIANN_2_0_IMAGE:-registry.example.org/msconnect/processor-diann:2.0}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+
+  processor-diann-2-1-0:
+    image: ${MSCONNECT_DIANN_2_1_0_IMAGE:-registry.example.org/msconnect/processor-diann:2.1.0}
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${DIANN_2_1_0_AGENT_NAME:-diann-2-1-0-01}
+      MSCONNECT_PROCESSOR_ENGINE: diann
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: 2.1.0
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: diann:2.1.0
+      MSCONNECT_IMAGE: ${MSCONNECT_DIANN_2_1_0_IMAGE:-registry.example.org/msconnect/processor-diann:2.1.0}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+
+  processor-fragpipe-23-0:
+    image: ${MSCONNECT_FRAGPIPE_23_0_IMAGE:-registry.example.org/msconnect/processor-fragpipe:23.0}
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${FRAGPIPE_23_0_AGENT_NAME:-fragpipe-23-0-01}
+      MSCONNECT_PROCESSOR_ENGINE: fragpipe
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: "23.0"
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: fragpipe:23.0
+      MSCONNECT_IMAGE: ${MSCONNECT_FRAGPIPE_23_0_IMAGE:-registry.example.org/msconnect/processor-fragpipe:23.0}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+
+  processor-skyline-26-1:
+    image: ${MSCONNECT_SKYLINE_26_1_IMAGE:-registry.example.org/msconnect/processor-skyline:26.1}
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${SKYLINE_26_1_AGENT_NAME:-skyline-26-1-01}
+      MSCONNECT_PROCESSOR_ENGINE: skyline
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: "26.1.0"
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: skyline:26.1.0
+      MSCONNECT_IMAGE: ${MSCONNECT_SKYLINE_26_1_IMAGE:-registry.example.org/msconnect/processor-skyline:26.1}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared

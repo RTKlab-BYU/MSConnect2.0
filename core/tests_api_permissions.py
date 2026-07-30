@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from core.models import (
@@ -602,6 +603,70 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(response.data["qc_injection_count"], 0)
         self.assertEqual(response.data["complete_pair_count"], 0)
 
+    def test_qc_prtc_returns_skyline_job_stats(self):
+        experiment = Experiment.objects.create(project=self.project_a, name="PRTC Exp")
+        worklist = AcquisitionWorklist.objects.create(experiment=experiment, name="PRTC Plate")
+        sample = Sample.objects.create(experiment=experiment, name="PRTC Std")
+        run = Run.objects.create(
+            sample=sample,
+            run_name="PRTC-01",
+            expected_filename="PRTC-01.raw",
+            file_role=RunFileRole.PRTC,
+            qc_program=QcProgram.PRTC,
+        )
+        worklist.entries.create(
+            position=1,
+            run=run,
+            expected_filename="PRTC-01.raw",
+            file_role=RunFileRole.PRTC,
+            qc_program=QcProgram.PRTC,
+        )
+        raw_file = RawFile.objects.create(
+            run=run,
+            source_path="/incoming/PRTC-01.raw",
+            storage_path="/data/raw/prtc.raw",
+            filename="PRTC-01.raw",
+            checksum_sha256="d" * 64,
+            size_bytes=2048,
+            status="processed",
+            file_role=RunFileRole.PRTC,
+        )
+        pipeline = ProcessingPipeline.objects.create(
+            name="Skyline PRTC",
+            version="26.1",
+            parameters={"adapter": "skyline", "required_engine": "skyline"},
+        )
+        ProcessingJob.objects.create(
+            run=run,
+            raw_file=raw_file,
+            pipeline=pipeline,
+            status=ProcessingStatus.COMPLETE,
+            finished_at=timezone.now(),
+            stats={
+                "program": "prtc",
+                "status": "pass",
+                "expected_peptide_count": 15,
+                "detected_peptide_count": 15,
+                "missing_peptide_count": 0,
+                "out_of_tolerance_peptide_count": 0,
+                "total_area": 12345.6,
+                "mean_rt_shift_seconds": 0.4,
+                "max_abs_rt_shift_seconds": 1.2,
+            },
+        )
+
+        self.client.force_authenticate(user=self.researcher)
+        overview_response = self.client.get(f"/api/qc/overview/?program=prtc&project={self.project_a.id}")
+        self.assertEqual(overview_response.status_code, 200)
+        self.assertTrue(overview_response.data["configured"])
+        self.assertEqual(overview_response.data["qc_injection_count"], 1)
+        self.assertEqual(overview_response.data["complete_pair_count"], 1)
+
+        details_response = self.client.get(f"/api/qc/details/?program=prtc&project={self.project_a.id}")
+        self.assertEqual(details_response.status_code, 200)
+        self.assertEqual(details_response.data["runs"][0]["detected_peptide_count"], 15)
+        self.assertEqual(details_response.data["runs"][0]["status"], "pass")
+
 
 @override_settings(
     MSCONNECT_WATCHER_TOKEN="watcher-token",
@@ -720,6 +785,60 @@ class AgentApiTests(TestCase):
         self.assertEqual(compatible.status_code, 200)
         self.assertEqual(compatible.data["id"], job.id)
         self.assertEqual(compatible.data["metadata"]["required_engine"], "skyline")
+
+    def test_processor_claim_respects_required_engine_version(self):
+        processor = self._processor_client()
+        ProcessingNode.objects.create(
+            name="diann-1-9-2",
+            node_type="diann",
+            status="idle",
+            settings={"processor_engine_version": "1.9.2"},
+        )
+        ProcessingNode.objects.create(
+            name="diann-2-1-0",
+            node_type="diann",
+            status="idle",
+            settings={"processor_engine_version": "2.1.0"},
+        )
+        raw_file = RawFile.objects.create(
+            run=self.run,
+            source_path="/incoming/SampleA_run08.raw",
+            storage_path="/data/raw/aa/sample08.raw",
+            filename="SampleA_run08.raw",
+            checksum_sha256="8" * 64,
+            size_bytes=1024,
+            status="imported",
+        )
+        pipeline = ProcessingPipeline.objects.create(
+            name="DIA-NN",
+            version="2.1.0",
+            parameters={"adapter": "diann", "required_engine_version": "2.1.0"},
+        )
+        job = ProcessingJob.objects.create(
+            run=self.run,
+            pipeline=pipeline,
+            raw_file=raw_file,
+            status=ProcessingStatus.QUEUED,
+        )
+
+        incompatible = processor.post(
+            "/api/processing-jobs/claim-next/",
+            data={"node_name": "diann-1-9-2"},
+            format="json",
+        )
+        self.assertEqual(incompatible.status_code, 204)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingStatus.QUEUED)
+
+        compatible = processor.post(
+            "/api/processing-jobs/claim-next/",
+            data={"node_name": "diann-2-1-0"},
+            format="json",
+        )
+        self.assertEqual(compatible.status_code, 200)
+        self.assertEqual(compatible.data["id"], job.id)
+        self.assertEqual(compatible.data["metadata"]["required_engine"], "diann")
+        self.assertEqual(compatible.data["metadata"]["required_engine_version"], "2.1.0")
 
     def test_worklist_import_stores_qc_program_and_extended_roles(self):
         self.client.force_authenticate(user=self.pi_user)
@@ -860,6 +979,78 @@ class AgentApiTests(TestCase):
         self.assertEqual(job.status, ProcessingStatus.QUEUED)
         self.assertEqual(job.pipeline.name, "DIA-NN")
         self.assertIn("command", job.pipeline.parameters)
+
+    def test_watcher_import_routes_prtc_run_to_configured_skyline_pipeline(self):
+        default_pipeline = ProcessingPipeline.objects.create(
+            name="DIA-NN",
+            version="default",
+            parameters={"adapter": "diann", "required_engine": "diann"},
+        )
+        skyline_pipeline = ProcessingPipeline.objects.create(
+            name="Skyline PRTC",
+            version="26.1",
+            parameters={
+                "adapter": "skyline",
+                "required_engine": "skyline",
+                "required_engine_version": "26.1.0",
+                "document": "/data/shared/skyline/prtc-15.sky",
+                "postprocess": "skyline_prtc",
+            },
+        )
+        worklist = AcquisitionWorklist.objects.create(
+            experiment=self.experiment,
+            name="PRTC sequence",
+            metadata={"processing_pipeline_id": default_pipeline.id},
+        )
+        sample = Sample.objects.create(experiment=self.experiment, name="PRTC-Std")
+        run = Run.objects.create(
+            sample=sample,
+            run_name="PRTC-Std",
+            expected_filename="PRTC-Std.raw",
+            file_role=RunFileRole.PRTC,
+            qc_program=QcProgram.PRTC,
+        )
+        worklist.entries.create(
+            position=1,
+            run=run,
+            expected_filename="PRTC-Std.raw",
+            file_role=RunFileRole.PRTC,
+            qc_program=QcProgram.PRTC,
+        )
+
+        watcher = self._watcher_client()
+        with TemporaryDirectory() as storage_dir:
+            storage_root = Path(storage_dir)
+            file_bytes = b"prtc-raw-data"
+            checksum = hashlib.sha256(file_bytes).hexdigest()
+            file_path = storage_root / checksum[:2] / f"{checksum}_PRTC-Std.raw"
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_bytes(file_bytes)
+
+            with override_settings(
+                RAW_FILE_STORAGE_ROOT=str(storage_root),
+                MSCONNECT_PRTC_SKYLINE_PIPELINE_ID=str(skyline_pipeline.id),
+            ):
+                import_response = watcher.post(
+                    "/api/agents/raw-files/import/",
+                    data={
+                        "source_path": "/incoming/PRTC-Std.raw",
+                        "storage_path": str(file_path),
+                        "filename": "PRTC-Std.raw",
+                        "checksum_sha256": checksum,
+                        "size_bytes": len(file_bytes),
+                        "match_run_by_name": True,
+                    },
+                    format="json",
+                )
+
+        self.assertEqual(import_response.status_code, 201)
+        raw_file = RawFile.objects.get(checksum_sha256=checksum)
+        job = ProcessingJob.objects.get(raw_file=raw_file)
+        self.assertEqual(raw_file.file_role, RunFileRole.PRTC)
+        self.assertEqual(job.pipeline, skyline_pipeline)
+        self.assertEqual(job.metadata["routing"], "prtc_skyline")
+        self.assertEqual(job.metadata["required_engine"], "skyline")
 
     def test_watcher_failure_endpoint_increments_seen_count(self):
         watcher = self._watcher_client()

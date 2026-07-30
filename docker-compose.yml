@@ -12,6 +12,8 @@ services:
     environment:
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
+      MSCONNECT_PRTC_SKYLINE_PIPELINE_ID: ${MSCONNECT_PRTC_SKYLINE_PIPELINE_ID:-}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${MSCONNECT_MEDIA_HOST_PATH:-./media}:/app/media
@@ -19,6 +21,7 @@ services:
       - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
       - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
       - ${BACKUP_HOST_PATH:-./backups}:/data/backup
     ports:
@@ -51,11 +54,13 @@ services:
       MSCONNECT_AGENT_NAME: ${WATCHER_AGENT_NAME:-watcher-1}
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming:ro
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
       - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
       - ${BACKUP_HOST_PATH:-./backups}:/data/backup
     depends_on:
@@ -82,11 +87,13 @@ services:
       MSCONNECT_PROCESSOR_ENGINE: ${PROCESSOR_ENGINE:-processor}
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming:ro
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
       - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
       - ${BACKUP_HOST_PATH:-./backups}:/data/backup
     depends_on:
@@ -101,12 +108,13 @@ services:
 
   processor-diann:
     profiles: ["engines"]
-    image: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:local}
+    image: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.0}
     build:
       context: .
       dockerfile: docker/processor/diann.Dockerfile
       args:
         DIANN_LINUX_URL: ${DIANN_LINUX_URL:-}
+        DIANN_VERSION: ${DIANN_ENGINE_VERSION:-2.0}
     command: >
       sh -c "python manage.py run_processor_agent"
     env_file:
@@ -116,12 +124,17 @@ services:
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
       MSCONNECT_AGENT_NAME: ${DIANN_AGENT_NAME:-diann-1}
       MSCONNECT_PROCESSOR_ENGINE: diann
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: ${DIANN_ENGINE_VERSION:-2.0}
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: ${DIANN_ENGINE_PROFILE:-diann:2.0}
+      MSCONNECT_IMAGE: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.0}
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
       - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
       - ${BACKUP_HOST_PATH:-./backups}:/data/backup
     depends_on:
@@ -151,12 +164,17 @@ services:
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
       MSCONNECT_AGENT_NAME: ${FRAGPIPE_AGENT_NAME:-fragpipe-1}
       MSCONNECT_PROCESSOR_ENGINE: fragpipe
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: ${FRAGPIPE_ENGINE_VERSION:-site-pinned}
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: ${FRAGPIPE_ENGINE_PROFILE:-fragpipe:site-pinned}
+      MSCONNECT_IMAGE: ${MSCONNECT_FRAGPIPE_IMAGE:-msconnect-processor-fragpipe:local}
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
       - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
       - ${BACKUP_HOST_PATH:-./backups}:/data/backup
     depends_on:
@@ -187,10 +205,12 @@ services:
       MSCONNECT_MSCONVERT_EXECUTABLE: msconvert
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
       - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
       - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
       - ${BACKUP_HOST_PATH:-./backups}:/data/backup
     depends_on:
@@ -205,7 +225,12 @@ services:
 
   processor-skyline:
     profiles: ["engines"]
-    image: ${MSCONNECT_SKYLINE_IMAGE:-msconnect:local}
+    image: ${MSCONNECT_SKYLINE_IMAGE:-msconnect-processor-skyline:26.1}
+    build:
+      context: .
+      dockerfile: docker/processor/skyline.Dockerfile
+      args:
+        SKYLINE_BASE_IMAGE: ${SKYLINE_BASE_IMAGE:-proteowizard/pwiz-skyline-i-agree-to-the-vendor-licenses:skyline_26.1.0.057-c07debd}
     command: >
       sh -c "python manage.py run_processor_agent"
     env_file:
@@ -215,8 +240,12 @@ services:
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
       MSCONNECT_AGENT_NAME: ${SKYLINE_AGENT_NAME:-skyline-1}
       MSCONNECT_PROCESSOR_ENGINE: skyline
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: ${SKYLINE_ENGINE_VERSION:-26.1.0}
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: ${SKYLINE_ENGINE_PROFILE:-skyline:26.1.0}
+      MSCONNECT_IMAGE: ${MSCONNECT_SKYLINE_IMAGE:-msconnect-processor-skyline:26.1}
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw

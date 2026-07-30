@@ -154,6 +154,8 @@ def _fragpipe_plan(*, parameters: dict, placeholders: dict[str, str], results_di
         command.extend(["--ram", str(parameters["ram_gb"])])
     if parameters.get("threads"):
         command.extend(["--threads", str(parameters["threads"])])
+    if parameters.get("fasta"):
+        command.extend(["--fasta", _substitute(str(parameters["fasta"]), placeholders)])
     command.extend(_string_list(parameters.get("options") or [], placeholders))
     return AdapterPlan(
         command=command,
@@ -179,9 +181,27 @@ def _skyline_plan(*, parameters: dict, placeholders: dict[str, str], results_dir
     report_name_value = parameters.get("report_name")
     if report_name_value:
         command.append(f"--report-name={_substitute(str(report_name_value), placeholders)}")
+    report_add = parameters.get("report_add")
+    if report_add:
+        command.append(f"--report-add={_substitute(str(report_add), placeholders)}")
+    report_format = parameters.get("report_format")
+    if report_format:
+        command.append(f"--report-format={_substitute(str(report_format), placeholders)}")
+    if parameters.get("report_invariant"):
+        command.append("--report-invariant")
+    report_conflict_resolution = parameters.get("report_conflict_resolution")
+    if report_conflict_resolution:
+        command.append(f"--report-conflict-resolution={_substitute(str(report_conflict_resolution), placeholders)}")
+    chromatogram_file = parameters.get("chromatogram_file")
+    if chromatogram_file:
+        command.append(f"--chromatogram-file={_substitute(str(chromatogram_file), placeholders)}")
+    for flag in parameters.get("chromatogram_options") or []:
+        command.append(_substitute(str(flag), placeholders))
     output_document = parameters.get("out")
     if output_document:
         command.append(f"--out={_substitute(str(output_document), placeholders)}")
+    if parameters.get("save"):
+        command.append("--save")
     command.extend(_string_list(parameters.get("options") or [], placeholders))
     artifact_files = [
         {

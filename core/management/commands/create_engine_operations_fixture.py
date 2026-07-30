@@ -23,10 +23,11 @@ from core.models import (
     WorklistEntry,
     WorklistStatus,
 )
+from core.processing.registry import resolve_pipeline_parameters
 
 
 class Command(BaseCommand):
-    help = "Create DIA-NN and Skyline real-engine worklists for files placed in incoming storage."
+    help = "Create DIA-NN, FragPipe, and Skyline real-engine worklists for files placed in incoming storage."
 
     def add_arguments(self, parser):
         parser.add_argument("--code", default="OPS-ENGINES")
@@ -35,23 +36,44 @@ class Command(BaseCommand):
         parser.add_argument("--diann-executable", default="diann")
         parser.add_argument("--diann-version", default="site-pinned")
         parser.add_argument("--diann-fasta", default="")
+        parser.add_argument("--diann-fasta-ref", default="")
         parser.add_argument("--diann-library", default="")
+        parser.add_argument("--diann-library-ref", default="")
+        parser.add_argument("--diann-settings-key", default="")
+        parser.add_argument("--fragpipe-file", action="append", default=[])
+        parser.add_argument("--fragpipe-executable", default="fragpipe")
+        parser.add_argument("--fragpipe-version", default="site-pinned")
+        parser.add_argument("--fragpipe-workflow", default="")
+        parser.add_argument("--fragpipe-workflow-ref", default="")
+        parser.add_argument("--fragpipe-fasta", default="")
+        parser.add_argument("--fragpipe-fasta-ref", default="")
+        parser.add_argument("--fragpipe-settings-key", default="")
+        parser.add_argument("--fragpipe-threads", type=int)
+        parser.add_argument("--fragpipe-ram-gb", type=int)
         parser.add_argument("--skyline-executable", default="SkylineCmd")
         parser.add_argument("--skyline-version", default="site-pinned")
         parser.add_argument("--skyline-document", default="")
+        parser.add_argument("--skyline-document-ref", default="")
+        parser.add_argument("--skyline-settings-key", default="")
         parser.add_argument("--skyline-report-name", default="Transition Results")
         parser.add_argument("--create-placeholders", action="store_true")
 
     def handle(self, *args, **options):
-        if not options["diann_file"] and not options["skyline_file"]:
-            raise CommandError("Provide at least one --diann-file or --skyline-file.")
-        if options["skyline_file"] and not options["skyline_document"]:
-            raise CommandError("--skyline-document is required when --skyline-file is provided.")
+        if not options["diann_file"] and not options["fragpipe_file"] and not options["skyline_file"]:
+            raise CommandError("Provide at least one --diann-file, --fragpipe-file, or --skyline-file.")
+        if options["fragpipe_file"] and not (options["fragpipe_workflow"] or options["fragpipe_workflow_ref"]):
+            raise CommandError(
+                "--fragpipe-workflow or --fragpipe-workflow-ref is required when --fragpipe-file is provided."
+            )
+        if options["skyline_file"] and not (options["skyline_document"] or options["skyline_document_ref"]):
+            raise CommandError(
+                "--skyline-document or --skyline-document-ref is required when --skyline-file is provided."
+            )
 
         incoming_root = Path(settings.INCOMING_RAW_ROOT)
         incoming_root.mkdir(parents=True, exist_ok=True)
         if options["create_placeholders"]:
-            for filename in [*options["diann_file"], *options["skyline_file"]]:
+            for filename in [*options["diann_file"], *options["fragpipe_file"], *options["skyline_file"]]:
                 path = incoming_root / Path(filename).name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(f"MSConnect real-engine placeholder for {filename}\n", encoding="utf-8")
@@ -77,6 +99,15 @@ class Command(BaseCommand):
                     filenames=options["diann_file"],
                     pipeline=pipeline,
                 )
+            if options["fragpipe_file"]:
+                pipeline = self._fragpipe_pipeline(options)
+                self._worklist(
+                    project=project,
+                    user=user,
+                    engine="fragpipe",
+                    filenames=options["fragpipe_file"],
+                    pipeline=pipeline,
+                )
             if options["skyline_file"]:
                 pipeline = self._skyline_pipeline(options)
                 self._worklist(
@@ -90,7 +121,9 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 f"created engine operations fixture code={options['code']} "
-                f"diann_files={len(options['diann_file'])} skyline_files={len(options['skyline_file'])}"
+                f"diann_files={len(options['diann_file'])} "
+                f"fragpipe_files={len(options['fragpipe_file'])} "
+                f"skyline_files={len(options['skyline_file'])}"
             )
         )
 
@@ -167,13 +200,20 @@ class Command(BaseCommand):
             "required_engine": "diann",
             "executable": options["diann_executable"],
             "software_version": options["diann_version"],
-            "version_command": [options["diann_executable"], "--version"],
+            "version_command": [options["diann_executable"]],
             "report": "diann-report.tsv",
         }
+        if options["diann_settings_key"]:
+            parameters["settings_ref"] = options["diann_settings_key"]
         if options["diann_fasta"]:
             parameters["fasta"] = options["diann_fasta"]
+        if options["diann_fasta_ref"]:
+            parameters["fasta_ref"] = options["diann_fasta_ref"]
         if options["diann_library"]:
             parameters["library"] = options["diann_library"]
+        if options["diann_library_ref"]:
+            parameters["library_ref"] = options["diann_library_ref"]
+        parameters = resolve_pipeline_parameters(parameters, engine="diann")
         pipeline, _created = ProcessingPipeline.objects.update_or_create(
             name="Real DIA-NN",
             version=options["diann_version"],
@@ -181,22 +221,59 @@ class Command(BaseCommand):
         )
         return pipeline
 
+    def _fragpipe_pipeline(self, options):
+        parameters = {
+            "adapter": "fragpipe",
+            "required_engine": "fragpipe",
+            "executable": options["fragpipe_executable"],
+            "software_version": options["fragpipe_version"],
+            "version_command": [options["fragpipe_executable"], "--version"],
+        }
+        if options["fragpipe_settings_key"]:
+            parameters["settings_ref"] = options["fragpipe_settings_key"]
+        if options["fragpipe_workflow"]:
+            parameters["workflow"] = options["fragpipe_workflow"]
+        if options["fragpipe_workflow_ref"]:
+            parameters["workflow_ref"] = options["fragpipe_workflow_ref"]
+        if options["fragpipe_fasta"]:
+            parameters["fasta"] = options["fragpipe_fasta"]
+        if options["fragpipe_fasta_ref"]:
+            parameters["fasta_ref"] = options["fragpipe_fasta_ref"]
+        if options["fragpipe_threads"]:
+            parameters["threads"] = options["fragpipe_threads"]
+        if options["fragpipe_ram_gb"]:
+            parameters["ram_gb"] = options["fragpipe_ram_gb"]
+        parameters = resolve_pipeline_parameters(parameters, engine="fragpipe")
+        pipeline, _created = ProcessingPipeline.objects.update_or_create(
+            name="Real FragPipe",
+            version=options["fragpipe_version"],
+            defaults={"container_image": "site-managed-fragpipe", "parameters": parameters},
+        )
+        return pipeline
+
     def _skyline_pipeline(self, options):
+        parameters = {
+            "adapter": "skyline",
+            "required_engine": "skyline",
+            "executable": options["skyline_executable"],
+            "software_version": options["skyline_version"],
+            "version_command": [options["skyline_executable"], "--version"],
+            "report": "skyline-report.csv",
+            "report_name": options["skyline_report_name"],
+        }
+        if options["skyline_settings_key"]:
+            parameters["settings_ref"] = options["skyline_settings_key"]
+        if options["skyline_document"]:
+            parameters["document"] = options["skyline_document"]
+        if options["skyline_document_ref"]:
+            parameters["document_ref"] = options["skyline_document_ref"]
+        parameters = resolve_pipeline_parameters(parameters, engine="skyline")
         pipeline, _created = ProcessingPipeline.objects.update_or_create(
             name="Real Skyline",
             version=options["skyline_version"],
             defaults={
                 "container_image": "site-managed-skyline",
-                "parameters": {
-                    "adapter": "skyline",
-                    "required_engine": "skyline",
-                    "executable": options["skyline_executable"],
-                    "software_version": options["skyline_version"],
-                    "version_command": [options["skyline_executable"], "--version"],
-                    "document": options["skyline_document"],
-                    "report": "skyline-report.csv",
-                    "report_name": options["skyline_report_name"],
-                },
+                "parameters": parameters,
             },
         )
         return pipeline

@@ -7,9 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 DEFAULT_VERSION_ARGS = {
-    "diann": ["--version"],
+    "diann": None,
     "fragpipe": ["--version"],
     "skyline": ["--version"],
     "skylinecmd": ["--version"],
@@ -63,7 +62,11 @@ def write_runtime_manifest(path: Path, metadata: dict) -> None:
 def version_command_for(executable: str) -> list[str]:
     name = Path(executable).name.lower()
     stem = Path(name).stem
-    args = DEFAULT_VERSION_ARGS.get(name) or DEFAULT_VERSION_ARGS.get(stem)
+    args = DEFAULT_VERSION_ARGS.get(name)
+    if name not in DEFAULT_VERSION_ARGS:
+        args = DEFAULT_VERSION_ARGS.get(stem)
+    if args is None and (name in DEFAULT_VERSION_ARGS or stem in DEFAULT_VERSION_ARGS):
+        return [executable]
     if not args:
         return []
     return [executable, *args]
@@ -108,6 +111,9 @@ def selected_environment(env: dict[str, str]) -> dict:
         "PROCESSOR_SHARED_STORAGE_ROOT",
         "RAW_FILE_STORAGE_ROOT",
         "RESULTS_ROOT",
+        "MSCONNECT_PROCESSOR_ENGINE",
+        "MSCONNECT_PROCESSOR_ENGINE_VERSION",
+        "MSCONNECT_PROCESSOR_ENGINE_PROFILE",
         "TEMP",
         "TMP",
         "TMPDIR",

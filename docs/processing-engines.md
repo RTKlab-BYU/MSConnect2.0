@@ -21,7 +21,7 @@ For best replication, pipeline definitions should set a pinned `software_version
 ```json
 {
   "software_version": "DIA-NN 1.9.2 site build 2026-07",
-  "version_command": ["diann", "--version"]
+  "version_command": ["diann"]
 }
 ```
 
@@ -87,11 +87,165 @@ python manage.py agent_healthcheck --role processor
 
 ## Runner Images
 
-- `processor-diann`: DIA-NN worker. Build with `DIANN_LINUX_URL` pointing at the site-approved Linux DIA-NN archive.
-- `processor-fragpipe`: FragPipe worker. Build with `FRAGPIPE_URL` pointing at the site-approved FragPipe archive.
+- `processor-diann`: DIA-NN worker. Build one private-registry image per site-approved DIA-NN version, with `DIANN_LINUX_URL` pointing at the approved Linux DIA-NN archive. For a Linux Docker worker, use the Linux ZIP, not the Windows MSI.
+- `processor-fragpipe`: FragPipe worker. Build one private-registry image per site-approved FragPipe version, with `FRAGPIPE_URL` pointing at the approved FragPipe archive.
 - `processor-pwiz`: ProteoWizard conversion worker. This image derives from the ProteoWizard/Skyline vendor-license-acceptance container and exposes `msconvert`.
-- `SkylineCmd`: can run as a Windows processor or a site-approved Wine/container runner. Use the `skyline` adapter.
+- `SkylineCmd`: can run as a Windows processor or a site-approved Wine/container runner. Build or point to a site-approved image and use the `skyline` adapter.
 - Enterprise tools such as Proteome Discoverer and Spectronaut should run as external licensed Windows workers. Configure their pipelines with `adapter` set to `proteome-discoverer`, `spectronaut`, or `enterprise-handoff` plus a site-specific `command` array.
+
+MSConnect does not redistribute vendor binaries or licenses. The recommended operating model is:
+
+1. Obtain and approve vendor installers or archives according to site policy.
+2. Build engine worker images locally or in CI.
+3. Push approved images to a private registry with immutable version tags and, where possible, deploy by digest.
+4. Register each engine profile in `PROCESSOR_SHARED_STORAGE_ROOT/config/processor-registry.json`.
+5. Create pipelines that target a specific engine profile/version.
+
+Example DIA-NN 2.0 image build and registration:
+
+```sh
+docker build \
+  -f docker/processor/diann.Dockerfile \
+  --build-arg DIANN_VERSION=2.0 \
+  --build-arg DIANN_LINUX_URL=https://github.com/vdemichev/DiaNN/releases/download/2.0/DIA-NN-2.0-Academia-Linux.zip \
+  -t registry.example.org/msconnect/processor-diann:2.0 .
+
+docker run --rm registry.example.org/msconnect/processor-diann:2.0 diann
+
+docker push registry.example.org/msconnect/processor-diann:2.0
+
+python manage.py processor_registry add-engine \
+  --engine diann \
+  --version 2.0 \
+  --install-type image \
+  --image registry.example.org/msconnect/processor-diann:2.0 \
+  --executable diann \
+  --version-command-json '["diann"]' \
+  --license-note "Site-approved DIA-NN academic installation"
+```
+
+The public DIA-NN release assets are academic-use binaries under the DIA-NN license. In regulated or multi-user environments, mirror the approved ZIP into internal artifact storage and replace `DIANN_LINUX_URL` with that internal URL before building.
+
+Example FragPipe image profile:
+
+```sh
+python manage.py processor_registry add-engine \
+  --engine fragpipe \
+  --version 23.0 \
+  --install-type image \
+  --image registry.example.org/msconnect/processor-fragpipe:23.0 \
+  --executable fragpipe
+```
+
+Example Skyline 26.1 image build and PRTC registration:
+
+```sh
+docker build \
+  -f docker/processor/skyline.Dockerfile \
+  --build-arg SKYLINE_BASE_IMAGE=proteowizard/pwiz-skyline-i-agree-to-the-vendor-licenses:skyline_26.1.0.057-c07debd \
+  -t registry.example.org/msconnect/processor-skyline:26.1 .
+
+docker run --rm registry.example.org/msconnect/processor-skyline:26.1 SkylineCmd --help
+
+docker push registry.example.org/msconnect/processor-skyline:26.1
+
+python manage.py processor_registry add-engine \
+  --engine skyline \
+  --version 26.1.0 \
+  --install-type image \
+  --image registry.example.org/msconnect/processor-skyline:26.1 \
+  --executable SkylineCmd \
+  --version-command-json '["SkylineCmd", "--version"]' \
+  --license-note "Site-approved ProteoWizard/Skyline vendor-license container"
+
+python manage.py processor_registry add-reference \
+  --kind skyline_document \
+  --key prtc-15 \
+  --path /data/shared/skyline/prtc-15.sky
+```
+
+Register PRTC Skyline settings with the lab-approved 15 peptide definitions. Use `docs/skyline-prtc-15-settings.example.json` as the starting template:
+
+```json
+{
+  "document_ref": "prtc-15",
+  "report_name": "PRTC Results",
+  "report": "skyline-prtc-report.csv",
+  "report_format": "csv",
+  "report_invariant": true,
+  "report_conflict_resolution": "overwrite",
+  "postprocess": "skyline_prtc",
+  "result_files": {
+    "peptide_table": "skyline-prtc-peptides.csv",
+    "stats_json": "skyline-prtc-stats.json"
+  },
+  "expected_peptides": [
+    {"sequence": "PRTC01", "charge": 2},
+    {"sequence": "PRTC02", "charge": 2}
+  ]
+}
+```
+
+Then create the PRTC pipeline and configure upload-time routing:
+
+```sh
+python manage.py processor_registry add-settings \
+  --engine skyline \
+  --key prtc-15 \
+  --json-file /data/shared/settings/skyline/prtc-15.json
+
+python manage.py processor_registry create-pipeline \
+  --engine skyline \
+  --version "Skyline PRTC 26.1" \
+  --engine-version 26.1.0 \
+  --settings-key prtc-15 \
+  --name "Skyline PRTC"
+
+MSCONNECT_PRTC_SKYLINE_PIPELINE_ID=<created pipeline id>
+```
+
+Example external enterprise profiles:
+
+```sh
+python manage.py processor_registry add-engine \
+  --engine proteome-discoverer \
+  --version 3.1 \
+  --install-type external \
+  --executable "C:\\Program Files\\Thermo\\Proteome Discoverer 3.1\\ProteomeDiscoverer.exe"
+
+python manage.py processor_registry add-engine \
+  --engine spectronaut \
+  --version site-current \
+  --install-type external \
+  --executable "C:\\Program Files\\Biognosys\\Spectronaut\\Spectronaut.exe"
+```
+
+Register shared settings and create a version-pinned pipeline:
+
+```sh
+python manage.py processor_registry add-settings \
+  --engine diann \
+  --key plasma-standard \
+  --json-file /data/shared/settings/diann/plasma-standard.json
+
+python manage.py processor_registry create-pipeline \
+  --engine diann \
+  --version "DIA-NN plasma 2.0" \
+  --engine-version 2.0 \
+  --settings-key plasma-standard
+```
+
+Start workers with matching engine profile metadata:
+
+```sh
+MSCONNECT_PROCESSOR_ENGINE=diann \
+MSCONNECT_PROCESSOR_ENGINE_VERSION=2.0 \
+MSCONNECT_PROCESSOR_ENGINE_PROFILE=diann:2.0 \
+MSCONNECT_IMAGE=registry.example.org/msconnect/processor-diann:2.0 \
+python manage.py run_processor_agent --engine diann
+```
+
+For Compose deployments, use `compose.engines.example.yml` as a template for one service per engine version of interest.
 
 On Windows machines, run the same Django management command from a Python environment that can reach the MSConnect API and shared storage:
 
@@ -109,13 +263,33 @@ Example builds:
 
 ```sh
 docker compose --profile engines build processor-diann processor-fragpipe
+docker compose --profile engines build processor-skyline
 docker compose --profile conversion build processor-pwiz
+```
+
+For a local DIA-NN 2.0 Compose build, set:
+
+```sh
+MSCONNECT_DIANN_IMAGE=msconnect-processor-diann:2.0
+DIANN_ENGINE_VERSION=2.0
+DIANN_ENGINE_PROFILE=diann:2.0
+DIANN_LINUX_URL=https://github.com/vdemichev/DiaNN/releases/download/2.0/DIA-NN-2.0-Academia-Linux.zip
+```
+
+For a local Skyline 26.1 Compose build, set:
+
+```sh
+SKYLINE_BASE_IMAGE=proteowizard/pwiz-skyline-i-agree-to-the-vendor-licenses:skyline_26.1.0.057-c07debd
+MSCONNECT_SKYLINE_IMAGE=msconnect-processor-skyline:26.1
+SKYLINE_ENGINE_VERSION=26.1.0
+SKYLINE_ENGINE_PROFILE=skyline:26.1.0
+MSCONNECT_PRTC_SKYLINE_PIPELINE_ID=<created pipeline id>
 ```
 
 Example runtime:
 
 ```sh
-docker compose --profile engines --profile conversion up -d web watcher processor processor-diann processor-fragpipe processor-pwiz nginx
+docker compose --profile engines --profile conversion up -d web watcher processor-diann processor-skyline processor-fragpipe processor-pwiz nginx
 ```
 
 ## Pipeline Adapter Parameters

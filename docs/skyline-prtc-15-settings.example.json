@@ -1,0 +1,34 @@
+{
+  "document_ref": "prtc-15",
+  "report": "skyline-prtc-report.csv",
+  "report_name": "PRTC Results",
+  "report_format": "csv",
+  "report_invariant": true,
+  "report_conflict_resolution": "overwrite",
+  "postprocess": "skyline_prtc",
+  "result_files": {
+    "peptide_table": "skyline-prtc-peptides.csv",
+    "stats_json": "skyline-prtc-stats.json"
+  },
+  "prtc": {
+    "rt_tolerance_seconds": 60,
+    "min_area": 0
+  },
+  "expected_peptides": [
+    {"sequence": "PRTC01", "charge": 2},
+    {"sequence": "PRTC02", "charge": 2},
+    {"sequence": "PRTC03", "charge": 2},
+    {"sequence": "PRTC04", "charge": 2},
+    {"sequence": "PRTC05", "charge": 2},
+    {"sequence": "PRTC06", "charge": 2},
+    {"sequence": "PRTC07", "charge": 2},
+    {"sequence": "PRTC08", "charge": 2},
+    {"sequence": "PRTC09", "charge": 2},
+    {"sequence": "PRTC10", "charge": 2},
+    {"sequence": "PRTC11", "charge": 2},
+    {"sequence": "PRTC12", "charge": 2},
+    {"sequence": "PRTC13", "charge": 2},
+    {"sequence": "PRTC14", "charge": 2},
+    {"sequence": "PRTC15", "charge": 2}
+  ]
+}
