@@ -47,6 +47,7 @@ class Command(BaseCommand):
 
     project_code = "COHORT-DIA-100"
     legacy_project_codes = ("HYE-DIA-DEMO",)
+    demo_password = "DemoPass-2026!"
 
     def add_arguments(self, parser):
         parser.add_argument("--write-job-results", nargs=2, metavar=("JOB_ID", "RESULTS_DIR"))
@@ -88,18 +89,25 @@ class Command(BaseCommand):
 
     def _seed(self):
         User = get_user_model()
-        admin_user, _ = User.objects.get_or_create(
+        legacy_admin_user, _ = User.objects.get_or_create(
             username="parkerreyes",
             defaults={"is_staff": True, "is_superuser": True, "email": "parkerreyes@example.test"},
         )
-        if not admin_user.is_staff or not admin_user.is_superuser:
-            admin_user.is_staff = True
-            admin_user.is_superuser = True
-            admin_user.save(update_fields=["is_staff", "is_superuser"])
-        UserProfile.objects.get_or_create(user=admin_user, defaults={"global_role": UserRole.ADMIN})
+        if not legacy_admin_user.is_staff or not legacy_admin_user.is_superuser:
+            legacy_admin_user.is_staff = True
+            legacy_admin_user.is_superuser = True
+            legacy_admin_user.save(update_fields=["is_staff", "is_superuser"])
+        UserProfile.objects.get_or_create(user=legacy_admin_user, defaults={"global_role": UserRole.ADMIN})
+
+        admin_user, _ = User.objects.get_or_create(username="demo-admin", defaults={"email": "demo-admin@example.test"})
+        admin_user.set_password(self.demo_password)
+        admin_user.is_staff = True
+        admin_user.is_superuser = True
+        admin_user.save(update_fields=["password", "is_staff", "is_superuser"])
+        UserProfile.objects.update_or_create(user=admin_user, defaults={"global_role": UserRole.ADMIN})
 
         pi_user, _ = User.objects.get_or_create(username="demo-pi", defaults={"email": "demo-pi@example.test"})
-        pi_user.set_password("DemoPass-2026!")
+        pi_user.set_password(self.demo_password)
         pi_user.save(update_fields=["password"])
         UserProfile.objects.update_or_create(user=pi_user, defaults={"global_role": UserRole.PI})
 
@@ -107,9 +115,17 @@ class Command(BaseCommand):
             username="demo-researcher",
             defaults={"email": "demo-researcher@example.test"},
         )
-        researcher.set_password("DemoPass-2026!")
+        researcher.set_password(self.demo_password)
         researcher.save(update_fields=["password"])
         UserProfile.objects.update_or_create(user=researcher, defaults={"global_role": UserRole.RESEARCHER})
+
+        collaborator, _ = User.objects.get_or_create(
+            username="demo-collaborator",
+            defaults={"email": "demo-collaborator@example.test"},
+        )
+        collaborator.set_password(self.demo_password)
+        collaborator.save(update_fields=["password"])
+        UserProfile.objects.update_or_create(user=collaborator, defaults={"global_role": UserRole.COLLABORATOR})
 
         university, _ = University.objects.get_or_create(
             name="Demo University",
@@ -129,7 +145,12 @@ class Command(BaseCommand):
             lab.pi = pi_user
             lab.save(update_fields=["pi"])
 
-        for user, role in ((admin_user, UserRole.ADMIN), (pi_user, UserRole.PI), (researcher, UserRole.RESEARCHER)):
+        for user, role in (
+            (admin_user, UserRole.ADMIN),
+            (pi_user, UserRole.PI),
+            (researcher, UserRole.RESEARCHER),
+            (collaborator, UserRole.COLLABORATOR),
+        ):
             LabMembership.objects.update_or_create(user=user, lab=lab, defaults={"role": role, "active": True})
 
         lc, _ = Instrument.objects.get_or_create(

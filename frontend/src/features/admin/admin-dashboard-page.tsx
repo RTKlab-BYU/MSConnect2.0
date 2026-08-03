@@ -28,6 +28,7 @@ import {
   fetchProcessingPipelines,
   fetchProjects,
   fetchRawFilesOverview,
+  fetchSystemHealth,
   queryKeys,
 } from "@/lib/api/queries";
 import type { ProcessingNode } from "@/lib/api/types";
@@ -195,6 +196,11 @@ export default function AdminDashboardPage() {
     queryFn: () => fetchProcessingNodes({ page: 1, page_size: 500 }),
     refetchInterval: 10_000,
   });
+  const systemHealthQuery = useQuery({
+    queryKey: queryKeys.systemHealth(),
+    queryFn: fetchSystemHealth,
+    refetchInterval: 10_000,
+  });
   const nodesOverviewQuery = useQuery({
     queryKey: queryKeys.processingNodesOverview(),
     queryFn: () => fetchProcessingNodesOverview(),
@@ -209,10 +215,13 @@ export default function AdminDashboardPage() {
     queryFn: () => fetchAcquisitions({ page: 1, page_size: 1 }),
   });
   const nodes = nodesQuery.data?.results ?? [];
+  const systemHealth = systemHealthQuery.data;
   const redNodes = nodes.filter((node) => node.health === "red").length;
   const yellowNodes = nodes.filter((node) => node.health === "yellow").length;
   const engineRows = summarizeEngines(nodes);
-  const systemStatus = redNodes || (jobsQuery.data?.failed ?? 0) > 0 ? "failed" : yellowNodes ? "warning" : "complete";
+  const systemStatus = systemHealth?.status ?? (redNodes || (jobsQuery.data?.failed ?? 0) > 0 ? "red" : yellowNodes ? "yellow" : "green");
+  const healthAlerts = systemHealth?.alerts ?? [];
+  const readinessEntries = Object.entries((systemHealth?.readiness ?? {}) as Record<string, ReadinessEntry>);
 
   return (
     <div className="grid gap-4">
@@ -224,7 +233,7 @@ export default function AdminDashboardPage() {
         description="System-wide operations across projects, raw storage, processing, QC, uploads, agent health, and Django records."
         actions={
           <>
-            <StatusBadge status={systemStatus} />
+            <StatusBadge status={healthBadgeStatus(systemStatus)} />
             <Button asChild variant="secondary">
               <Link to="/processing/admin">
                 <Server className="h-4 w-4" />
@@ -240,6 +249,62 @@ export default function AdminDashboardPage() {
           </>
         }
       />
+
+      <Card className={systemStatus === "red" ? "border-destructive/40 bg-destructive/10" : systemStatus === "yellow" ? "border-amber-300 bg-amber-50/70" : ""}>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <CardTitle>System warnings</CardTitle>
+              <CardDescription>Persistent health checks for Django, storage, watcher nodes, processor nodes, and backlog pressure.</CardDescription>
+            </div>
+            <StatusBadge status={healthBadgeStatus(systemStatus)} />
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
+          <div className="grid gap-3">
+            {healthAlerts.length ? (
+              healthAlerts.map((alert) => (
+                <div key={alert.code} className="flex flex-wrap items-start justify-between gap-3 rounded-xl border bg-background/70 px-4 py-3">
+                  <div className="grid gap-1">
+                    <div className="flex items-center gap-2 font-bold">
+                      <StatusBadge status={alertStatus(alert.severity)} />
+                      {alert.title}
+                    </div>
+                    <div className="text-sm text-muted-foreground">{alert.detail}</div>
+                  </div>
+                  {alert.route ? (
+                    <Button asChild size="sm" variant="secondary">
+                      <Link to={alert.route}>Open</Link>
+                    </Button>
+                  ) : null}
+                </div>
+              ))
+            ) : (
+              <div className="rounded-xl border bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+                No health warnings. Connected nodes, job queues, and storage checks are currently green.
+              </div>
+            )}
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              <MiniHealthStat label="Connected nodes" value={systemHealth?.nodes.connected ?? 0} detail={`${systemHealth?.nodes.total ?? 0} total`} />
+              <MiniHealthStat label="Stale nodes" value={systemHealth?.nodes.stale ?? 0} detail="heartbeat timeout" />
+              <MiniHealthStat label="Downed nodes" value={systemHealth?.nodes.offline ?? 0} detail="offline containers" />
+              <MiniHealthStat label="Active jobs" value={systemHealth?.jobs.active ?? 0} detail={`${systemHealth?.jobs.failed ?? 0} failed`} />
+            </div>
+          </div>
+
+          <div className="grid gap-2">
+            {readinessEntries.map(([key, value]) => (
+              <div key={key} className="rounded-xl border bg-background/70 px-3 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-bold">{readinessLabel(key, value)}</div>
+                  <StatusBadge status={readinessStatus(value as { ok: boolean })} />
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">{readinessDetail(value)}</div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
 
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
         <MetricCard label="Projects" value={metricValue(projectsQuery.data?.count)} detail="system portfolio" />
@@ -436,4 +501,47 @@ function summarizeEngines(nodes: ProcessingNode[]) {
 
 function metricValue(value?: number) {
   return value === undefined ? "-" : numberFormat.format(value);
+}
+
+function alertStatus(severity: string) {
+  if (severity === "critical") return "failed";
+  if (severity === "warning") return "warning";
+  return "complete";
+}
+
+function readinessStatus(value: ReadinessEntry) {
+  return value.ok ? "complete" : "failed";
+}
+
+function readinessLabel(key: string, value: ReadinessEntry) {
+  return value.label || key.replace(/_/g, " ");
+}
+
+function readinessDetail(value: ReadinessEntry) {
+  if (value.detail) return value.detail;
+  if (value.error) return value.error;
+  if (value.path) return value.path;
+  return "OK";
+}
+
+function healthBadgeStatus(status: "green" | "yellow" | "red") {
+  return status === "red" ? "failed" : status === "yellow" ? "warning" : "complete";
+}
+
+type ReadinessEntry = {
+  ok: boolean;
+  label?: string;
+  detail?: string;
+  error?: string;
+  path?: string;
+};
+
+function MiniHealthStat({ label, value, detail }: { label: string; value: number; detail: string }) {
+  return (
+    <div className="rounded-xl border bg-background/70 px-3 py-3">
+      <div className="text-[11px] font-black uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
+      <div className="mt-2 text-2xl font-black">{metricValue(value)}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{detail}</div>
+    </div>
+  );
 }

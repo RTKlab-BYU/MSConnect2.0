@@ -6,6 +6,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from core.agents.client import AgentApiClient, AgentApiError
+from core.agents.discovery import resolve_api_base_url
 from core.agents.diagnostics import write_heartbeat_marker
 from ingest.services import (
     DEFAULT_RAW_SUFFIXES,
@@ -40,61 +41,66 @@ class Command(BaseCommand):
         if not source.exists():
             raise CommandError(f"Source path does not exist: {source}")
 
-        client = AgentApiClient(base_url=settings.MSCONNECT_API_BASE_URL, token=settings.MSCONNECT_AGENT_TOKEN)
         agent_name = settings.MSCONNECT_AGENT_NAME or socket.gethostname()
         heartbeat_seconds = max(5, int(options["heartbeat_seconds"]))
         suffixes = tuple(options["suffixes"] or DEFAULT_RAW_SUFFIXES)
         last_heartbeat = 0.0
+        client = self._resolve_client(role="watcher")
 
         while True:
-            now = time.monotonic()
-            if now - last_heartbeat >= heartbeat_seconds:
-                self._heartbeat(client, agent_name=agent_name, status="idle")
-                last_heartbeat = now
+            try:
+                now = time.monotonic()
+                if now - last_heartbeat >= heartbeat_seconds:
+                    self._heartbeat(client, agent_name=agent_name, status="idle")
+                    last_heartbeat = now
 
-            candidates = list(discover_raw_paths(source, suffixes=suffixes, recursive=options["recursive"]))
-            for path in candidates:
-                self._heartbeat(client, agent_name=agent_name, status="busy")
-                last_heartbeat = time.monotonic()
-                try:
-                    checksum_sha256, size_bytes = hash_path(path)
-                    destination = build_storage_path(storage, path, checksum_sha256)
-                    copied = ensure_copied_raw_path(path, destination)
-                    response = client.import_raw_file(
-                        {
-                            "source_path": str(path.resolve()),
-                            "storage_path": str(destination.resolve()),
-                            "filename": path.name,
-                            "checksum_sha256": checksum_sha256,
-                            "size_bytes": size_bytes,
-                            "file_role": "sample",
-                            "match_run_by_name": options["match_run_by_name"],
-                            "metadata": {
-                                "importer": "watcher_agent",
-                                "copied": copied,
-                                "filename_metadata": parse_filename_metadata(path),
-                            },
-                        }
-                    )
-                    action = "created" if response["created"] else "reused"
-                    self.stdout.write(f"{action} {path} checksum={checksum_sha256}")
-                except Exception as exc:
-                    failure_payload = {
-                        "source_path": str(path),
-                        "failure_reason": str(exc),
-                        "metadata": {"importer": "watcher_agent"},
-                    }
+                candidates = list(discover_raw_paths(source, suffixes=suffixes, recursive=options["recursive"]))
+                for path in candidates:
+                    self._heartbeat(client, agent_name=agent_name, status="busy")
+                    last_heartbeat = time.monotonic()
                     try:
-                        client.record_ingestion_failure(failure_payload)
-                    except AgentApiError as api_exc:
-                        self.stderr.write(self.style.ERROR(f"failure reporting error for {path}: {api_exc}"))
-                    self.stderr.write(self.style.ERROR(f"failed {path}: {exc}"))
+                        checksum_sha256, size_bytes = hash_path(path)
+                        destination = build_storage_path(storage, path, checksum_sha256)
+                        copied = ensure_copied_raw_path(path, destination)
+                        response = client.import_raw_file(
+                            {
+                                "source_path": str(path.resolve()),
+                                "storage_path": str(destination.resolve()),
+                                "filename": path.name,
+                                "checksum_sha256": checksum_sha256,
+                                "size_bytes": size_bytes,
+                                "file_role": "sample",
+                                "match_run_by_name": options["match_run_by_name"],
+                                "metadata": {
+                                    "importer": "watcher_agent",
+                                    "copied": copied,
+                                    "filename_metadata": parse_filename_metadata(path),
+                                },
+                            }
+                        )
+                        action = "created" if response["created"] else "reused"
+                        self.stdout.write(f"{action} {path} checksum={checksum_sha256}")
+                    except Exception as exc:
+                        failure_payload = {
+                            "source_path": str(path),
+                            "failure_reason": str(exc),
+                            "metadata": {"importer": "watcher_agent"},
+                        }
+                        try:
+                            client.record_ingestion_failure(failure_payload)
+                        except AgentApiError as api_exc:
+                            self.stderr.write(self.style.ERROR(f"failure reporting error for {path}: {api_exc}"))
+                        self.stderr.write(self.style.ERROR(f"failed {path}: {exc}"))
 
-            self._heartbeat(client, agent_name=agent_name, status="idle")
-            last_heartbeat = time.monotonic()
-            if options["once"]:
-                break
-            time.sleep(max(1, int(options["interval"])))
+                self._heartbeat(client, agent_name=agent_name, status="idle")
+                last_heartbeat = time.monotonic()
+                if options["once"]:
+                    break
+                time.sleep(max(1, int(options["interval"])))
+            except AgentApiError as exc:
+                self.stderr.write(self.style.WARNING(f"watcher agent re-discovering Django: {exc}"))
+                client = self._resolve_client(role="watcher")
+                time.sleep(min(10, max(1, int(options["interval"]))))
 
     def _heartbeat(self, client: AgentApiClient, *, agent_name: str, status: str):
         response = client.heartbeat(
@@ -107,3 +113,9 @@ class Command(BaseCommand):
         )
         write_heartbeat_marker(agent_name=agent_name, role="watcher", status=status, node_type="watcher")
         return response
+
+    def _resolve_client(self, *, role: str):
+        base_url = resolve_api_base_url(role=role, token=settings.MSCONNECT_AGENT_TOKEN, configured_base_url=settings.MSCONNECT_API_BASE_URL)
+        if not base_url:
+            raise CommandError("Unable to locate the Django API. Set MSCONNECT_API_BASE_URL or discovery hosts.")
+        return AgentApiClient(base_url=base_url, token=settings.MSCONNECT_AGENT_TOKEN)

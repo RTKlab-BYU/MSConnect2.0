@@ -48,12 +48,9 @@ Log in through Django session auth:
 http://127.0.0.1:8000/accounts/login/
 ```
 
-Demo reviewer account:
+Demo reviewer accounts:
 
-```text
-Username: demo-pi
-Password: DemoPass-2026!
-```
+- [demo-accounts.md](./demo-accounts.md)
 
 Then open:
 

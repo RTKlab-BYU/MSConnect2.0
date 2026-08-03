@@ -10,6 +10,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from core.agents.client import AgentApiClient
+from core.agents.discovery import resolve_api_base_url
 from core.agents.diagnostics import write_heartbeat_marker
 from core.agents.processor import prepare_job_execution
 from core.models import ProcessingNodeStatus
@@ -29,7 +30,6 @@ class Command(BaseCommand):
         if not settings.MSCONNECT_AGENT_TOKEN:
             raise CommandError("MSCONNECT_AGENT_TOKEN must be set for the processor agent.")
 
-        client = AgentApiClient(base_url=settings.MSCONNECT_API_BASE_URL, token=settings.MSCONNECT_AGENT_TOKEN)
         agent_name = settings.MSCONNECT_AGENT_NAME or socket.gethostname()
         node_type = (options["engine"] or "processor").strip()
         results_root = Path(settings.RESULTS_ROOT)
@@ -38,10 +38,75 @@ class Command(BaseCommand):
         last_heartbeat = 0.0
         last_control_id = ""
         control_state = "active"
+        client = self._resolve_client(role="processor")
 
         while True:
-            now = time.monotonic()
-            if now - last_heartbeat >= heartbeat_seconds:
+            try:
+                now = time.monotonic()
+                if now - last_heartbeat >= heartbeat_seconds:
+                    node_payload = self._heartbeat(
+                        client,
+                        agent_name=agent_name,
+                        node_type=node_type,
+                        status=ProcessingNodeStatus.IDLE,
+                        control_state=control_state,
+                    )
+                    last_control_id, control_state, should_exit = self._handle_control(
+                        node_payload,
+                        client=client,
+                        agent_name=agent_name,
+                        node_type=node_type,
+                        status=ProcessingNodeStatus.IDLE,
+                        control_state=control_state,
+                        last_control_id=last_control_id,
+                    )
+                    last_heartbeat = now
+                    if should_exit:
+                        break
+
+                if control_state in {"paused", "draining"}:
+                    if options["once"]:
+                        break
+                    time.sleep(max(1, int(options["poll_interval"])))
+                    continue
+
+                job = client.claim_next_job(node_name=agent_name)
+                if not job:
+                    if options["once"]:
+                        break
+                    time.sleep(max(1, int(options["poll_interval"])))
+                    continue
+
+                self._heartbeat(
+                    client,
+                    agent_name=agent_name,
+                    node_type=node_type,
+                    status=ProcessingNodeStatus.BUSY,
+                    control_state=control_state,
+                )
+                last_heartbeat = time.monotonic()
+
+                try:
+                    execution = prepare_job_execution(job, results_root=results_root)
+                    client.start_job(job["id"], node_name=agent_name)
+                    self._run_job(job, execution, client, agent_name=agent_name)
+                except Exception as exc:
+                    log_path = (results_root / "jobs" / str(job["id"]) / "process.log").resolve()
+                    failure_payload = {
+                        "node_name": agent_name,
+                        "error_message": str(exc),
+                    }
+                    if log_path.exists():
+                        failure_payload["log_path"] = str(log_path)
+                    manifest_path = (results_root / "jobs" / str(job["id"]) / "runtime-manifest.json").resolve()
+                    if manifest_path.exists():
+                        failure_payload["stats"] = {"runtime_manifest_path": str(manifest_path)}
+                    client.fail_job(
+                        job["id"],
+                        failure_payload,
+                    )
+                    self.stderr.write(self.style.ERROR(f"job {job['id']} failed: {exc}"))
+
                 node_payload = self._heartbeat(
                     client,
                     agent_name=agent_name,
@@ -58,72 +123,15 @@ class Command(BaseCommand):
                     control_state=control_state,
                     last_control_id=last_control_id,
                 )
-                last_heartbeat = now
-                if should_exit:
+                last_heartbeat = time.monotonic()
+                if options["once"] or should_exit:
                     break
-
-            if control_state in {"paused", "draining"}:
-                if options["once"]:
-                    break
-                time.sleep(max(1, int(options["poll_interval"])))
-                continue
-
-            job = client.claim_next_job(node_name=agent_name)
-            if not job:
-                if options["once"]:
-                    break
-                time.sleep(max(1, int(options["poll_interval"])))
-                continue
-
-            self._heartbeat(
-                client,
-                agent_name=agent_name,
-                node_type=node_type,
-                status=ProcessingNodeStatus.BUSY,
-                control_state=control_state,
-            )
-            last_heartbeat = time.monotonic()
-
-            try:
-                execution = prepare_job_execution(job, results_root=results_root)
-                client.start_job(job["id"], node_name=agent_name)
-                self._run_job(job, execution, client, agent_name=agent_name)
             except Exception as exc:
-                log_path = (results_root / "jobs" / str(job["id"]) / "process.log").resolve()
-                failure_payload = {
-                    "node_name": agent_name,
-                    "error_message": str(exc),
-                }
-                if log_path.exists():
-                    failure_payload["log_path"] = str(log_path)
-                manifest_path = (results_root / "jobs" / str(job["id"]) / "runtime-manifest.json").resolve()
-                if manifest_path.exists():
-                    failure_payload["stats"] = {"runtime_manifest_path": str(manifest_path)}
-                client.fail_job(
-                    job["id"],
-                    failure_payload,
-                )
-                self.stderr.write(self.style.ERROR(f"job {job['id']} failed: {exc}"))
-
-            node_payload = self._heartbeat(
-                client,
-                agent_name=agent_name,
-                node_type=node_type,
-                status=ProcessingNodeStatus.IDLE,
-                control_state=control_state,
-            )
-            last_control_id, control_state, should_exit = self._handle_control(
-                node_payload,
-                client=client,
-                agent_name=agent_name,
-                node_type=node_type,
-                status=ProcessingNodeStatus.IDLE,
-                control_state=control_state,
-                last_control_id=last_control_id,
-            )
-            last_heartbeat = time.monotonic()
-            if options["once"] or should_exit:
-                break
+                if isinstance(exc, CommandError):
+                    raise
+                self.stderr.write(self.style.WARNING(f"processor agent re-discovering Django: {exc}"))
+                client = self._resolve_client(role="processor")
+                time.sleep(min(10, max(1, int(options["poll_interval"]))))
 
     def _run_job(self, job: dict, execution, client: AgentApiClient, *, agent_name: str):
         execution.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -296,3 +304,9 @@ class Command(BaseCommand):
             return socket.gethostbyname(socket.gethostname())
         except OSError:
             return ""
+
+    def _resolve_client(self, *, role: str):
+        base_url = resolve_api_base_url(role=role, token=settings.MSCONNECT_AGENT_TOKEN, configured_base_url=settings.MSCONNECT_API_BASE_URL)
+        if not base_url:
+            raise CommandError("Unable to locate the Django API. Set MSCONNECT_API_BASE_URL or discovery hosts.")
+        return AgentApiClient(base_url=base_url, token=settings.MSCONNECT_AGENT_TOKEN)

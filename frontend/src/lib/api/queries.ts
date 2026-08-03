@@ -2,9 +2,13 @@ import { getResource, paginatedResource, patchResource, postResource, type ListP
 import type {
   AcquisitionWorklist,
   ChromatogramsResponse,
+  CurrentUser,
   FindingsWorkspaceResponse,
   InstrumentConfiguration,
   Paginated,
+  IntakeMetrics,
+  IntakeMetadata,
+  ProjectIntakeRequest,
   PrepareFindingsWorkspacePayload,
   PrepareFindingsWorkspaceResponse,
   PreAcquisitionSetupPayload,
@@ -27,6 +31,7 @@ import type {
   Run,
   RunSummary,
   Sample,
+  SystemHealthSnapshot,
   SpectraResponse,
   SpectrumDetailResponse,
   WorklistImportPayload,
@@ -39,6 +44,7 @@ export const queryKeys = {
   projectSummary: (id: number) => ["project", id, "summary"] as const,
   projectResearcherStatus: (id: number) => ["project", id, "researcher-status"] as const,
   findingsWorkspace: (id: number) => ["project", id, "findings-workspace"] as const,
+  currentUser: () => ["current-user"] as const,
   rawFiles: (params: ListParams) => ["raw-files", params] as const,
   rawFilesOverview: (params?: ListParams) => ["raw-files", "overview", params] as const,
   rawFileDerivatives: (params?: ListParams) => ["raw-file-derivatives", params] as const,
@@ -51,13 +57,31 @@ export const queryKeys = {
   processingNodesOverview: (params?: ListParams) => ["processing-nodes", "overview", params] as const,
   processingPipelines: (params?: ListParams) => ["processing-pipelines", params] as const,
   instrumentConfigurations: (params?: ListParams) => ["instrument-configurations", params] as const,
+  systemHealth: () => ["system-health"] as const,
   samples: (params: ListParams) => ["samples", params] as const,
   runs: (params: ListParams) => ["runs", params] as const,
   runSummary: (id: number) => ["runs", id, "summary"] as const,
   acquisitions: (params: ListParams) => ["acquisition-worklists", params] as const,
   qcOverview: (params?: ListParams) => ["qc", "overview", params] as const,
   qcDetails: (params?: ListParams) => ["qc", "details", params] as const,
+  intakeRequests: (params?: ListParams) => ["intake-requests", params] as const,
+  intakeMetrics: () => ["intake-requests", "metrics"] as const,
 };
+
+export function fetchCurrentUser(): Promise<CurrentUser> {
+  return getResource<CurrentUser>("/auth/me/");
+}
+
+export function signupAccount(payload: {
+  username: string;
+  email: string;
+  password: string;
+  lab_name?: string;
+  institution_name?: string;
+  membership_role?: "collaborator" | "pi";
+}): Promise<{ user: CurrentUser; verification: { token: string; verify_url: string }; lab_id: number; lab_code: string }> {
+  return postResource("/auth/signup/", payload);
+}
 
 export function fetchProjects(params?: ListParams): Promise<Paginated<Project>> {
   return paginatedResource<Project>("/projects/", { ordering: "code", ...params });
@@ -73,6 +97,49 @@ export function fetchProjectSummary(id: number): Promise<ProjectSummary> {
 
 export function fetchProjectResearcherStatus(id: number): Promise<ProjectResearcherStatus> {
   return getResource<ProjectResearcherStatus>(`/projects/${id}/researcher-status/`);
+}
+
+export function fetchIntakeRequests(params?: ListParams): Promise<Paginated<ProjectIntakeRequest>> {
+  return paginatedResource<ProjectIntakeRequest>("/intake-requests/", { ordering: "-updated_at", ...params });
+}
+
+export function fetchIntakeRequest(id: number): Promise<ProjectIntakeRequest> {
+  return getResource<ProjectIntakeRequest>(`/intake-requests/${id}/`);
+}
+
+export type IntakeRequestCreatePayload = {
+  lab: number;
+  requested_title: string;
+  requested_code: string;
+  objective: string;
+  sample_count_estimate: number;
+  acquisition_deadline: string | null;
+  institution_name: string;
+  contact_name: string;
+  contact_email: string;
+  invoice_email: string;
+  organism: string;
+  matrix: string;
+  plate_format: "96" | "384";
+  shipping_notes: string;
+  hazards_notes: string;
+  metadata: IntakeMetadata;
+};
+
+export function createIntakeRequest(payload: IntakeRequestCreatePayload) {
+  return postResource<ProjectIntakeRequest>("/intake-requests/", payload);
+}
+
+export function reviewIntakeRequest(id: number, payload: { status: ProjectIntakeRequest["status"]; review_note?: string }) {
+  return postResource<ProjectIntakeRequest>(`/intake-requests/${id}/review/`, payload);
+}
+
+export function promoteIntakeRequest(id: number) {
+  return postResource<{ intake_request: ProjectIntakeRequest; project_id: number; project_code: string }>(`/intake-requests/${id}/promote/`, {});
+}
+
+export function fetchIntakeMetrics() {
+  return getResource<IntakeMetrics>("/intake-requests/metrics/");
 }
 
 export function fetchFindingsWorkspace(projectId: number): Promise<FindingsWorkspaceResponse> {
@@ -163,6 +230,10 @@ export function fetchProcessingNodesOverview(params?: ListParams): Promise<Proce
     if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
   });
   return getResource<ProcessingNodeOverview>(`/processing-nodes/overview/${query.toString() ? `?${query}` : ""}`);
+}
+
+export function fetchSystemHealth(): Promise<SystemHealthSnapshot> {
+  return getResource<SystemHealthSnapshot>("/system-health/");
 }
 
 export function controlProcessingNode(id: number, payload: { command: "pause" | "resume" | "drain" | "restart" | "stop"; reason?: string }): Promise<ProcessingNode> {

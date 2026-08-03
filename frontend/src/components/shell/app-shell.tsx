@@ -1,22 +1,45 @@
+import { useQuery } from "@tanstack/react-query";
 import { FlaskConical, LayoutDashboard, Moon, Search, ShieldAlert, Sun } from "lucide-react";
 import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { CommandPalette } from "@/components/shell/command-palette";
+import { fetchCurrentUser, queryKeys } from "@/lib/api/queries";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/store/ui-store";
 
-const navItems = [
+const collaboratorNavItems = [
+  { to: "/projects", label: "Projects", icon: FlaskConical },
+  { to: "/submissions", label: "Submissions", icon: LayoutDashboard },
+  { to: "/uploads", label: "Uploads", icon: Search },
+  { to: "/monitoring", label: "Status", icon: ShieldAlert },
+];
+
+const operatorNavItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/projects", label: "Projects", icon: FlaskConical },
+  { to: "/intake", label: "Intake", icon: ShieldAlert },
   { to: "/admin", label: "Admin", icon: ShieldAlert },
+  { to: "/processing", label: "Processing", icon: Search },
+  { to: "/monitoring", label: "Monitoring", icon: Search },
 ];
 
 export function AppShell() {
   const theme = useUiStore((state) => state.theme);
   const setTheme = useUiStore((state) => state.setTheme);
   const setCommandOpen = useUiStore((state) => state.setCommandOpen);
+  const currentUserQuery = useQuery({
+    queryKey: queryKeys.currentUser(),
+    queryFn: fetchCurrentUser,
+  });
+  const currentUser = currentUserQuery.data;
+  const navItems =
+    currentUser?.global_role === "collaborator"
+      ? collaboratorNavItems
+      : currentUser?.global_role === "researcher"
+        ? collaboratorNavItems
+        : operatorNavItems;
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -53,6 +76,11 @@ export function AppShell() {
               </NavLink>
             ))}
           </nav>
+          {currentUser?.email_verified_at ? null : (
+            <div className="hidden rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-950 md:block">
+              Email verification pending
+            </div>
+          )}
           <Button variant="secondary" className="ml-auto hidden min-w-[240px] justify-start rounded-md text-muted-foreground sm:flex" onClick={() => setCommandOpen(true)}>
             <Search className="h-4 w-4" />
             Search projects

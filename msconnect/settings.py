@@ -36,7 +36,7 @@ def discover_capability_apps() -> list[str]:
     return apps
 
 
-ALLOWED_HOSTS = env_csv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1")
+ALLOWED_HOSTS = env_csv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,testserver")
 
 CSRF_TRUSTED_ORIGINS = env_csv(
     "DJANGO_CSRF_TRUSTED_ORIGINS",
@@ -96,15 +96,29 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "msconnect.wsgi.application"
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": os.environ.get("SQLITE_PATH", str(BASE_DIR / "db.sqlite3")),
-        "OPTIONS": {
-            "timeout": int(os.environ.get("SQLITE_TIMEOUT_SECONDS", "20")),
-        },
+_db_engine = os.environ.get("DJANGO_DB_ENGINE", "django.db.backends.sqlite3")
+if _db_engine == "django.db.backends.postgresql":
+    DATABASES = {
+        "default": {
+            "ENGINE": _db_engine,
+            "NAME": os.environ.get("DJANGO_DB_NAME", "msconnect"),
+            "USER": os.environ.get("DJANGO_DB_USER", "msconnect"),
+            "PASSWORD": os.environ.get("DJANGO_DB_PASSWORD", ""),
+            "HOST": os.environ.get("DJANGO_DB_HOST", "localhost"),
+            "PORT": os.environ.get("DJANGO_DB_PORT", "5432"),
+            "OPTIONS": {"sslmode": os.environ.get("DJANGO_DB_SSLMODE", "prefer")},
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": _db_engine,
+            "NAME": os.environ.get("SQLITE_PATH", os.environ.get("DJANGO_DB_NAME", str(BASE_DIR / "db.sqlite3"))),
+            "OPTIONS": {
+                "timeout": int(os.environ.get("SQLITE_TIMEOUT_SECONDS", "20")),
+            },
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -134,6 +148,7 @@ MSCONNECT_STORAGE_WARN_PERCENT = int(os.environ.get("MSCONNECT_STORAGE_WARN_PERC
 MSCONNECT_STORAGE_BLOCK_PERCENT = int(os.environ.get("MSCONNECT_STORAGE_BLOCK_PERCENT", "95"))
 OBJECT_STORAGE_UPLOAD_BASE_URL = os.environ.get("OBJECT_STORAGE_UPLOAD_BASE_URL", "https://object-storage.invalid/msconnect")
 OBJECT_STORAGE_SIGNED_URL_TTL_SECONDS = int(os.environ.get("OBJECT_STORAGE_SIGNED_URL_TTL_SECONDS", "3600"))
+MSCONNECT_DEFAULT_FACILITY_SLUG = os.environ.get("MSCONNECT_DEFAULT_FACILITY_SLUG", "")
 
 MSCONNECT_WATCHER_TOKEN = os.environ.get("MSCONNECT_WATCHER_TOKEN", "")
 MSCONNECT_PROCESSOR_TOKEN = os.environ.get("MSCONNECT_PROCESSOR_TOKEN", "")
@@ -145,6 +160,8 @@ MSCONNECT_AGENT_HEALTH_DIR = os.environ.get("MSCONNECT_AGENT_HEALTH_DIR", str(BA
 MSCONNECT_PROCESSOR_ENGINE = os.environ.get("MSCONNECT_PROCESSOR_ENGINE", "processor")
 MSCONNECT_PROCESSOR_ENGINE_VERSION = os.environ.get("MSCONNECT_PROCESSOR_ENGINE_VERSION", "")
 MSCONNECT_PROCESSOR_ENGINE_PROFILE = os.environ.get("MSCONNECT_PROCESSOR_ENGINE_PROFILE", "")
+MSCONNECT_API_DISCOVERY_BASE_URLS = env_csv("MSCONNECT_API_DISCOVERY_BASE_URLS")
+MSCONNECT_API_DISCOVERY_HOSTS = env_csv("MSCONNECT_API_DISCOVERY_HOSTS", "web,server,msconnect-web,django,msconnect")
 WATCHER_INTERVAL_SECONDS = int(os.environ.get("WATCHER_INTERVAL_SECONDS", "60"))
 PROCESSOR_POLL_INTERVAL_SECONDS = int(os.environ.get("PROCESSOR_POLL_INTERVAL_SECONDS", "15"))
 MSCONNECT_IMAGE = os.environ.get("MSCONNECT_IMAGE", "msconnect:local")

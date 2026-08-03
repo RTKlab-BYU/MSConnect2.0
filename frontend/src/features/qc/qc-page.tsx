@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { MetricCard, PageHero } from "@/components/layout/page-section";
+import { MachineTrendChart } from "@/components/data/machine-trend-chart";
 import { SummaryChart } from "@/components/data/summary-chart";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
@@ -64,6 +65,8 @@ export default function QcPage() {
   const details = detailsQuery.data;
   const pairStatusData = (overview?.pair_status_counts ?? []).map((row) => ({ label: row.status, count: row.count }));
   const prtcRuns = details?.runs ?? [];
+  const machineSummaries = details?.machine_summaries ?? [];
+  const machineSeries = details?.machine_series ?? [];
   const passThreshold = details ? Math.round(details.thresholds.pass_relative_error * 100) : 20;
   const warningThreshold = details ? Math.round(details.thresholds.warning_relative_error * 100) : 50;
 
@@ -181,6 +184,19 @@ export default function QcPage() {
             <SummaryChart title="Pair Status" data={pairStatusData} />
           </section>
 
+          {machineSummaries.length ? (
+            <section className="grid gap-4">
+              {machineSummaries.map((machine) => (
+                <MachineTrendChart
+                  key={machine.machine_key}
+                  title={machine.machine_label}
+                  description={`Pairs: ${machine.pair_count} · complete: ${machine.complete_pair_count} · latest: ${formatDate(machine.latest_completed_at)}`}
+                  data={machineSeries.filter((point) => point.machine_key === machine.machine_key)}
+                />
+              ))}
+            </section>
+          ) : null}
+
           {details?.pairs.length ? (
             details.pairs.map((pair) => (
               <Card key={`${pair.worklist_id}-${pair.pair_label}`}>
@@ -196,8 +212,12 @@ export default function QcPage() {
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <StatusBadge status={pair.status} />
+                      <StatusBadge status={pair.machine_key === "unassigned" ? "warning" : "complete"} />
                       <Button asChild variant="secondary" size="sm">
                         <Link to={`/projects/${pair.project_id}`}>{pair.project_code}</Link>
+                      </Button>
+                      <Button asChild variant="secondary" size="sm">
+                        <Link to={`/qc/hye/${pair.worklist_id}/${encodeURIComponent(pair.pair_label)}`}>Pair record</Link>
                       </Button>
                     </div>
                   </div>
@@ -215,6 +235,10 @@ export default function QcPage() {
                     <div className="rounded-2xl border bg-secondary/20 px-3 py-2 text-sm">
                       <div className="text-xs font-bold uppercase text-muted-foreground">Project</div>
                       <div className="mt-1 text-lg font-semibold">{pair.project_code}</div>
+                    </div>
+                    <div className="rounded-2xl border bg-secondary/20 px-3 py-2 text-sm">
+                      <div className="text-xs font-bold uppercase text-muted-foreground">Machine</div>
+                      <div className="mt-1 text-lg font-semibold">{pair.machine_label}</div>
                     </div>
                   </div>
                   <div className="overflow-x-auto">
@@ -250,6 +274,44 @@ export default function QcPage() {
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Card className="border-dashed">
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base">Pair score</CardTitle>
+                        <CardDescription>Levy-Jennings input for the selected HYE pair.</CardDescription>
+                      </CardHeader>
+                      <CardContent className="grid gap-2 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Mean relative error</span>
+                          <span className="font-semibold">{pair.score === null ? "-" : pair.score.toFixed(4)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Worst relative error</span>
+                          <span className="font-semibold">{pair.worst_relative_error === null ? "-" : pair.worst_relative_error.toFixed(4)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Machine key</span>
+                          <span className="font-mono text-xs">{pair.machine_key}</span>
+                        </div>
+                      </CardContent>
+                    </Card>
+                    <Card className="border-dashed">
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base">Machine routing</CardTitle>
+                        <CardDescription>Run A and Run B can share or differ in machine identity.</CardDescription>
+                      </CardHeader>
+                      <CardContent className="grid gap-2 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">A machine</span>
+                          <span className="font-semibold">{pair.a_machine_label}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">B machine</span>
+                          <span className="font-semibold">{pair.b_machine_label}</span>
+                        </div>
+                      </CardContent>
+                    </Card>
                   </div>
                 </CardContent>
               </Card>

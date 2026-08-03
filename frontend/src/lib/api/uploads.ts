@@ -5,10 +5,12 @@ export type CreateDirectUploadInput = {
   project: number;
   run?: number | null;
   filename: string;
+  expected_filename?: string;
   size_bytes: number;
   content_type?: string;
   chunk_size_bytes: number;
   file_role?: RawFile["file_role"];
+  metadata?: Record<string, unknown>;
 };
 
 export function createDirectUploadSession(input: CreateDirectUploadInput) {

@@ -8,8 +8,8 @@ import { Breadcrumbs } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { fetchProcessingJobsOverview, fetchProjectSummary, fetchProjects, fetchQcOverview, fetchRawFilesOverview, queryKeys } from "@/lib/api/queries";
-import type { CountBy, Project, ProjectSummary } from "@/lib/api/types";
+import { fetchCurrentUser, fetchProcessingJobsOverview, fetchProjectSummary, fetchProjects, fetchQcOverview, fetchRawFilesOverview, queryKeys } from "@/lib/api/queries";
+import type { CountBy, CurrentUser, Project, ProjectSummary } from "@/lib/api/types";
 import { formatDate } from "@/lib/format";
 
 const numberFormat = new Intl.NumberFormat();
@@ -22,6 +22,10 @@ const chartColors = [
 ];
 
 export default function DashboardPage() {
+  const currentUserQuery = useQuery({
+    queryKey: queryKeys.currentUser(),
+    queryFn: fetchCurrentUser,
+  });
   const projectsQuery = useQuery({
     queryKey: queryKeys.projects({ page: 1, page_size: 100 }),
     queryFn: () => fetchProjects({ page: 1, page_size: 100 }),
@@ -61,17 +65,50 @@ export default function DashboardPage() {
   const activeProjects = projects.filter((project) => project.status === "active").length;
   const completedProjects = projects.filter((project) => project.status === "complete").length;
   const attentionCount = (jobsQuery.data?.failed ?? 0) + (rawFilesQuery.data?.unmatched ?? 0) + (qcQuery.data?.out_of_spec_pair_count ?? 0);
+  const currentUser = currentUserQuery.data;
+  const greeting = currentUser ? `Hello, ${currentUser.username}` : "Welcome back";
+  const roleLabel = currentUser ? roleTitle(currentUser.global_role) : "Workspace";
+  const quickSignals = [
+    {
+      label: "Projects",
+      value: metricValue(projects.length),
+      detail: `${metricValue(activeProjects)} active, ${metricValue(completedProjects)} complete`,
+    },
+    {
+      label: "Files",
+      value: metricValue(rawFilesQuery.data?.total),
+      detail: `${metricValue(rawFilesQuery.data?.unmatched)} unmatched`,
+    },
+    {
+      label: "Jobs",
+      value: metricValue(jobsQuery.data?.active),
+      detail: `${metricValue(jobsQuery.data?.failed)} failed`,
+    },
+    {
+      label: "QC",
+      value: metricValue(qcQuery.data?.out_of_spec_pair_count),
+      detail: `${metricValue(qcQuery.data?.complete_pair_count)} complete pairs`,
+    },
+  ];
+  const missedItems = [
+    jobsQuery.data?.failed ? `${metricValue(jobsQuery.data.failed)} processing job(s) need review.` : null,
+    rawFilesQuery.data?.unmatched ? `${metricValue(rawFilesQuery.data.unmatched)} raw file(s) still need matching.` : null,
+    qcQuery.data?.out_of_spec_pair_count ? `${metricValue(qcQuery.data.out_of_spec_pair_count)} QC pair(s) are out of spec.` : null,
+  ].filter(Boolean) as string[];
 
   return (
     <div className="grid gap-4">
       <Breadcrumbs items={[{ label: "Dashboard" }]} />
 
       <PageHero
-        eyebrow="Welcome back"
-        title="Project dashboard"
-        description="Review portfolio health, open project reports, and move quickly into the LC-MS work that needs attention."
+        eyebrow={roleLabel}
+        title={greeting}
+        description="Here is what you missed across projects, uploads, processing, and QC. Open a project, inspect the sample, or jump straight into the live files."
         actions={
           <>
+            <div className="hidden rounded-full border bg-secondary/70 px-4 py-2 text-sm font-semibold text-muted-foreground md:block">
+              {currentUser?.labs?.length ? `${currentUser.labs[0].name} workspace` : "No lab selected"}
+            </div>
             <Button asChild variant="secondary">
               <Link to="/projects">
                 <FlaskConical className="h-4 w-4" />
@@ -89,11 +126,54 @@ export default function DashboardPage() {
       />
 
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-        <MetricCard label="Projects" value={projectsQuery.isLoading ? "-" : projects.length} detail={`${activeProjects} active, ${completedProjects} complete`} />
-        <MetricCard label="Raw Files" value={metricValue(rawFilesQuery.data?.total)} detail={`${metricValue(rawFilesQuery.data?.unmatched)} unmatched`} />
-        <MetricCard label="Processing Jobs" value={metricValue(jobsQuery.data?.total)} detail={`${metricValue(jobsQuery.data?.active)} active`} />
-        <MetricCard label="Failed Jobs" value={metricValue(jobsQuery.data?.failed)} detail="needs review" />
-        <MetricCard label="QC Flags" value={metricValue(qcQuery.data?.out_of_spec_pair_count)} detail={`${metricValue(qcQuery.data?.complete_pair_count)} complete pairs`} />
+        {quickSignals.map((item) => (
+          <MetricCard key={item.label} label={item.label} value={item.value} detail={item.detail} />
+        ))}
+        <MetricCard label="Attention" value={metricValue(attentionCount)} detail={missedItems.length ? "items that need review" : "no current exceptions"} />
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+        <Card className="overflow-hidden">
+          <CardHeader className="border-b bg-secondary/20">
+            <CardTitle>What you missed</CardTitle>
+            <CardDescription>Short operational summary for the current session.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 p-5">
+            {missedItems.length ? (
+              missedItems.map((item) => (
+                <div key={item} className="rounded-2xl border bg-background/60 p-4 text-sm">
+                  {item}
+                </div>
+              ))
+            ) : (
+              <div className="rounded-2xl border bg-background/60 p-4 text-sm text-muted-foreground">
+                No current exceptions. The workspace is quiet.
+              </div>
+            )}
+            <div className="grid gap-2 md:grid-cols-2">
+              <div className="rounded-2xl border bg-background/60 p-4">
+                <div className="text-[11px] font-black uppercase tracking-[0.16em] text-muted-foreground">Last refresh</div>
+                <div className="mt-2 text-sm font-semibold">{formatDate(new Date().toISOString())}</div>
+              </div>
+              <div className="rounded-2xl border bg-background/60 p-4">
+                <div className="text-[11px] font-black uppercase tracking-[0.16em] text-muted-foreground">Role</div>
+                <div className="mt-2 text-sm font-semibold">{roleLabel}</div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="overflow-hidden">
+          <CardHeader className="border-b bg-secondary/20">
+            <CardTitle>Quick paths</CardTitle>
+            <CardDescription>Fast entry points for the most common workflows.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 p-5">
+            <QuickPath title="Projects" description="Open a project, inspect samples, and download raw or processed files." to="/projects" />
+            <QuickPath title="Uploads" description="Watch raw file intake, manifest matching, and upload progress." to="/uploads" />
+            <QuickPath title="Monitoring" description="Check connected nodes, queue pressure, and processing health." to="/monitoring" />
+          </CardContent>
+        </Card>
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[1fr_420px]">
@@ -304,12 +384,40 @@ function buildProjectStatusData(projects: Project[]) {
     .filter((item) => item.value > 0);
 }
 
+function roleTitle(role: CurrentUser["global_role"]) {
+  switch (role) {
+    case "admin":
+      return "Admin workspace";
+    case "pi":
+      return "PI workspace";
+    case "collaborator":
+      return "Collaborator workspace";
+    default:
+      return "Research workspace";
+  }
+}
+
 function countBy<TKey extends string>(rows: CountBy<TKey>, key: TKey, value: string) {
   return rows.find((row) => row[key] === value)?.count ?? 0;
 }
 
 function metricValue(value?: number) {
   return value === undefined ? "-" : numberFormat.format(value);
+}
+
+function QuickPath({ title, description, to }: { title: string; description: string; to: string }) {
+  return (
+    <Link
+      to={to}
+      className="group rounded-2xl border bg-background/60 p-4 text-left no-underline transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm font-black text-foreground">{title}</div>
+        <ArrowRight className="h-4 w-4 text-muted-foreground transition group-hover:translate-x-0.5 group-hover:text-foreground" />
+      </div>
+      <div className="mt-1 text-sm leading-6 text-muted-foreground">{description}</div>
+    </Link>
+  );
 }
 
 function percentage(value: number, total: number) {

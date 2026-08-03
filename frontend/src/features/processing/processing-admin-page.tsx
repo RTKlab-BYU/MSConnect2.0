@@ -21,6 +21,13 @@ import type { ProcessingNode } from "@/lib/api/types";
 import { formatDate } from "@/lib/format";
 
 const controlOptions = ["pause", "resume", "drain", "restart", "stop"] as const;
+const controlLabels: Record<(typeof controlOptions)[number], string> = {
+  pause: "Disable",
+  resume: "Enable",
+  drain: "Drain",
+  restart: "Restart",
+  stop: "Stop",
+};
 
 export default function ProcessingAdminPage() {
   const [typeFilter, setTypeFilter] = useState("all");
@@ -172,10 +179,11 @@ function NodeAdminCard({
         </div>
       </CardHeader>
       <CardContent className="grid gap-4 xl:grid-cols-[1fr_360px]">
-        <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 md:grid-cols-2">
           <InfoBlock label="Heartbeat" value={node.last_heartbeat_at ? `${formatDate(node.last_heartbeat_at)} (${node.seconds_since_heartbeat ?? "-"}s ago)` : "Never"} />
           <InfoBlock label="Endpoint" value={node.endpoint_url || "-"} />
           <InfoBlock label="Image / Install" value={node.container_image || "-"} />
+          <InfoBlock label="Engine profile" value={engineProfile(node)} />
           <InfoBlock label="IP Address" value={node.ip_address || "-"} />
           <InfoBlock label="Shared Storage" value={stringSetting(node.settings.processor_shared_storage_root) || stringSetting(node.settings.results_root) || "-"} />
           <InfoBlock label="Raw Storage" value={stringSetting(node.settings.raw_file_storage_root) || "-"} />
@@ -194,27 +202,27 @@ function NodeAdminCard({
             ) : (
               <div className="mt-2 text-xs text-muted-foreground">No active control request.</div>
             )}
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("pause")}>
-                <Pause className="h-3.5 w-3.5" />
-                Pause
-              </Button>
-              <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("resume")}>
-                <Play className="h-3.5 w-3.5" />
-                Resume
-              </Button>
-              <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("drain")}>
-                <AlertTriangle className="h-3.5 w-3.5" />
-                Drain
-              </Button>
-              <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("restart")}>
-                <RotateCcw className="h-3.5 w-3.5" />
-                Restart
-              </Button>
-              <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("stop")}>
-                <Power className="h-3.5 w-3.5" />
-                Stop
-              </Button>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("pause")}>
+                  <Pause className="h-3.5 w-3.5" />
+                  {controlLabels.pause}
+                </Button>
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("resume")}>
+                  <Play className="h-3.5 w-3.5" />
+                  {controlLabels.resume}
+                </Button>
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("drain")}>
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  {controlLabels.drain}
+                </Button>
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("restart")}>
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  {controlLabels.restart}
+                </Button>
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("stop")}>
+                  <Power className="h-3.5 w-3.5" />
+                  {controlLabels.stop}
+                </Button>
               <Button size="sm" variant="ghost" disabled={busy} onClick={onOffline}>
                 Offline
               </Button>
@@ -257,4 +265,14 @@ function refreshNodes() {
 
 function stringSetting(value: unknown) {
   return typeof value === "string" ? value : "";
+}
+
+function engineProfile(node: ProcessingNode) {
+  return (
+    stringSetting(node.metadata.processor_engine_profile) ||
+    stringSetting(node.metadata.processor_engine_version) ||
+    stringSetting(node.settings.processor_engine_version) ||
+    stringSetting(node.settings.engine_version) ||
+    `${node.node_type} · profile unknown`
+  );
 }

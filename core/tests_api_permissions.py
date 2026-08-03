@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -393,6 +394,65 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(overview_response.status_code, 200)
         self.assertEqual(overview_response.data["stale"], 1)
 
+    def test_system_health_reports_warnings_for_connected_and_downed_nodes(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            incoming = root / "incoming"
+            raw = root / "raw"
+            results = root / "results"
+            media = root / "media"
+            for path in (incoming, raw, results, media):
+                path.mkdir()
+
+            with override_settings(
+                INCOMING_RAW_ROOT=str(incoming),
+                RAW_FILE_STORAGE_ROOT=str(raw),
+                RESULTS_ROOT=str(results),
+                MEDIA_ROOT=str(media),
+            ):
+                experiment = Experiment.objects.create(project=self.project_a, name="Health Check Exp")
+                run = Run.objects.create(sample=Sample.objects.create(experiment=experiment, name="Health Sample"), run_name="Health Run")
+                pipeline = ProcessingPipeline.objects.create(name="DIA-NN", version="1.0", container_image="diann")
+                ProcessingNode.objects.create(
+                    name="watcher-1",
+                    node_type="watcher",
+                    status="idle",
+                    last_heartbeat_at=timezone.now() - timedelta(seconds=240),
+                )
+                processor = ProcessingNode.objects.create(
+                    name="processor-1",
+                    node_type="diann",
+                    status="offline",
+                    last_heartbeat_at=timezone.now() - timedelta(seconds=30),
+                )
+                raw_file = RawFile.objects.create(
+                    run=run,
+                    source_path="/incoming/sample.raw",
+                    storage_path=str(raw / "sample.raw"),
+                    filename="sample.raw",
+                    status="imported",
+                    size_bytes=1,
+                    file_role=RunFileRole.SAMPLE,
+                )
+                ProcessingJob.objects.create(
+                    run=run,
+                    pipeline=pipeline,
+                    raw_file=raw_file,
+                    node=processor,
+                    status=ProcessingStatus.FAILED,
+                    error_message="processor failed",
+                )
+
+                self.client.force_authenticate(user=self.admin)
+                response = self.client.get("/api/system-health/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "red")
+        self.assertGreaterEqual(response.data["nodes"]["stale"], 1)
+        self.assertGreaterEqual(response.data["nodes"]["offline"], 1)
+        self.assertGreaterEqual(response.data["jobs"]["failed"], 1)
+        self.assertGreaterEqual(len(response.data["alerts"]), 3)
+
     def test_pre_acquisition_setup_creates_expected_worklist_and_processing_plan(self):
         self.client.force_authenticate(user=self.researcher)
 
@@ -526,6 +586,41 @@ class ApiPermissionTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_direct_upload_session_can_match_expected_filename(self):
+        self.client.force_authenticate(user=self.researcher)
+        experiment = Experiment.objects.create(project=self.project_a, name="Upload Match Exp")
+        sample = Sample.objects.create(experiment=experiment, name="Matched Sample")
+        run = Run.objects.create(
+            sample=sample,
+            run_name="Matched Run",
+            expected_filename="Matched_Run.raw",
+        )
+
+        create_response = self.client.post(
+            "/api/direct-uploads/",
+            data={
+                "project": self.project_a.id,
+                "filename": "Matched_Run.raw",
+                "expected_filename": "Matched_Run.raw",
+                "size_bytes": 10,
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, 201)
+        self.assertEqual(create_response.data["run"], run.id)
+        self.assertEqual(create_response.data["intended_filename"], "Matched_Run.raw")
+
+        upload = DirectUploadSession.objects.get(id=create_response.data["id"])
+        complete_response = self.client.post(
+            f"/api/direct-uploads/{upload.id}/complete/",
+            data={"checksum_sha256": "e" * 64},
+            format="json",
+        )
+        self.assertEqual(complete_response.status_code, 200)
+        raw_file = RawFile.objects.get(checksum_sha256="e" * 64)
+        self.assertEqual(raw_file.run_id, run.id)
+        self.assertEqual(raw_file.metadata["intended_filename"], "Matched_Run.raw")
+
     def test_non_admin_only_sees_own_profile(self):
         self.client.force_authenticate(user=self.researcher)
         response = self.client.get("/api/user-profiles/")
@@ -572,6 +667,7 @@ class ApiPermissionTests(TestCase):
     def test_qc_overview_and_details_return_hye_metrics(self):
         call_command("seed_demo_showcase", verbosity=0)
         demo_user = User.objects.get(username="parkerreyes")
+        collaborator = User.objects.get(username="demo-collaborator")
         project = Project.objects.get(code="COHORT-DIA-100")
         worklist = AcquisitionWorklist.objects.get(name="Plate 1 DIA acquisition order")
 
@@ -592,6 +688,10 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(details_response.data["program"], "hye")
         self.assertGreater(len(details_response.data["pairs"]), 0)
         self.assertEqual(details_response.data["pairs"][0]["organisms"][0]["organism"], "Homo sapiens")
+        self.assertIn("machine_summaries", details_response.data)
+        self.assertIn("machine_series", details_response.data)
+        self.assertEqual(collaborator.profile.global_role, UserRole.COLLABORATOR)
+        self.assertTrue(LabMembership.objects.filter(user=collaborator, active=True).exists())
 
     def test_qc_overview_respects_lab_scope(self):
         call_command("seed_demo_showcase", verbosity=0)

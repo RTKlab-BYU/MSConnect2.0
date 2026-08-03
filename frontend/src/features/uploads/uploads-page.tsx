@@ -6,11 +6,10 @@ import { PageHero } from "@/components/layout/page-section";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useQuery } from "@tanstack/react-query";
-import { fetchProjectResearcherStatus, queryKeys } from "@/lib/api/queries";
+import { fetchProjectResearcherStatus, fetchProjects, queryKeys } from "@/lib/api/queries";
 import { completeDirectUploadSession, createDirectUploadSession } from "@/lib/api/uploads";
 import { formatBytes, formatDate } from "@/lib/format";
 import { useUploadStore, type UploadFileRecord } from "@/store/upload-store";
@@ -55,6 +54,10 @@ export default function UploadsPage() {
   const markBackendBlocked = useUploadStore((state) => state.markBackendBlocked);
   const retry = useUploadStore((state) => state.retry);
   const remove = useUploadStore((state) => state.remove);
+  const projectsQuery = useQuery({
+    queryKey: queryKeys.projects({ page: 1, page_size: 100 }),
+    queryFn: () => fetchProjects({ page: 1, page_size: 100 }),
+  });
   const selectedProjectId = Number(projectId);
   const projectStatusQuery = useQuery({
     queryKey: queryKeys.projectResearcherStatus(selectedProjectId),
@@ -81,10 +84,14 @@ export default function UploadsPage() {
         project,
         run: selectedRun ? selectedRun.run.id : null,
         filename: file.name,
+        expected_filename: selectedRun?.run.expected_filename || undefined,
         size_bytes: file.size,
         content_type: file.type || "application/octet-stream",
         chunk_size_bytes: file.chunkSize,
         file_role: selectedRun?.run.file_role,
+        metadata: {
+          intended_filename: selectedRun?.run.expected_filename || file.name,
+        },
       });
       attachDirectUploadSession(file.id, session.id, session.storage_key);
       markUploading(file.id);
@@ -152,16 +159,26 @@ export default function UploadsPage() {
               event.currentTarget.value = "";
             }}
           />
-          <div className="grid gap-3 md:grid-cols-[220px_minmax(240px,1fr)_auto]">
-            <Input
-              inputMode="numeric"
-              placeholder="Project ID"
-              value={projectId}
-              onChange={(event) => {
-                setProjectId(event.target.value);
+          <div className="grid gap-3 md:grid-cols-[minmax(240px,1fr)_minmax(240px,1fr)_auto]">
+            <Select
+              value={projectId || "none"}
+              onValueChange={(value) => {
+                setProjectId(value === "none" ? "" : value);
                 setSelectedRunId("none");
               }}
-            />
+            >
+              <SelectTrigger>
+                <SelectValue placeholder={projectsQuery.data?.results.length ? "Select a project" : "No projects loaded"} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Choose a project</SelectItem>
+                {(projectsQuery.data?.results ?? []).map((project) => (
+                  <SelectItem key={project.id} value={String(project.id)}>
+                    {project.code} · {project.title}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Select value={selectedRunId} onValueChange={setSelectedRunId} disabled={!projectRuns.length}>
               <SelectTrigger>
                 <SelectValue placeholder={projectRuns.length ? "Attach to planned run" : "No planned runs loaded"} />

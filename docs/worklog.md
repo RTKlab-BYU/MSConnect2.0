@@ -1,5 +1,35 @@
 # MSConnect Worklog
 
+## 2026-08-03
+
+### Completed
+
+- Seeded and documented four demo accounts for the live walkthrough: `demo-admin`, `demo-pi`, `demo-researcher`, and `demo-collaborator`.
+- Added a live `system-health` API and admin dashboard warning surface for readiness, node heartbeat status, failed jobs, and unmatched raw files.
+- Reworked the dashboard landing page into a role-aware welcome view with quick stats, a "what you missed" summary, and direct paths into Projects, Uploads, and Monitoring.
+- Fixed the live `/app/dashboard` blank-page issue by enabling DEBUG staticfiles serving so Django on port `8000` can serve the built React bundle directly.
+- Confirmed the live stack is accessible again after rebuilding the web container and reloading the app routes.
+
+### Verified
+
+- `./.venv/bin/python manage.py check`
+- `./.venv/bin/python manage.py test core.tests_api_permissions.ApiPermissionTests.test_system_health_reports_warnings_for_connected_and_downed_nodes core.tests_api_permissions.ApiPermissionTests.test_qc_overview_and_details_return_hye_metrics`
+- `docker compose exec -T web python manage.py shell -c "...demo role snapshot..."`
+- `docker compose exec -T web python manage.py shell -c "...dashboard/js/css 200 checks..."`
+
+### Current review state
+
+- `demo-admin` can see `/api/system-health/`; collaborator, researcher, and PI users remain restricted from the admin health endpoint.
+- The dashboard is now visibly branded and role-aware instead of appearing as a blank shell.
+- `archive-worker`, `watcher`, and `processor` can still need follow-up runtime review depending on the currently seeded demo data and raw-file paths.
+
+### Deferred / next session
+
+- Bring the DIA-NN processor container to a fully visible smoke-test state.
+- Tighten collaborator submission validation and make the collaborator intake flow stricter.
+- Continue splitting views by user role so admin, PI, researcher, and collaborator surfaces are more distinct.
+- Expand the processor health and node-control UX further once the DIA-NN path is stable.
+
 ## 2026-07-30
 
 ### Completed

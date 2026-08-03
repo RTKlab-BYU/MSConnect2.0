@@ -21,6 +21,112 @@ export type Project = {
   updated_at: string;
 };
 
+export type CurrentUser = {
+  id: EntityId;
+  username: string;
+  email: string;
+  is_superuser: boolean;
+  global_role: "admin" | "pi" | "researcher" | "collaborator";
+  email_verified_at: string | null;
+  labs: Array<{
+    id: EntityId;
+    name: string;
+    slug: string;
+    role: "admin" | "pi" | "researcher" | "collaborator";
+    facility_name: string;
+    university_name: string;
+  }>;
+  active_lab_ids: EntityId[];
+};
+
+export type IntakeMetadata = {
+  schema_version: string;
+  institution: {
+    name: string;
+    department?: string;
+  };
+  contact: {
+    name: string;
+    email: string;
+    phone?: string;
+  };
+  sample_planning: {
+    organism: string;
+    matrix: string;
+    sample_count: number;
+    plate_format: "96" | "384";
+    plate_layout?: string;
+  };
+  shipping: {
+    expectations?: string;
+    handling_notes?: string;
+  };
+  billing: {
+    invoice_email: string;
+    po_reference?: string;
+    billing_address?: Record<string, unknown>;
+  };
+  hazards: {
+    handling_notes?: string;
+  };
+  notes?: string;
+};
+
+export type ProjectIntakeRequest = {
+  id: EntityId;
+  lab: EntityId;
+  requested_title: string;
+  requested_code: string;
+  requested_pi: EntityId | null;
+  objective: string;
+  sample_count_estimate: number | null;
+  acquisition_deadline: string | null;
+  institution_name: string;
+  contact_name: string;
+  contact_email: string;
+  invoice_email: string;
+  organism: string;
+  matrix: string;
+  plate_format: string;
+  shipping_notes: string;
+  hazards_notes: string;
+  metadata: IntakeMetadata;
+  status: "submitted" | "in_review" | "approved" | "rejected";
+  submitted_by: EntityId;
+  reviewed_by: EntityId | null;
+  review_note: string;
+  reviewed_at: string | null;
+  promoted_project: EntityId | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type IntakeMetrics = {
+  totals: {
+    requests: number;
+    sample_count_estimate: number;
+    approved: number;
+    rejected: number;
+    in_review: number;
+    submitted: number;
+  };
+  by_institution: Array<{
+    institution_name: string;
+    count: number;
+    sample_count_estimate: number;
+    approved: number;
+    rejected: number;
+    in_review: number;
+    submitted: number;
+  }>;
+  status_rows: Array<{
+    institution_name: string;
+    status: string;
+    count: number;
+    sample_volume: number | null;
+  }>;
+};
+
 export type PreAcquisitionSetupPayload = {
   title: string;
   code: string;
@@ -232,6 +338,7 @@ export type DirectUploadSession = {
   run: EntityId | null;
   upload_id: string;
   filename: string;
+  intended_filename: string;
   storage_key: string;
   content_type: string;
   size_bytes: number;
@@ -241,6 +348,7 @@ export type DirectUploadSession = {
   status: "created" | "uploading" | "complete" | "failed";
   file_role: RawFile["file_role"];
   completed_raw_file: EntityId | null;
+  match_metadata: Record<string, unknown>;
   metadata: Record<string, unknown>;
   upload_urls: DirectUploadPart[];
   created_at: string;
@@ -351,6 +459,95 @@ export type ProcessingNodeOverview = {
   by_status: CountBy<"status">;
   by_type: CountBy<"node_type">;
   stale: number;
+};
+
+export type SystemHealthSnapshot = {
+  status: "green" | "yellow" | "red";
+  server_time: string;
+  readiness: {
+    healthz: {
+      ok: boolean;
+      status: "green" | "yellow" | "red";
+      label: string;
+      detail: string;
+    };
+    database: {
+      ok: boolean;
+      path?: string;
+      error?: string;
+    };
+    incoming_raw_root: {
+      ok: boolean;
+      path?: string;
+      error?: string;
+    };
+    raw_file_storage_root: {
+      ok: boolean;
+      path?: string;
+      error?: string;
+    };
+    results_root: {
+      ok: boolean;
+      path?: string;
+      error?: string;
+    };
+    media_root: {
+      ok: boolean;
+      path?: string;
+      error?: string;
+    };
+    readyz: {
+      ok: boolean;
+      status: "green" | "yellow" | "red";
+      label: string;
+      detail: string;
+    };
+  };
+  nodes: {
+    total: number;
+    connected: number;
+    stale: number;
+    offline: number;
+    watcher: {
+      node_type: string;
+      total: number;
+      connected: number;
+      stale: number;
+      offline: number;
+      latest_heartbeat_at: string | null;
+    };
+    processor: {
+      node_type: string;
+      total: number;
+      connected: number;
+      stale: number;
+      offline: number;
+      latest_heartbeat_at: string | null;
+    };
+    by_type: Array<{
+      node_type: string;
+      total: number;
+      connected: number;
+      stale: number;
+      offline: number;
+      latest_heartbeat_at: string | null;
+    }>;
+  };
+  jobs: {
+    active: number;
+    failed: number;
+  };
+  raw_files: {
+    total: number;
+    unmatched: number;
+  };
+  alerts: Array<{
+    severity: "critical" | "warning" | "info";
+    code: string;
+    title: string;
+    detail: string;
+    route?: string;
+  }>;
 };
 
 export type RawFileOverview = {
@@ -546,6 +743,12 @@ export type QcPair = {
   worklist_id: EntityId;
   worklist_name: string;
   pair_label: string;
+  machine_key: string;
+  machine_label: string;
+  a_machine_key: string;
+  a_machine_label: string;
+  b_machine_key: string;
+  b_machine_label: string;
   status: "pass" | "warning" | "failed" | "incomplete";
   shared_total_n: number;
   completed_at: string | null;
@@ -555,7 +758,38 @@ export type QcPair = {
   b_run_name: string;
   a_filename: string;
   b_filename: string;
+  score: number | null;
+  worst_relative_error: number | null;
   organisms: QcPairOrganism[];
+};
+
+export type QcMachineSummary = {
+  machine_key: string;
+  machine_label: string;
+  pair_count: number;
+  complete_pair_count: number;
+  mean_score: number | null;
+  stddev_score: number | null;
+  lower_band: number | null;
+  upper_band: number | null;
+  latest_completed_at: string | null;
+};
+
+export type QcMachineSeriesPoint = {
+  machine_key: string;
+  machine_label: string;
+  project_id: EntityId;
+  project_code: string;
+  worklist_id: EntityId;
+  worklist_name: string;
+  pair_label: string;
+  completed_at: string | null;
+  score: number | null;
+  mean_score: number | null;
+  lower_band: number | null;
+  upper_band: number | null;
+  status: string;
+  pair_count: number;
 };
 
 export type QcDetails = {
@@ -568,6 +802,8 @@ export type QcDetails = {
   empty_message: string;
   pairs: QcPair[];
   runs?: QcPrtcRun[];
+  machine_summaries?: QcMachineSummary[];
+  machine_series?: QcMachineSeriesPoint[];
 };
 
 export type QcPrtcRun = {

@@ -210,6 +210,7 @@ class UserProfile(TimestampedModel):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
     global_role = models.CharField(max_length=32, choices=UserRole.choices, default=UserRole.RESEARCHER)
     phone = models.CharField(max_length=64, blank=True)
+    email_verified_at = models.DateTimeField(blank=True, null=True)
 
     def __str__(self) -> str:
         return f"{self.user} ({self.get_global_role_display()})"
@@ -323,6 +324,16 @@ class ProjectIntakeRequest(TimestampedModel):
     objective = models.TextField(blank=True)
     sample_count_estimate = models.PositiveIntegerField(blank=True, null=True)
     acquisition_deadline = models.DateField(blank=True, null=True)
+    institution_name = models.CharField(max_length=255, blank=True)
+    contact_name = models.CharField(max_length=255, blank=True)
+    contact_email = models.EmailField(blank=True)
+    invoice_email = models.EmailField(blank=True)
+    organism = models.CharField(max_length=255, blank=True)
+    matrix = models.CharField(max_length=255, blank=True)
+    plate_format = models.CharField(max_length=64, blank=True)
+    shipping_notes = models.TextField(blank=True)
+    hazards_notes = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=32, choices=IntakeRequestStatus.choices, default=IntakeRequestStatus.SUBMITTED)
     submitted_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -621,6 +632,7 @@ class DirectUploadSession(TimestampedModel):
     run = models.ForeignKey(Run, on_delete=models.PROTECT, related_name="direct_upload_sessions", blank=True, null=True)
     upload_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     filename = models.CharField(max_length=255)
+    intended_filename = models.CharField(max_length=255, blank=True)
     storage_key = models.TextField(unique=True)
     content_type = models.CharField(max_length=255, blank=True)
     size_bytes = models.PositiveBigIntegerField()
@@ -629,6 +641,7 @@ class DirectUploadSession(TimestampedModel):
     checksum_sha256 = models.CharField(max_length=64, blank=True)
     status = models.CharField(max_length=32, choices=DirectUploadStatus.choices, default=DirectUploadStatus.CREATED)
     file_role = models.CharField(max_length=32, choices=RunFileRole.choices, default=RunFileRole.SAMPLE)
+    match_metadata = models.JSONField(default=dict, blank=True)
     completed_raw_file = models.OneToOneField(
         RawFile,
         on_delete=models.PROTECT,
