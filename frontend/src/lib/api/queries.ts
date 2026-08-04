@@ -3,6 +3,7 @@ import type {
   AcquisitionWorklist,
   ChromatogramsResponse,
   CurrentUser,
+  DeploymentSettings,
   FindingsWorkspaceResponse,
   InstrumentConfiguration,
   Paginated,
@@ -56,6 +57,7 @@ export const queryKeys = {
   processingNodes: (params?: ListParams) => ["processing-nodes", params] as const,
   processingNodesOverview: (params?: ListParams) => ["processing-nodes", "overview", params] as const,
   processingPipelines: (params?: ListParams) => ["processing-pipelines", params] as const,
+  deploymentSettings: () => ["deployment-settings"] as const,
   instrumentConfigurations: (params?: ListParams) => ["instrument-configurations", params] as const,
   systemHealth: () => ["system-health"] as const,
   samples: (params: ListParams) => ["samples", params] as const,
@@ -246,6 +248,16 @@ export function markProcessingNodeOffline(id: number, reason?: string): Promise<
 
 export function fetchProcessingPipelines(params?: ListParams): Promise<Paginated<ProcessingPipeline>> {
   return paginatedResource<ProcessingPipeline>("/processing-pipelines/", { ordering: "name", ...params });
+}
+
+export function fetchDeploymentSettings(): Promise<DeploymentSettings> {
+  return getResource<DeploymentSettings>("/deployment-settings/");
+}
+
+export function updateDeploymentSettings(
+  payload: Partial<Pick<DeploymentSettings, "prtc_skyline_pipeline" | "targeted_skyline_pipeline">>,
+) {
+  return patchResource<DeploymentSettings>("/deployment-settings/", payload);
 }
 
 export function fetchInstrumentConfigurations(params?: ListParams): Promise<Paginated<InstrumentConfiguration>> {

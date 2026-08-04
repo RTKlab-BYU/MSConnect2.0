@@ -47,6 +47,8 @@ export default function SubmissionWizardPage() {
   const defaultLabId = currentUserQuery.data?.labs?.[0]?.id ? String(currentUserQuery.data.labs[0].id) : "";
   const labId = selectedLabId || defaultLabId;
   const labs = currentUserQuery.data?.labs ?? [];
+  const currentStepComplete = isStepComplete(step, form, labId);
+  const formComplete = steps.every((_, index) => isStepComplete(index, form, labId));
 
   const createMutation = useMutation({
     mutationFn: createIntakeRequest,
@@ -94,8 +96,8 @@ export default function SubmissionWizardPage() {
 
   function submit() {
     setError("");
-    if (!labId) {
-      setError("Select a lab before submitting.");
+    if (!formComplete) {
+      setError("Complete every required field before submitting.");
       return;
     }
     const payload: IntakeRequestCreatePayload = {
@@ -155,10 +157,10 @@ export default function SubmissionWizardPage() {
             ))}
           </div>
 
-          {step === 0 ? (
+            {step === 0 ? (
             <section className="grid gap-3 md:grid-cols-2">
               <label className="grid gap-2 text-sm font-medium md:col-span-2">
-                Target lab
+                Target lab *
                 <Select value={labId} onValueChange={setSelectedLabId}>
                   <SelectTrigger>
                     <SelectValue placeholder={labs.length ? "Select a lab" : "No labs available"} />
@@ -172,10 +174,10 @@ export default function SubmissionWizardPage() {
                   </SelectContent>
                 </Select>
               </label>
-              <Field label="Project title" value={form.requested_title} onChange={(value) => setForm((current) => ({ ...current, requested_title: value }))} />
-              <Field label="Project code" value={form.requested_code} onChange={(value) => setForm((current) => ({ ...current, requested_code: value }))} />
+              <Field label="Project title" value={form.requested_title} onChange={(value) => setForm((current) => ({ ...current, requested_title: value }))} required />
+              <Field label="Project code" value={form.requested_code} onChange={(value) => setForm((current) => ({ ...current, requested_code: value }))} required />
               <label className="grid gap-2 text-sm font-medium md:col-span-2">
-                Objective
+                Objective *
                 <Textarea rows={5} value={form.objective} onChange={(event) => setForm((current) => ({ ...current, objective: event.target.value }))} />
               </label>
             </section>
@@ -183,18 +185,18 @@ export default function SubmissionWizardPage() {
 
           {step === 1 ? (
             <section className="grid gap-3 md:grid-cols-2">
-              <Field label="Institution" value={form.institution_name} onChange={(value) => setForm((current) => ({ ...current, institution_name: value }))} />
-              <Field label="PI or contact name" value={form.contact_name} onChange={(value) => setForm((current) => ({ ...current, contact_name: value }))} />
-              <Field label="Contact email" value={form.contact_email} onChange={(value) => setForm((current) => ({ ...current, contact_email: value }))} />
-              <Field label="Sample count" type="number" value={String(form.sample_count_estimate)} onChange={(value) => setForm((current) => ({ ...current, sample_count_estimate: Number(value) || 0 }))} />
-              <Field label="Organism" value={form.organism} onChange={(value) => setForm((current) => ({ ...current, organism: value }))} />
-              <Field label="Matrix" value={form.matrix} onChange={(value) => setForm((current) => ({ ...current, matrix: value }))} />
+              <Field label="Institution" value={form.institution_name} onChange={(value) => setForm((current) => ({ ...current, institution_name: value }))} required />
+              <Field label="PI or contact name" value={form.contact_name} onChange={(value) => setForm((current) => ({ ...current, contact_name: value }))} required />
+              <Field label="Contact email" value={form.contact_email} onChange={(value) => setForm((current) => ({ ...current, contact_email: value }))} required />
+              <Field label="Sample count" type="number" value={String(form.sample_count_estimate)} onChange={(value) => setForm((current) => ({ ...current, sample_count_estimate: Number(value) || 0 }))} required />
+              <Field label="Organism" value={form.organism} onChange={(value) => setForm((current) => ({ ...current, organism: value }))} required />
+              <Field label="Matrix" value={form.matrix} onChange={(value) => setForm((current) => ({ ...current, matrix: value }))} required />
             </section>
           ) : null}
 
           {step === 2 ? (
             <section className="grid gap-3 md:grid-cols-2">
-              <Field label="Invoice email" value={form.invoice_email} onChange={(value) => setForm((current) => ({ ...current, invoice_email: value }))} />
+              <Field label="Invoice email" value={form.invoice_email} onChange={(value) => setForm((current) => ({ ...current, invoice_email: value }))} required />
               <Field label="PO or reference" value={form.billing_po_reference} onChange={(value) => setForm((current) => ({ ...current, billing_po_reference: value }))} />
               <label className="grid gap-2 text-sm font-medium">
                 Plate format
@@ -240,12 +242,12 @@ export default function SubmissionWizardPage() {
             </Button>
             <div className="flex gap-2">
               {step < steps.length - 1 ? (
-                <Button type="button" onClick={() => setStep((current) => Math.min(steps.length - 1, current + 1))}>
+              <Button type="button" disabled={!currentStepComplete} onClick={() => setStep((current) => Math.min(steps.length - 1, current + 1))}>
                   Next
                   <ArrowRight className="h-4 w-4" />
                 </Button>
               ) : (
-                <Button type="button" onClick={submit} disabled={createMutation.isPending}>
+                <Button type="button" onClick={submit} disabled={createMutation.isPending || !formComplete}>
                   <Send className="h-4 w-4" />
                   {createMutation.isPending ? "Submitting..." : "Submit request"}
                 </Button>
@@ -263,18 +265,46 @@ function Field({
   value,
   onChange,
   type = "text",
+  required = false,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: string;
+  required?: boolean;
 }) {
   return (
     <label className="grid gap-2 text-sm font-medium">
-      {label}
-      <Input type={type} value={value} onChange={(event) => onChange(event.target.value)} />
+      <span>
+        {label}
+        {required ? " *" : ""}
+      </span>
+      <Input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
+}
+
+function isStepComplete(step: number, form: Record<string, string | number>, labId: string) {
+  const hasText = (value: unknown) => typeof value === "string" && value.trim().length > 0;
+  switch (step) {
+    case 0:
+      return Boolean(labId) && hasText(form.requested_title) && hasText(form.requested_code) && hasText(form.objective);
+    case 1:
+      return (
+        hasText(form.institution_name) &&
+        hasText(form.contact_name) &&
+        hasText(form.contact_email) &&
+        Number(form.sample_count_estimate) > 0 &&
+        hasText(form.organism) &&
+        hasText(form.matrix)
+      );
+    case 2:
+      return hasText(form.invoice_email);
+    case 3:
+      return true;
+    default:
+      return false;
+  }
 }
 
 function ReviewRow({ label, value }: { label: string; value: string }) {

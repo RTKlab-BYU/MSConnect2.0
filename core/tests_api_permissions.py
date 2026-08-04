@@ -12,6 +12,7 @@ from rest_framework.test import APIClient
 
 from core.models import (
     AcquisitionWorklist,
+    DeploymentSetting,
     DirectUploadSession,
     Experiment,
     Facility,
@@ -411,7 +412,10 @@ class ApiPermissionTests(TestCase):
                 MEDIA_ROOT=str(media),
             ):
                 experiment = Experiment.objects.create(project=self.project_a, name="Health Check Exp")
-                run = Run.objects.create(sample=Sample.objects.create(experiment=experiment, name="Health Sample"), run_name="Health Run")
+                run = Run.objects.create(
+                    sample=Sample.objects.create(experiment=experiment, name="Health Sample"),
+                    run_name="Health Run",
+                )
                 pipeline = ProcessingPipeline.objects.create(name="DIA-NN", version="1.0", container_image="diann")
                 ProcessingNode.objects.create(
                     name="watcher-1",
@@ -452,6 +456,81 @@ class ApiPermissionTests(TestCase):
         self.assertGreaterEqual(response.data["nodes"]["offline"], 1)
         self.assertGreaterEqual(response.data["jobs"]["failed"], 1)
         self.assertGreaterEqual(len(response.data["alerts"]), 3)
+
+    def test_deployment_settings_api_selects_active_prtc_pipeline(self):
+        self.client.force_authenticate(user=self.admin)
+        skyline_pipeline = ProcessingPipeline.objects.create(
+            name="Skyline PRTC",
+            version="26.1",
+            parameters={"adapter": "skyline", "required_engine": "skyline"},
+        )
+        targeted_pipeline = ProcessingPipeline.objects.create(
+            name="Skyline Targeted",
+            version="26.1",
+            parameters={"adapter": "skyline", "required_engine": "skyline"},
+        )
+
+        get_response = self.client.get("/api/deployment-settings/")
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.data["scope"], "site")
+        self.assertEqual(get_response.data["prtc_skyline_pipeline"], None)
+        self.assertEqual(get_response.data["targeted_skyline_pipeline"], None)
+
+        patch_response = self.client.patch(
+            "/api/deployment-settings/",
+            data={
+                "prtc_skyline_pipeline": skyline_pipeline.id,
+                "targeted_skyline_pipeline": targeted_pipeline.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(patch_response.status_code, 200)
+        self.assertEqual(patch_response.data["prtc_skyline_pipeline"], skyline_pipeline.id)
+        self.assertEqual(patch_response.data["prtc_skyline_pipeline_name"], "Skyline PRTC")
+        self.assertEqual(patch_response.data["targeted_skyline_pipeline"], targeted_pipeline.id)
+        self.assertEqual(patch_response.data["targeted_skyline_pipeline_name"], "Skyline Targeted")
+        self.assertEqual(DeploymentSetting.objects.get(scope="site").prtc_skyline_pipeline_id, skyline_pipeline.id)
+        self.assertEqual(DeploymentSetting.objects.get(scope="site").targeted_skyline_pipeline_id, targeted_pipeline.id)
+
+    def test_intake_submission_requires_complete_required_fields(self):
+        self.client.force_authenticate(user=self.researcher)
+
+        response = self.client.post(
+            "/api/intake-requests/",
+            data={
+                "lab": self.lab_a.id,
+                "requested_title": "Intake request",
+                "requested_code": "REQ-001",
+                "objective": "Proteomics intake",
+                "sample_count_estimate": 0,
+                "acquisition_deadline": None,
+                "institution_name": "BYU",
+                "contact_name": "Research Contact",
+                "contact_email": "contact@example.test",
+                "invoice_email": "billing@example.test",
+                "organism": "human",
+                "matrix": "plasma",
+                "plate_format": "96",
+                "shipping_notes": "",
+                "hazards_notes": "",
+                "metadata": {
+                    "institution": {"name": "BYU"},
+                    "contact": {"name": "Research Contact", "email": "contact@example.test"},
+                    "sample_planning": {
+                        "organism": "human",
+                        "matrix": "plasma",
+                        "sample_count": 1,
+                        "plate_format": "96",
+                    },
+                    "billing": {"invoice_email": "billing@example.test"},
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("sample_count_estimate", response.data)
 
     def test_pre_acquisition_setup_creates_expected_worklist_and_processing_plan(self):
         self.client.force_authenticate(user=self.researcher)
@@ -550,32 +629,60 @@ class ApiPermissionTests(TestCase):
     def test_direct_upload_session_issues_signed_urls_and_records_completion(self):
         self.client.force_authenticate(user=self.researcher)
 
-        create_response = self.client.post(
-            "/api/direct-uploads/",
-            data={
-                "project": self.project_a.id,
-                "filename": "Sample_A.raw",
-                "size_bytes": 10_000_000,
-                "content_type": "application/octet-stream",
-                "chunk_size_bytes": 5_000_000,
-            },
-            format="json",
-        )
-        self.assertEqual(create_response.status_code, 201)
-        self.assertEqual(create_response.data["chunk_count"], 2)
-        self.assertEqual(len(create_response.data["upload_urls"]), 2)
-        self.assertEqual(create_response.data["upload_urls"][0]["method"], "PUT")
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            media_root = root / "media"
+            raw_root = root / "raw"
+            media_root.mkdir()
+            raw_root.mkdir()
+            file_bytes = b"a" * 10_000_000
+            checksum = hashlib.sha256(file_bytes).hexdigest()
 
-        upload = DirectUploadSession.objects.get(id=create_response.data["id"])
-        checksum = "a" * 64
-        complete_response = self.client.post(
-            f"/api/direct-uploads/{upload.id}/complete/",
-            data={"checksum_sha256": checksum},
-            format="json",
-        )
-        self.assertEqual(complete_response.status_code, 200)
-        self.assertEqual(complete_response.data["status"], "complete")
-        self.assertTrue(RawFile.objects.filter(checksum_sha256=checksum, filename="Sample_A.raw").exists())
+            with override_settings(
+                MEDIA_ROOT=str(media_root),
+                RAW_FILE_STORAGE_ROOT=str(raw_root),
+                DIRECT_UPLOAD_STAGING_ROOT=str(media_root / "direct-uploads"),
+            ):
+                create_response = self.client.post(
+                    "/api/direct-uploads/",
+                    data={
+                        "project": self.project_a.id,
+                        "filename": "Sample_A.raw",
+                        "size_bytes": len(file_bytes),
+                        "content_type": "application/octet-stream",
+                        "chunk_size_bytes": 5_000_000,
+                    },
+                    format="json",
+                )
+                self.assertEqual(create_response.status_code, 201)
+                self.assertEqual(create_response.data["chunk_count"], 2)
+                self.assertEqual(len(create_response.data["upload_urls"]), 2)
+                self.assertEqual(create_response.data["upload_urls"][0]["method"], "PUT")
+
+                for part in create_response.data["upload_urls"]:
+                    chunk = file_bytes[part["start"] : part["end"]]
+                    chunk_response = self.client.put(
+                        part["url"],
+                        data=chunk,
+                        content_type="application/octet-stream",
+                    )
+                    self.assertEqual(chunk_response.status_code, 200, chunk_response.content.decode("utf-8", errors="replace"))
+
+                upload = DirectUploadSession.objects.get(id=create_response.data["id"])
+                complete_response = self.client.post(
+                    f"/api/direct-uploads/{upload.id}/complete/",
+                    data={"checksum_sha256": checksum},
+                    format="json",
+                )
+                self.assertEqual(complete_response.status_code, 200)
+                self.assertEqual(complete_response.data["status"], "complete")
+                raw_file = RawFile.objects.get(checksum_sha256=checksum, filename="Sample_A.raw")
+                self.assertTrue(Path(raw_file.storage_path).exists())
+                resolved_raw_root = raw_root.resolve()
+                self.assertTrue(
+                    Path(raw_file.storage_path).resolve().is_relative_to(resolved_raw_root),
+                    f"{raw_file.storage_path} not under {resolved_raw_root}",
+                )
 
     def test_direct_upload_session_respects_project_scope(self):
         self.client.force_authenticate(user=self.researcher)
@@ -596,28 +703,48 @@ class ApiPermissionTests(TestCase):
             expected_filename="Matched_Run.raw",
         )
 
-        create_response = self.client.post(
-            "/api/direct-uploads/",
-            data={
-                "project": self.project_a.id,
-                "filename": "Matched_Run.raw",
-                "expected_filename": "Matched_Run.raw",
-                "size_bytes": 10,
-            },
-            format="json",
-        )
-        self.assertEqual(create_response.status_code, 201)
-        self.assertEqual(create_response.data["run"], run.id)
-        self.assertEqual(create_response.data["intended_filename"], "Matched_Run.raw")
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            media_root = root / "media"
+            raw_root = root / "raw"
+            media_root.mkdir()
+            raw_root.mkdir()
+            file_bytes = b"e" * 10
+            checksum = hashlib.sha256(file_bytes).hexdigest()
 
-        upload = DirectUploadSession.objects.get(id=create_response.data["id"])
-        complete_response = self.client.post(
-            f"/api/direct-uploads/{upload.id}/complete/",
-            data={"checksum_sha256": "e" * 64},
-            format="json",
-        )
+            with override_settings(
+                MEDIA_ROOT=str(media_root),
+                RAW_FILE_STORAGE_ROOT=str(raw_root),
+                DIRECT_UPLOAD_STAGING_ROOT=str(media_root / "direct-uploads"),
+            ):
+                create_response = self.client.post(
+                    "/api/direct-uploads/",
+                    data={
+                        "project": self.project_a.id,
+                        "filename": "Matched_Run.raw",
+                        "expected_filename": "Matched_Run.raw",
+                        "size_bytes": len(file_bytes),
+                    },
+                    format="json",
+                )
+                self.assertEqual(create_response.status_code, 201)
+                self.assertEqual(create_response.data["run"], run.id)
+                self.assertEqual(create_response.data["intended_filename"], "Matched_Run.raw")
+
+                upload = DirectUploadSession.objects.get(id=create_response.data["id"])
+                chunk_response = self.client.put(
+                    create_response.data["upload_urls"][0]["url"],
+                    data=file_bytes,
+                    content_type="application/octet-stream",
+                )
+                self.assertEqual(chunk_response.status_code, 200)
+                complete_response = self.client.post(
+                    f"/api/direct-uploads/{upload.id}/complete/",
+                    data={"checksum_sha256": checksum},
+                    format="json",
+                )
         self.assertEqual(complete_response.status_code, 200)
-        raw_file = RawFile.objects.get(checksum_sha256="e" * 64)
+        raw_file = RawFile.objects.get(checksum_sha256=checksum)
         self.assertEqual(raw_file.run_id, run.id)
         self.assertEqual(raw_file.metadata["intended_filename"], "Matched_Run.raw")
 
@@ -1127,10 +1254,11 @@ class AgentApiTests(TestCase):
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_bytes(file_bytes)
 
-            with override_settings(
-                RAW_FILE_STORAGE_ROOT=str(storage_root),
-                MSCONNECT_PRTC_SKYLINE_PIPELINE_ID=str(skyline_pipeline.id),
-            ):
+            with override_settings(RAW_FILE_STORAGE_ROOT=str(storage_root)):
+                DeploymentSetting.objects.update_or_create(
+                    scope="site",
+                    defaults={"prtc_skyline_pipeline": skyline_pipeline},
+                )
                 import_response = watcher.post(
                     "/api/agents/raw-files/import/",
                     data={

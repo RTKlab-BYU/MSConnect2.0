@@ -1,0 +1,13 @@
+{
+  "document_ref": "targeted-assay",
+  "report": "skyline-targeted-report.csv",
+  "report_name": "Targeted Skyline Results",
+  "report_format": "csv",
+  "report_invariant": true,
+  "report_conflict_resolution": "overwrite",
+  "result_files": {
+    "peptide_table": "skyline-targeted-peptides.csv",
+    "stats_json": "skyline-targeted-stats.json"
+  },
+  "notes": "Scaffold for future targeted Skyline assays. Keep PRTC-specific peptide standards and QC thresholds in the PRTC lane."
+}

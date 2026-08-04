@@ -63,6 +63,8 @@ As with the watcher, processors can search common Django hostnames via `MSCONNEC
 
 ## Smoke Test
 
+For a fuller live-stack checklist that includes DIA-NN pickup, dashboard verification, and archive validation, see [docs/live-stack-smoke-runbook.md](live-stack-smoke-runbook.md).
+
 From the server clone:
 
 ```sh

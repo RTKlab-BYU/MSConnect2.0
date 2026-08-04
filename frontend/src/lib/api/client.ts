@@ -4,7 +4,7 @@ const API_BASE = "/api";
 
 export type ListParams = Record<string, string | number | boolean | null | undefined>;
 
-function csrfToken() {
+export function csrfToken() {
   const match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
   return match ? decodeURIComponent(match[1]) : "";
 }

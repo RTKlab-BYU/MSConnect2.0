@@ -199,7 +199,7 @@ class Command(BaseCommand):
             "diann": "Real DIA-NN",
             "fragpipe": "Real FragPipe",
             "proteome-discoverer": "Real Proteome Discoverer",
-            "skyline": "Real Skyline",
+            "skyline": "Skyline Targeted",
             "spectronaut": "Real Spectronaut",
         }[engine]
         pipeline, _created = ProcessingPipeline.objects.update_or_create(

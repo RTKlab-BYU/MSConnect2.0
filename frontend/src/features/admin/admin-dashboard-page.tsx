@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Activity,
   ArrowRight,
@@ -14,14 +14,17 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
 
 import { MetricCard, PageHero } from "@/components/layout/page-section";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
   fetchAcquisitions,
+  fetchDeploymentSettings,
   fetchProcessingJobsOverview,
   fetchProcessingNodes,
   fetchProcessingNodesOverview,
@@ -30,8 +33,10 @@ import {
   fetchRawFilesOverview,
   fetchSystemHealth,
   queryKeys,
+  updateDeploymentSettings,
 } from "@/lib/api/queries";
-import type { ProcessingNode } from "@/lib/api/types";
+import { queryClient } from "@/lib/api/query-client";
+import type { ProcessingNode, ProcessingPipeline } from "@/lib/api/types";
 import { formatDate } from "@/lib/format";
 
 const numberFormat = new Intl.NumberFormat();
@@ -176,6 +181,8 @@ const readinessCommands = [
   "docker compose exec web python manage.py verify_e2e_smoke_fixture --code E2E-SMOKE",
 ];
 
+const UNSET_PIPELINE = "__unset__";
+
 export default function AdminDashboardPage() {
   const projectsQuery = useQuery({
     queryKey: queryKeys.projects({ page: 1, page_size: 1 }),
@@ -207,21 +214,59 @@ export default function AdminDashboardPage() {
     refetchInterval: 10_000,
   });
   const pipelinesQuery = useQuery({
-    queryKey: queryKeys.processingPipelines({ page: 1, page_size: 1 }),
-    queryFn: () => fetchProcessingPipelines({ page: 1, page_size: 1 }),
+    queryKey: queryKeys.processingPipelines({ page: 1, page_size: 500 }),
+    queryFn: () => fetchProcessingPipelines({ page: 1, page_size: 500 }),
   });
   const acquisitionsQuery = useQuery({
     queryKey: queryKeys.acquisitions({ page: 1, page_size: 1 }),
     queryFn: () => fetchAcquisitions({ page: 1, page_size: 1 }),
   });
+  const deploymentSettingsQuery = useQuery({
+    queryKey: queryKeys.deploymentSettings(),
+    queryFn: fetchDeploymentSettings,
+  });
+  const [selectedPrtcPipeline, setSelectedPrtcPipeline] = useState(UNSET_PIPELINE);
+  const [selectedTargetedPipeline, setSelectedTargetedPipeline] = useState(UNSET_PIPELINE);
   const nodes = nodesQuery.data?.results ?? [];
   const systemHealth = systemHealthQuery.data;
+  const deploymentSettings = deploymentSettingsQuery.data;
+  const skylinePipelines = (pipelinesQuery.data?.results ?? []).filter((pipeline) => pipelineSupportsSkyline(pipeline));
+  const activePrtcPipelineId = deploymentSettings?.prtc_skyline_pipeline ? String(deploymentSettings.prtc_skyline_pipeline) : UNSET_PIPELINE;
+  const activeTargetedPipelineId = deploymentSettings?.targeted_skyline_pipeline
+    ? String(deploymentSettings.targeted_skyline_pipeline)
+    : UNSET_PIPELINE;
+  const currentPrtcLabel = deploymentSettings?.prtc_skyline_pipeline_name
+    ? `${deploymentSettings.prtc_skyline_pipeline_name}${deploymentSettings.prtc_skyline_pipeline_version ? ` · ${deploymentSettings.prtc_skyline_pipeline_version}` : ""}`
+    : "Unset";
+  const currentTargetedLabel = deploymentSettings?.targeted_skyline_pipeline_name
+    ? `${deploymentSettings.targeted_skyline_pipeline_name}${deploymentSettings.targeted_skyline_pipeline_version ? ` · ${deploymentSettings.targeted_skyline_pipeline_version}` : ""}`
+    : "Unset";
+  const selectedPipelineChanged =
+    selectedPrtcPipeline !== activePrtcPipelineId || selectedTargetedPipeline !== activeTargetedPipelineId;
+  const deploymentMutation = useMutation({
+    mutationFn: () =>
+      updateDeploymentSettings({
+        prtc_skyline_pipeline: selectedPrtcPipeline === UNSET_PIPELINE ? null : Number(selectedPrtcPipeline),
+        targeted_skyline_pipeline: selectedTargetedPipeline === UNSET_PIPELINE ? null : Number(selectedTargetedPipeline),
+      }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.deploymentSettings() }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.systemHealth() }),
+      ]);
+    },
+  });
   const redNodes = nodes.filter((node) => node.health === "red").length;
   const yellowNodes = nodes.filter((node) => node.health === "yellow").length;
   const engineRows = summarizeEngines(nodes);
   const systemStatus = systemHealth?.status ?? (redNodes || (jobsQuery.data?.failed ?? 0) > 0 ? "red" : yellowNodes ? "yellow" : "green");
   const healthAlerts = systemHealth?.alerts ?? [];
   const readinessEntries = Object.entries((systemHealth?.readiness ?? {}) as Record<string, ReadinessEntry>);
+
+  useEffect(() => {
+    setSelectedPrtcPipeline(activePrtcPipelineId);
+    setSelectedTargetedPipeline(activeTargetedPipelineId);
+  }, [activePrtcPipelineId, activeTargetedPipelineId]);
 
   return (
     <div className="grid gap-4">
@@ -314,6 +359,43 @@ export default function AdminDashboardPage() {
         <MetricCard label="Nodes" value={metricValue(nodesOverviewQuery.data?.total)} detail={`${metricValue(nodesOverviewQuery.data?.stale)} stale`} />
         <MetricCard label="Active Jobs" value={metricValue(jobsQuery.data?.active)} detail={`${metricValue(jobsQuery.data?.failed)} failed`} />
       </section>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Skyline lanes</CardTitle>
+          <CardDescription>Keep PRTC as the active lab routing lane and reserve a separate targeted Skyline scaffold for future assays.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+          <LanePanel
+            title="PRTC"
+            description="Active upload routing. PRTC uploads land here first."
+            currentLabel={currentPrtcLabel}
+            updatedAt={deploymentSettings?.updated_at}
+            selectLabel="Active PRTC pipeline"
+            selectPlaceholder={skylinePipelines.length ? "Select a pipeline" : "No pipelines available"}
+            value={selectedPrtcPipeline}
+            onChange={setSelectedPrtcPipeline}
+            pipelines={skylinePipelines}
+          />
+          <LanePanel
+            title="Targeted"
+            description="Scaffold only. Keep this lane ready for future Skyline assays."
+            currentLabel={currentTargetedLabel}
+            updatedAt={deploymentSettings?.updated_at}
+            selectLabel="Targeted pipeline"
+            selectPlaceholder={skylinePipelines.length ? "Select a pipeline" : "No pipelines available"}
+            value={selectedTargetedPipeline}
+            onChange={setSelectedTargetedPipeline}
+            pipelines={skylinePipelines}
+          />
+          <div className="xl:col-span-2 flex flex-wrap items-center justify-between gap-3 border-t pt-3">
+            <div className="text-xs text-muted-foreground">{skylinePipelines.length} Skyline-capable pipeline(s) detected.</div>
+            <Button disabled={!selectedPipelineChanged || deploymentMutation.isPending} onClick={() => deploymentMutation.mutate()}>
+              {deploymentMutation.isPending ? "Saving..." : "Save Skyline lanes"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -442,6 +524,61 @@ function FeatureLink({
   );
 }
 
+function LanePanel({
+  title,
+  description,
+  currentLabel,
+  updatedAt,
+  selectLabel,
+  selectPlaceholder,
+  value,
+  onChange,
+  pipelines,
+}: {
+  title: string;
+  description: string;
+  currentLabel: string;
+  updatedAt?: string;
+  selectLabel: string;
+  selectPlaceholder: string;
+  value: string;
+  onChange: (value: string) => void;
+  pipelines: ProcessingPipeline[];
+}) {
+  return (
+    <div className="grid gap-3 rounded-2xl border bg-background/50 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-black uppercase tracking-[0.14em] text-muted-foreground">{title}</div>
+          <div className="mt-1 font-semibold">{currentLabel}</div>
+        </div>
+        <StatusBadge status={title === "PRTC" ? "complete" : "warning"} />
+      </div>
+      <div className="text-sm text-muted-foreground">{description}</div>
+      <div className="text-xs text-muted-foreground">
+        {updatedAt ? `Last updated ${formatDate(updatedAt)}` : "No deployment setting saved yet."}
+      </div>
+      <label className="grid gap-2 text-sm font-medium">
+        {selectLabel}
+        <Select value={value} onValueChange={onChange}>
+          <SelectTrigger>
+            <SelectValue placeholder={selectPlaceholder} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={UNSET_PIPELINE}>Unset</SelectItem>
+            {pipelines.map((pipeline) => (
+              <SelectItem key={pipeline.id} value={String(pipeline.id)}>
+                {pipeline.name} · {pipeline.version}
+                {pipelineSupportsSkyline(pipeline) ? " · Skyline" : ""}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+    </div>
+  );
+}
+
 function NodeHeartbeatRow({ node }: { node: ProcessingNode }) {
   return (
     <div className="rounded-lg border bg-background/50 p-3">
@@ -486,6 +623,23 @@ function ProcessorBootCard({
       <pre className="mt-3 max-h-56 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100"><code>{command}</code></pre>
     </div>
   );
+}
+
+function pipelineSupportsSkyline(pipeline: ProcessingPipeline) {
+  const params = pipeline.parameters ?? {};
+  const tokens = [
+    pipeline.name,
+    pipeline.version,
+    String(params.adapter ?? ""),
+    String(params.required_engine ?? ""),
+    String(params.engine_profile ?? ""),
+    String(params.processor_engine_profile ?? ""),
+    String(params.node_type ?? ""),
+    String(params.engine ?? ""),
+  ]
+    .join(" ")
+    .toLowerCase();
+  return tokens.includes("skyline");
 }
 
 function summarizeEngines(nodes: ProcessingNode[]) {

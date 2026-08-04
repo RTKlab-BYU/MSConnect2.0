@@ -137,7 +137,7 @@ python manage.py processor_registry add-engine \
   --executable fragpipe
 ```
 
-Example Skyline 26.1 image build and PRTC registration:
+Example Skyline 26.1 image build and lane registration:
 
 ```sh
 docker build \
@@ -164,7 +164,23 @@ python manage.py processor_registry add-reference \
   --path /data/shared/skyline/prtc-15.sky
 ```
 
-Register PRTC Skyline settings with the lab-approved 15 peptide definitions. Use `docs/skyline-prtc-15-settings.example.json` as the starting template:
+Use `Skyline Targeted` as the scaffolded general Skyline lane and `Skyline PRTC` as the production QC lane. Start from the appropriate template:
+
+```sh
+python manage.py processor_registry add-settings \
+  --engine skyline \
+  --key targeted-assay \
+  --json-file /data/shared/settings/skyline/targeted-assay.json
+
+python manage.py processor_registry create-pipeline \
+  --engine skyline \
+  --version "Skyline Targeted 26.1" \
+  --engine-version 26.1.0 \
+  --settings-key targeted-assay \
+  --name "Skyline Targeted"
+```
+
+`docs/skyline-targeted-settings.example.json` provides a starter template for the scaffolded lane. The PRTC lane keeps the lab-approved 15-peptide standard set and the dedicated postprocess block:
 
 ```json
 {
@@ -186,7 +202,7 @@ Register PRTC Skyline settings with the lab-approved 15 peptide definitions. Use
 }
 ```
 
-Then create the PRTC pipeline and configure upload-time routing:
+Then create the PRTC pipeline and configure upload-time routing. Prefer the deployment-settings UI/API for the active PRTC lane; `MSCONNECT_PRTC_SKYLINE_PIPELINE_ID` remains a fallback for older deployments:
 
 ```sh
 python manage.py processor_registry add-settings \

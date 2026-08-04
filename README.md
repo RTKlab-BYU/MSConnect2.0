@@ -197,6 +197,8 @@ docker compose exec web python manage.py verify_e2e_smoke_fixture --code E2E-SMO
 
 After a successful run, `/app/admin` and `/app/processing/admin` should show green live nodes, current IPs, heartbeat age, and the completed smoke job artifacts.
 
+For a more detailed live-stack checklist, including real DIA-NN file pickup, project/QC dashboard confirmation, and optional archive verification, see [docs/live-stack-smoke-runbook.md](docs/live-stack-smoke-runbook.md).
+
 ## Tagged Operations Smoke Test
 
 Use this flow when validating several projects and experiments with sample, HYE, PRTC, library, blank, and wash runs. It uses generated placeholder raw-like files and the repo's generic demo processor, so it does not require licensed DIA-NN or vendor tools.

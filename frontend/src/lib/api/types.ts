@@ -436,6 +436,17 @@ export type ProcessingPipeline = {
   updated_at: string;
 };
 
+export type DeploymentSettings = {
+  scope: string;
+  prtc_skyline_pipeline: EntityId | null;
+  prtc_skyline_pipeline_name: string;
+  prtc_skyline_pipeline_version: string;
+  targeted_skyline_pipeline: EntityId | null;
+  targeted_skyline_pipeline_name: string;
+  targeted_skyline_pipeline_version: string;
+  updated_at: string;
+};
+
 export type ProcessingJobOverview = {
   total: number;
   active: number;

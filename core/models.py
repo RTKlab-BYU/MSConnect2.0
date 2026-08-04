@@ -759,6 +759,31 @@ class ProcessingPipeline(TimestampedModel):
         return f"{self.name} {self.version}"
 
 
+class DeploymentSetting(TimestampedModel):
+    scope = models.CharField(max_length=32, unique=True, default="site")
+    prtc_skyline_pipeline = models.ForeignKey(
+        ProcessingPipeline,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        blank=True,
+        null=True,
+    )
+    targeted_skyline_pipeline = models.ForeignKey(
+        ProcessingPipeline,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        blank=True,
+        null=True,
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("scope",)
+
+    def __str__(self) -> str:
+        return f"{self.scope} deployment settings"
+
+
 class ProcessingNode(TimestampedModel):
     name = models.CharField(max_length=128, unique=True)
     node_type = models.CharField(max_length=64, default="diann")

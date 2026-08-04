@@ -13,7 +13,7 @@ Review these React routes:
 - `/app/projects/<project_id>` - primary project workspace. This is the main SDMS/LIMS view for raw files, processing jobs, analysis visualization, samples, runs, and acquisitions.
 - `/app/monitoring` - run, job, node, and raw-file operations dashboard.
 - `/app/processing` - detailed node, queue, retry, and pipeline processing console.
-- `/app/uploads` - direct-to-object-storage upload manager using Django-issued signed upload URLs.
+- `/app/uploads` - browser-to-Django upload manager that stages chunks locally and records completed `RawFile` entries.
 - `/app/settings` - administrative/settings placeholder for users, instruments, protocols, and pipelines.
 
 The root URL redirects to `/app/projects`. `/admin/`, `/api/`, `/accounts/`, and `/api-auth/` remain available.
@@ -87,8 +87,8 @@ http://127.0.0.1:8000/app/projects
    - Confirm project-scoped drill-down from `/app/projects/<project_id>` lands in the right filtered processing view.
 
 6. Review `/app/uploads`.
-   - Confirm the flow asks Django for signed upload URLs, then uploads chunks directly to object storage.
-   - Local development may show upload errors until `OBJECT_STORAGE_UPLOAD_BASE_URL` points at a real signed storage target.
+   - Confirm the flow asks Django for upload session URLs, then uploads chunks back to the same Django origin.
+   - Local development should work without object storage; uploads stage locally and are finalized into managed raw storage.
    - Confirm failure/retry/progress states are understandable without relying on backend logs.
 
 7. Review shell behavior.
@@ -103,7 +103,7 @@ The `/app/` interface is the only user-facing UI and should continue to satisfy 
 - Project workspace covers the daily lab workflow: raw files, processing jobs, samples, runs, and acquisitions.
 - Raw-file and processing-job tables remain responsive with realistic record counts.
 - Intake, review, and promotion workflows either exist in `/app/` or have an approved replacement path.
-- Direct upload behavior is validated against the real object-storage provider.
+- Direct upload behavior is validated against the local Django-backed staging and finalization path.
 - Job/node state is validated with realistic assigned, retrying, failed, and completed jobs.
 - Lab users can complete common tasks without legacy Django-template pages.
 - Admin-only work remains available through Django admin or a dedicated `/app/settings` screen.
@@ -120,7 +120,7 @@ Completed migration steps:
 
 ## Notes For Phase 2 Data Work
 
-- Chromatogram and spectrum APIs should return metadata plus signed object-storage URLs, not large inline JSON arrays.
+- Chromatogram and spectrum APIs should return metadata plus compact payload references or other lightweight delivery mechanisms, not large inline JSON arrays.
 - Under roughly 50k points per trace with only a handful of overlays, uPlot is expected to be enough.
 - For 100k-1M+ points per trace or many overlays, add server-side or worker-side min/max downsampling before rendering.
 - UMAP and heatmap views should remain dynamically sized because matrix and cell counts will vary by experiment.

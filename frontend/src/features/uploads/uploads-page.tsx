@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useQuery } from "@tanstack/react-query";
 import { fetchProjectResearcherStatus, fetchProjects, queryKeys } from "@/lib/api/queries";
+import { csrfToken } from "@/lib/api/client";
 import { completeDirectUploadSession, createDirectUploadSession } from "@/lib/api/uploads";
 import { formatBytes, formatDate } from "@/lib/format";
 import { useUploadStore, type UploadFileRecord } from "@/store/upload-store";
@@ -71,7 +72,7 @@ export default function UploadsPage() {
     const project = Number(projectId);
     const fileObject = fileObjectsRef.current.get(file.id);
     if (!project) {
-      markFailed(file.id, "Enter a project ID before requesting signed upload URLs.");
+      markFailed(file.id, "Enter a project ID before starting the upload.");
       return;
     }
     if (!fileObject) {
@@ -101,11 +102,15 @@ export default function UploadsPage() {
         updateChunk(file.id, part.part_number - 1, "uploading");
         const response = await fetch(part.url, {
           method: part.method,
-          headers: part.headers,
+          credentials: "same-origin",
+          headers: {
+            ...part.headers,
+            "X-CSRFToken": csrfToken(),
+          },
           body: chunk,
         });
         if (!response.ok) {
-          throw new Error(`Object storage rejected part ${part.part_number} with status ${response.status}`);
+          throw new Error(`Upload service rejected part ${part.part_number} with status ${response.status}`);
         }
         updateChunk(file.id, part.part_number - 1, "complete", part.end - part.start);
       }

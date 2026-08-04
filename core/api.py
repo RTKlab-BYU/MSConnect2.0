@@ -1,17 +1,20 @@
+import hashlib
 import json
 import math
 import re
 import sys
 import uuid
+import shutil
 from pathlib import Path, PurePath
 from statistics import mean, median, pstdev
 from urllib.parse import quote, urlencode
 
-from django.contrib.auth import get_user_model, login
 from django.conf import settings
+from django.contrib.auth import get_user_model, login
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
-from django.core.signing import BadSignature, SignatureExpired
-from django.core.signing import TimestampSigner
+from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
+from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import Count, Prefetch, Sum
 from django.shortcuts import get_object_or_404
@@ -23,12 +26,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ingest.result_import import ResultTableImportError, import_result_tables
-from ingest.services import find_run_for_path, parse_filename_metadata, record_ingestion_failure
+from ingest.services import build_storage_path, find_run_for_path, parse_filename_metadata, record_ingestion_failure
 from msconnect.health import _database_check, _path_check
 
 from .agent_auth import AgentTokenAuthentication
 from .models import (
     AcquisitionWorklist,
+    DeploymentSetting,
     DerivativeStatus,
     DirectUploadSession,
     DirectUploadStatus,
@@ -296,7 +300,11 @@ class ProjectIntakeRequestSerializer(BaseSerializer):
                 "name": attrs.get("institution_name") or getattr(getattr(lab, "facility", None), "name", ""),
             },
             "contact": {
-                "name": attrs.get("contact_name") or getattr(user, "get_full_name", lambda: "")() or getattr(user, "username", ""),
+                "name": (
+                    attrs.get("contact_name")
+                    or getattr(user, "get_full_name", lambda: "")()
+                    or getattr(user, "username", "")
+                ),
                 "email": attrs.get("contact_email") or fallback_email,
             },
             "sample_planning": {
@@ -318,6 +326,29 @@ class ProjectIntakeRequestSerializer(BaseSerializer):
             },
             "notes": attrs.get("objective") or "",
         }
+        required_fields = {
+            "requested_title": "requested_title",
+            "objective": "objective",
+            "institution_name": "institution_name",
+            "contact_name": "contact_name",
+            "contact_email": "contact_email",
+            "invoice_email": "invoice_email",
+            "organism": "organism",
+            "matrix": "matrix",
+            "plate_format": "plate_format",
+        }
+        missing = [field_name for field_name in required_fields if not str(attrs.get(field_name) or "").strip()]
+        if missing:
+            raise ValidationError({field: f"{field} is required." for field in missing})
+        if attrs.get("sample_count_estimate") in (None, ""):
+            raise ValidationError({"sample_count_estimate": "sample_count_estimate is required."})
+        try:
+            sample_count = int(attrs["sample_count_estimate"])
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"sample_count_estimate": "sample_count_estimate must be an integer."}) from exc
+        if sample_count <= 0:
+            raise ValidationError({"sample_count_estimate": "sample_count_estimate must be greater than zero."})
+        attrs["sample_count_estimate"] = sample_count
         metadata = validate_intake_metadata(_merge_metadata(metadata_defaults, attrs.get("metadata") or {}))
         attrs["metadata"] = metadata
         attrs["institution_name"] = metadata["institution"]["name"]
@@ -398,33 +429,38 @@ class DirectUploadSessionSerializer(BaseSerializer):
         )
 
     def get_upload_urls(self, obj):
-        signer = TimestampSigner(salt="direct-upload")
-        base_url = settings.OBJECT_STORAGE_UPLOAD_BASE_URL.rstrip("/")
         urls = []
         for index in range(obj.chunk_count):
             part_number = index + 1
             start = index * obj.chunk_size_bytes
             end = min(start + obj.chunk_size_bytes, obj.size_bytes)
-            signature = signer.sign(f"{obj.upload_id}:{part_number}:{obj.storage_key}")
-            query = urlencode(
-                {
-                    "upload_id": obj.upload_id,
-                    "part_number": part_number,
-                    "expires_in": settings.OBJECT_STORAGE_SIGNED_URL_TTL_SECONDS,
-                    "signature": signature,
-                }
-            )
             urls.append(
                 {
                     "part_number": part_number,
                     "start": start,
                     "end": end,
                     "method": "PUT",
-                    "url": f"{base_url}/{quote(obj.storage_key)}?{query}",
+                    "url": f"/api/direct-uploads/{obj.id}/chunks/{part_number}/",
                     "headers": {"Content-Type": obj.content_type or "application/octet-stream"},
                 }
             )
         return urls
+
+
+def _direct_upload_root() -> Path:
+    return Path(settings.DIRECT_UPLOAD_STAGING_ROOT).resolve()
+
+
+def _direct_upload_session_root(session: DirectUploadSession) -> Path:
+    return _direct_upload_root() / str(session.upload_id)
+
+
+def _direct_upload_chunk_path(session: DirectUploadSession, part_number: int) -> Path:
+    return _direct_upload_session_root(session) / "chunks" / f"{part_number:05d}.part"
+
+
+def _direct_upload_cleanup(session: DirectUploadSession) -> None:
+    shutil.rmtree(_direct_upload_session_root(session), ignore_errors=True)
 
 
 class AcquisitionWorklistSerializer(BaseSerializer):
@@ -440,6 +476,50 @@ class WorklistEntrySerializer(BaseSerializer):
 class ProcessingPipelineSerializer(BaseSerializer):
     class Meta(BaseSerializer.Meta):
         model = ProcessingPipeline
+
+
+class DeploymentSettingsSerializer(serializers.ModelSerializer):
+    prtc_skyline_pipeline_name = serializers.SerializerMethodField()
+    prtc_skyline_pipeline_version = serializers.SerializerMethodField()
+    targeted_skyline_pipeline_name = serializers.SerializerMethodField()
+    targeted_skyline_pipeline_version = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DeploymentSetting
+        fields = (
+            "scope",
+            "prtc_skyline_pipeline",
+            "prtc_skyline_pipeline_name",
+            "prtc_skyline_pipeline_version",
+            "targeted_skyline_pipeline",
+            "targeted_skyline_pipeline_name",
+            "targeted_skyline_pipeline_version",
+            "updated_at",
+        )
+        read_only_fields = (
+            "scope",
+            "prtc_skyline_pipeline_name",
+            "prtc_skyline_pipeline_version",
+            "targeted_skyline_pipeline_name",
+            "targeted_skyline_pipeline_version",
+            "updated_at",
+        )
+
+    def get_prtc_skyline_pipeline_name(self, obj):
+        pipeline = obj.prtc_skyline_pipeline
+        return pipeline.name if pipeline else ""
+
+    def get_prtc_skyline_pipeline_version(self, obj):
+        pipeline = obj.prtc_skyline_pipeline
+        return pipeline.version if pipeline else ""
+
+    def get_targeted_skyline_pipeline_name(self, obj):
+        pipeline = obj.targeted_skyline_pipeline
+        return pipeline.name if pipeline else ""
+
+    def get_targeted_skyline_pipeline_version(self, obj):
+        pipeline = obj.targeted_skyline_pipeline
+        return pipeline.version if pipeline else ""
 
 
 class ProcessingNodeSerializer(BaseSerializer):
@@ -624,8 +704,15 @@ def validate_intake_metadata(value: dict | None) -> dict:
     normalized["institution"]["name"] = str(normalized["institution"].get("name") or "").strip()
     normalized["contact"]["name"] = str(normalized["contact"].get("name") or "").strip()
     normalized["contact"]["email"] = str(normalized["contact"].get("email") or "").strip().lower()
+    normalized["contact"]["email"] = _validate_email(
+        normalized["contact"]["email"],
+        field_name="metadata.contact.email",
+    )
     normalized["shipping"]["expectations"] = str(normalized["shipping"].get("expectations") or "").strip()
     normalized["billing"]["invoice_email"] = str(normalized["billing"].get("invoice_email") or "").strip().lower()
+    normalized["billing"]["invoice_email"] = _validate_email(
+        normalized["billing"]["invoice_email"], field_name="metadata.billing.invoice_email"
+    )
     normalized["billing"]["po_reference"] = str(normalized["billing"].get("po_reference") or "").strip()
     normalized["billing"]["billing_address"] = _ensure_dict(
         normalized["billing"].get("billing_address"),
@@ -633,6 +720,14 @@ def validate_intake_metadata(value: dict | None) -> dict:
     )
     normalized["hazards"]["handling_notes"] = str(normalized["hazards"].get("handling_notes") or "").strip()
     return normalized
+
+
+def _validate_email(value: str, *, field_name: str) -> str:
+    try:
+        validate_email(value)
+    except DjangoValidationError as exc:
+        raise ValidationError({field_name: f"{field_name} must be a valid email address."}) from exc
+    return value
 
 
 def _merge_metadata(defaults: dict, overrides: dict) -> dict:
@@ -1234,16 +1329,30 @@ def _hye_pair_score(organism_rows: list[dict]) -> tuple[float | None, float | No
 
 
 def _prtc_skyline_pipeline_for_raw_file(raw_file: RawFile) -> ProcessingPipeline | None:
-    pipeline_id = str(getattr(settings, "MSCONNECT_PRTC_SKYLINE_PIPELINE_ID", "") or "").strip()
-    if not pipeline_id:
-        return None
     qc_program = getattr(raw_file.run, "qc_program", "") if raw_file.run_id else ""
     if raw_file.file_role != RunFileRole.PRTC and qc_program != QcProgram.PRTC:
+        return None
+    deployment_setting = _deployment_setting()
+    pipeline = deployment_setting.prtc_skyline_pipeline if deployment_setting else None
+    if pipeline:
+        return pipeline
+    pipeline_id = str(getattr(settings, "MSCONNECT_PRTC_SKYLINE_PIPELINE_ID", "") or "").strip()
+    if not pipeline_id:
         return None
     try:
         return ProcessingPipeline.objects.get(pk=int(pipeline_id))
     except (TypeError, ValueError, ProcessingPipeline.DoesNotExist):
         return None
+
+
+def _deployment_setting() -> DeploymentSetting:
+    deployment_setting, _created = DeploymentSetting.objects.select_related(
+        "prtc_skyline_pipeline",
+        "targeted_skyline_pipeline",
+    ).get_or_create(
+        scope="site"
+    )
+    return deployment_setting
 
 
 def _required_engine_for_pipeline(pipeline: ProcessingPipeline | None) -> str:
@@ -2244,8 +2353,16 @@ class QcApiMixin:
             scores = machine["scores"]
             mean_score = round(mean(scores), 4) if scores else None
             stddev_score = round(pstdev(scores), 4) if len(scores) > 1 else 0.0 if scores else None
-            lower_band = round(mean_score - (2 * stddev_score), 4) if mean_score is not None and stddev_score is not None else None
-            upper_band = round(mean_score + (2 * stddev_score), 4) if mean_score is not None and stddev_score is not None else None
+            lower_band = (
+                round(mean_score - (2 * stddev_score), 4)
+                if mean_score is not None and stddev_score is not None
+                else None
+            )
+            upper_band = (
+                round(mean_score + (2 * stddev_score), 4)
+                if mean_score is not None and stddev_score is not None
+                else None
+            )
             machine_summaries.append(
                 {
                     "machine_key": machine["machine_key"],
@@ -2256,7 +2373,9 @@ class QcApiMixin:
                     "stddev_score": stddev_score,
                     "lower_band": lower_band,
                     "upper_band": upper_band,
-                    "latest_completed_at": machine["latest_completed_at"].isoformat() if machine["latest_completed_at"] else None,
+                    "latest_completed_at": (
+                        machine["latest_completed_at"].isoformat() if machine["latest_completed_at"] else None
+                    ),
                 }
             )
             for point in machine["series"]:
@@ -2271,7 +2390,9 @@ class QcApiMixin:
                 )
 
         pairs.sort(key=lambda pair: (pair["project_code"], pair["worklist_name"], pair["pair_label"]))
-        machine_series.sort(key=lambda point: (point["machine_label"], point["completed_at"] or "", point["pair_label"]))
+        machine_series.sort(
+            key=lambda point: (point["machine_label"], point["completed_at"] or "", point["pair_label"])
+        )
         return {
             "overview": {
                 "program": "hye",
@@ -2526,7 +2647,13 @@ class SystemHealthView(APIView):
                 group["latest_heartbeat_at"] = node.last_heartbeat_at
         return sorted(groups.values(), key=lambda item: item["node_type"])
 
-    def _aggregate_groups(self, groups: list[dict], *, include_types: set[str] | None = None, exclude_types: set[str] | None = None):
+    def _aggregate_groups(
+        self,
+        groups: list[dict],
+        *,
+        include_types: set[str] | None = None,
+        exclude_types: set[str] | None = None,
+    ):
         selected = []
         for group in groups:
             if include_types is not None and group["node_type"] not in include_types:
@@ -2562,6 +2689,24 @@ class SystemHealthView(APIView):
                 group["latest_heartbeat_at"].isoformat() if group.get("latest_heartbeat_at") else None
             ),
         }
+
+
+class DeploymentSettingsView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can view deployment settings.")
+        return Response(DeploymentSettingsSerializer(_deployment_setting()).data)
+
+    def patch(self, request):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can edit deployment settings.")
+        deployment_setting = _deployment_setting()
+        serializer = DeploymentSettingsSerializer(deployment_setting, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 
 class CurrentUserView(APIView):
@@ -2636,7 +2781,8 @@ class SignupView(APIView):
             send_mail(
                 subject="Verify your MSConnect account",
                 message=(
-                    f"Verify your account by visiting: {request.build_absolute_uri(verification_payload['verify_url'])}\n\n"
+                    f"Verify your account by visiting: "
+                    f"{request.build_absolute_uri(verification_payload['verify_url'])}\n\n"
                     f"Your temporary verification code: {verification_payload['token']}"
                 ),
                 from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "msconnect@localhost"),
@@ -3956,7 +4102,9 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         filename = PurePath(str(request.data.get("filename", ""))).name
         if not filename:
             raise ValidationError({"filename": "Filename is required."})
-        intended_filename = PurePath(str(request.data.get("expected_filename") or request.data.get("intended_filename") or "")).name
+        intended_filename = PurePath(
+            str(request.data.get("expected_filename") or request.data.get("intended_filename") or "")
+        ).name
 
         try:
             size_bytes = int(request.data.get("size_bytes"))
@@ -4008,6 +4156,51 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         serializer = self.get_serializer(session)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=["put"], url_path=r"chunks/(?P<part_number>\d+)")
+    def upload_chunk(self, request, pk=None, part_number=None):
+        session = self.get_object()
+        if session.status == DirectUploadStatus.COMPLETE:
+            serializer = self.get_serializer(session)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        try:
+            part_number = int(part_number)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"part_number": "part_number must be a positive integer."}) from exc
+        if part_number < 1 or part_number > session.chunk_count:
+            raise ValidationError({"part_number": "part_number is out of range for this upload session."})
+
+        payload = request.body or b""
+        if not payload:
+            raise ValidationError({"chunk": "Chunk payload is required."})
+
+        expected_size = min(session.chunk_size_bytes, session.size_bytes - (part_number - 1) * session.chunk_size_bytes)
+        if len(payload) != expected_size:
+            raise ValidationError(
+                {
+                    "chunk": (
+                        f"Chunk {part_number} must be {expected_size} bytes; received {len(payload)} bytes."
+                    )
+                }
+            )
+
+        chunk_path = _direct_upload_chunk_path(session, part_number)
+        chunk_path.parent.mkdir(parents=True, exist_ok=True)
+        if chunk_path.exists() and chunk_path.read_bytes() == payload:
+            session.status = DirectUploadStatus.UPLOADING
+            session.save(update_fields=["status", "updated_at"])
+            serializer = self.get_serializer(session)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        temp_path = chunk_path.with_suffix(".tmp")
+        temp_path.write_bytes(payload)
+        temp_path.replace(chunk_path)
+
+        session.status = DirectUploadStatus.UPLOADING
+        session.save(update_fields=["status", "updated_at"])
+        serializer = self.get_serializer(session)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=["post"])
     def complete(self, request, pk=None):
         session = self.get_object()
@@ -4026,26 +4219,63 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
             run = _resolve_run_for_expected_filename(project_id=session.project_id, filename=session.filename)
         file_role = run.file_role if run else session.file_role
 
-        raw_file = RawFile.objects.create(
-            run=run,
-            source_path=f"direct-upload:{session.upload_id}",
-            storage_path=session.storage_key,
-            filename=session.filename,
-            checksum_sha256=checksum,
-            size_bytes=session.size_bytes,
-            imported_at=timezone.now(),
-            status=RawFileStatus.IMPORTED,
-            file_role=file_role,
-            match_confidence=1.0 if run else 0.0,
-            metadata={
-                "direct_upload_session": session.id,
-                "object_storage_key": session.storage_key,
-                "intended_filename": session.intended_filename,
-                "file_role": file_role,
-                "matched_run_id": run.id if run else None,
-                **session.metadata,
-            },
-        )
+        chunk_paths = [_direct_upload_chunk_path(session, part_number) for part_number in range(1, session.chunk_count + 1)]
+        missing_parts = [str(index + 1) for index, path in enumerate(chunk_paths) if not path.exists()]
+        if missing_parts:
+            raise ValidationError({"chunks": f"Missing uploaded chunks: {', '.join(missing_parts)}"})
+
+        raw_root = Path(settings.RAW_FILE_STORAGE_ROOT).resolve()
+        destination = build_storage_path(raw_root, Path(session.filename), checksum)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temp_destination = destination.parent / f".{destination.name}.{session.upload_id}.uploading"
+
+        digest = hashlib.sha256()
+        size_bytes = 0
+        with temp_destination.open("wb") as output_file:
+            for path in chunk_paths:
+                data = path.read_bytes()
+                digest.update(data)
+                size_bytes += len(data)
+                output_file.write(data)
+
+        assembled_checksum = digest.hexdigest()
+        if assembled_checksum != checksum:
+            temp_destination.unlink(missing_ok=True)
+            raise ValidationError({"checksum_sha256": "Uploaded chunks do not match the provided checksum."})
+        if size_bytes != session.size_bytes:
+            temp_destination.unlink(missing_ok=True)
+            raise ValidationError({"size_bytes": "Uploaded chunks do not match the expected file size."})
+
+        raw_file = RawFile.objects.filter(checksum_sha256=checksum).first()
+        if not raw_file:
+            if destination.exists():
+                temp_destination.unlink(missing_ok=True)
+                raise ValidationError({"storage_path": "A file already exists at the destination path."})
+            shutil.copy2(temp_destination, destination)
+            temp_destination.unlink(missing_ok=True)
+            raw_file = RawFile.objects.create(
+                run=run,
+                source_path=f"direct-upload:{session.upload_id}",
+                storage_path=str(destination),
+                filename=session.filename,
+                checksum_sha256=checksum,
+                size_bytes=session.size_bytes,
+                imported_at=timezone.now(),
+                status=RawFileStatus.IMPORTED,
+                file_role=file_role,
+                match_confidence=1.0 if run else 0.0,
+                metadata={
+                    "direct_upload_session": session.id,
+                    "direct_upload_storage_key": session.storage_key,
+                    "intended_filename": session.intended_filename,
+                    "file_role": file_role,
+                    "matched_run_id": run.id if run else None,
+                    **session.metadata,
+                },
+            )
+        else:
+            temp_destination.unlink(missing_ok=True)
+
         with transaction.atomic():
             _queue_spectra_conversion_job_for_raw_file(raw_file)
             _queue_processing_job_for_raw_file(raw_file)
@@ -4053,6 +4283,9 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         session.completed_raw_file = raw_file
         session.status = DirectUploadStatus.COMPLETE
         session.save(update_fields=["checksum_sha256", "completed_raw_file", "status", "updated_at"])
+        for path in chunk_paths:
+            path.unlink(missing_ok=True)
+        _direct_upload_cleanup(session)
         serializer = self.get_serializer(session)
         return Response(serializer.data, status=status.HTTP_200_OK)
 

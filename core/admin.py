@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from .models import (
     AcquisitionWorklist,
+    DeploymentSetting,
     DirectUploadSession,
     Experiment,
     Facility,
@@ -169,6 +170,18 @@ class DirectUploadSessionAdmin(admin.ModelAdmin):
 class ProcessingPipelineAdmin(admin.ModelAdmin):
     list_display = ("name", "version", "container_image")
     search_fields = ("name", "version", "container_image")
+
+
+@admin.register(DeploymentSetting)
+class DeploymentSettingAdmin(admin.ModelAdmin):
+    list_display = ("scope", "prtc_skyline_pipeline", "targeted_skyline_pipeline", "updated_at")
+    search_fields = (
+        "scope",
+        "prtc_skyline_pipeline__name",
+        "prtc_skyline_pipeline__version",
+        "targeted_skyline_pipeline__name",
+        "targeted_skyline_pipeline__version",
+    )
 
 
 @admin.register(ProcessingNode)

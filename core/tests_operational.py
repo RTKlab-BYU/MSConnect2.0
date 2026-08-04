@@ -279,7 +279,7 @@ class OperationalSmokeCommandTests(TestCase):
             self.assertEqual(project.experiments.count(), 3)
             diann_pipeline = ProcessingPipeline.objects.get(name="Real DIA-NN")
             fragpipe_pipeline = ProcessingPipeline.objects.get(name="Real FragPipe")
-            skyline_pipeline = ProcessingPipeline.objects.get(name="Real Skyline")
+            skyline_pipeline = ProcessingPipeline.objects.get(name="Skyline Targeted")
             self.assertEqual(diann_pipeline.parameters["required_engine"], "diann")
             self.assertEqual(fragpipe_pipeline.parameters["required_engine"], "fragpipe")
             self.assertEqual(fragpipe_pipeline.parameters["workflow"], str(fragpipe_workflow))
@@ -295,6 +295,50 @@ class OperationalSmokeCommandTests(TestCase):
             self.assertEqual(
                 WorklistEntry.objects.filter(worklist__metadata__required_engine="skyline").get().expected_filename,
                 "Skyline-01.mzML",
+            )
+
+    def test_create_filename_worklist_matches_expected_filenames(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            incoming = root / "incoming"
+            filenames = [
+                "/Volumes/T7_Shield/tempDataMS/EN1033_FluidBlank_BufferA_rep1_ch1_GL17_DIA100win1uL_run3.raw",
+                "/Volumes/T7_Shield/tempDataMS/EN1033_try2_TB500_UFBW_rep1_ch2_GD12_DIA100windry_run34.raw",
+                "/Volumes/T7_Shield/tempDataMS/EN1033_TB500_BacStat_rep3_ch1_GB15_DIA100win2uL_run15.raw",
+            ]
+            filenames_file = root / "filenames.txt"
+            filenames_file.write_text("\n".join(filenames) + "\n", encoding="utf-8")
+            with override_settings(INCOMING_RAW_ROOT=str(incoming)):
+                call_command(
+                    "create_filename_worklist",
+                    code="EN1033",
+                    project_title="EN1033 filename matching smoke project",
+                    worklist_name="EN1033 filename matching worklist",
+                    filenames_file=str(filenames_file),
+                    create_placeholders=True,
+                )
+
+            project = Project.objects.get(code="EN1033")
+            worklist = project.experiments.get().worklists.get()
+            entries = list(WorklistEntry.objects.filter(worklist=worklist).order_by("position"))
+
+            self.assertEqual(worklist.metadata["watcher_matching"], "expected_filename")
+            self.assertEqual(worklist.metadata["filename_count"], 3)
+            self.assertEqual(entries[0].expected_filename, Path(filenames[0]).name)
+            self.assertEqual(entries[1].expected_filename, Path(filenames[1]).name)
+            self.assertEqual(entries[2].expected_filename, Path(filenames[2]).name)
+            self.assertEqual(entries[0].file_role, RunFileRole.TRUE_BLANK)
+            self.assertEqual(entries[1].file_role, RunFileRole.SAMPLE)
+            self.assertEqual(entries[2].file_role, RunFileRole.SAMPLE)
+            self.assertEqual(entries[0].qc_program, QcProgram.NONE)
+            self.assertEqual(entries[1].qc_program, QcProgram.NONE)
+            self.assertEqual(entries[2].qc_program, QcProgram.NONE)
+            self.assertTrue((incoming / Path(filenames[0]).name).exists())
+            self.assertTrue((incoming / Path(filenames[1]).name).exists())
+            self.assertTrue((incoming / Path(filenames[2]).name).exists())
+            self.assertEqual(
+                entries[0].worklist.metadata["processing_pipeline_id"],
+                ProcessingPipeline.objects.get(name="Filename matching DIA-NN", version="site-managed").id,
             )
 
     def test_processor_registry_create_pipeline_pins_engine_profile(self):

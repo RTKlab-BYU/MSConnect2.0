@@ -269,7 +269,7 @@ class Command(BaseCommand):
             parameters["document_ref"] = options["skyline_document_ref"]
         parameters = resolve_pipeline_parameters(parameters, engine="skyline")
         pipeline, _created = ProcessingPipeline.objects.update_or_create(
-            name="Real Skyline",
+            name="Skyline Targeted",
             version=options["skyline_version"],
             defaults={
                 "container_image": "site-managed-skyline",

@@ -1,5 +1,33 @@
 # MSConnect Worklog
 
+## 2026-08-04
+
+### Completed
+
+- Replaced the browser upload path with same-origin Django chunk uploads so `/app/uploads` no longer depends on object storage or MinIO/S3.
+- Fixed the live upload flow to send CSRF credentials with each chunk PUT, which resolved the `403` seen during manual uploads.
+- Added a simple filename-driven worklist generator for exact raw-file matching, so planned runs can be created directly from instrument filenames.
+- Verified the filename-driven worklist command in the Django container with a small EN1033 test set and placeholder incoming files.
+- Updated the upload page wording so failures now refer to the upload service instead of object storage.
+
+### Verified
+
+- `cd frontend && npm run build`
+- `docker compose exec web python manage.py collectstatic --noinput`
+- `docker compose exec web python manage.py test core.tests_operational.OperationalSmokeCommandTests.test_create_filename_worklist_matches_expected_filenames`
+
+### Current review state
+
+- Browser uploads now stage directly through Django and complete into managed raw storage.
+- The new worklist command is the shortest path for watcher validation because it aligns `expected_filename` with the actual file basename.
+- The live static bundle still needs the browser to refresh after deploy because the uploads page chunk hash changed.
+
+### Deferred / next session
+
+- Use the new filename worklist against the EN1033 `.raw` set and test watcher pickup from incoming storage.
+- Add a small UI action for generating filename-based worklists from pasted filenames.
+- Decide whether to surface completed uploads immediately in the project raw-files view after `complete/`.
+
 ## 2026-08-03
 
 ### Completed
