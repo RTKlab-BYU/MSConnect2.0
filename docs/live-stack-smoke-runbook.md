@@ -12,6 +12,17 @@ Use this runbook to verify the minimum live path for MSConnect:
 
 This assumes a single local or lab deployment with the repo's Docker Compose services.
 
+## 0. Clear The Live State
+
+Before a new manual pass, stop the worker containers that are holding old queue state and clear transient processing rows:
+
+```sh
+docker compose stop watcher processor processor-diann processor-pwiz
+docker compose exec web python manage.py cleanup_processing_state
+```
+
+Use `--project-code <code>` if you only want to clear one project's transient jobs. The command preserves completed and failed job history.
+
 ## 1. Bring Up the Core Services
 
 Start the API stack first:
@@ -20,10 +31,10 @@ Start the API stack first:
 docker compose up -d --build web nginx
 ```
 
-Bring up the agent services once the API is ready:
+For a real DIA-NN run, bring up the watcher and DIANN worker together:
 
 ```sh
-docker compose up -d watcher processor archive-worker
+make diann-up
 ```
 
 Verify the stack is actually up:
@@ -54,6 +65,14 @@ For a pure end-to-end smoke test, create the repository's minimal fixture:
 docker compose exec web python manage.py create_e2e_smoke_fixture --code E2E-SMOKE
 ```
 
+To stage a real verified raw into the watcher input root for the same one-file path, point the smoke fixture at the source file directly:
+
+```sh
+docker compose exec web python manage.py create_e2e_smoke_fixture \
+  --code E2E-REAL \
+  --source-file /Volumes/T7_Shield/tempDataMS/JM1025_DigestMix_other_RK9_rep5_ch1_DIA100win_dry_run77.raw
+```
+
 For a real DIA-NN path, create an engine-specific project and worklist from filenames already present in `INCOMING_RAW_ROOT`:
 
 ```sh
@@ -65,6 +84,19 @@ docker compose exec web python manage.py create_engine_operations_fixture \
 ```
 
 Replace the filenames and shared-asset paths with the lab's real filenames and references when running against production-like data. Add `--create-placeholders` only when you want the command to synthesize local test files under `INCOMING_RAW_ROOT`.
+
+Use the `DIA-NN speclib build` preset when the project is creating a new library for a new chemistry, FASTA, or instrument setup. Use the `DIA-NN speclib reuse` preset once the project already has a generated speclib and you want later samples processed against it.
+
+If you already know the exact filenames in your test folder, the more deterministic option is to create a filename-matched worklist first:
+
+```sh
+docker compose exec web python manage.py create_filename_worklist \
+  --code OPS-DIANN \
+  --filename SampleA.mzML \
+  --filename SampleB.mzML
+```
+
+Then copy or mount the real files into `INCOMING_RAW_ROOT` so the watcher can match them without guessing.
 
 ## 4. Test Watcher Pickup
 
@@ -85,10 +117,10 @@ If you are testing a real folder from an MS computer, start with one folder from
 
 ## 5. Test DIA-NN Processing
 
-Run the processor once after the watcher has imported the raw file:
+Leave the DIANN worker running and watch it claim queued jobs after the watcher import:
 
 ```sh
-docker compose run --rm processor python manage.py run_processor_agent --once --engine diann
+docker compose logs -f processor-diann
 ```
 
 Expected results:
@@ -99,7 +131,7 @@ Expected results:
 - the job imports protein and peptide outputs
 - the raw file status moves to processed
 
-If the DIA-NN engine image is not available yet, you can still validate the wrapper contract with the generic smoke processor, but that does not replace a real DIA-NN run.
+If the DIA-NN engine image is not available yet, you can still validate the wrapper contract with the generic smoke processor, but that does not replace a real DIA-NN run. The smoke case is only a launcher check and is not the production search path.
 
 ## 6. Verify UI and Metrics
 

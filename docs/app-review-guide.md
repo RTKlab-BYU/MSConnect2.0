@@ -11,6 +11,7 @@ Review these React routes:
 - `/app/projects` - top-level project list and project search.
 - `/app/qc` - scientist-facing QC workspace where HYE A/B injections form a derived pseudo-project for system suitability and longitudinal trend review, with PRTC scaffolded as the next QC program.
 - `/app/projects/<project_id>` - primary project workspace. This is the main SDMS/LIMS view for raw files, processing jobs, analysis visualization, samples, runs, and acquisitions.
+- `/app/projects/<project_id>/experiments/<experiment_id>` - single acquisition-series workspace inside a project.
 - `/app/monitoring` - run, job, node, and raw-file operations dashboard.
 - `/app/processing` - detailed node, queue, retry, and pipeline processing console.
 - `/app/uploads` - browser-to-Django upload manager that stages chunks locally and records completed `RawFile` entries.
@@ -67,10 +68,12 @@ http://127.0.0.1:8000/app/projects
 
 2. Review `/app/projects/<project_id>`.
    - Confirm the project header, summary counters, and status charts make the project state clear.
+   - Confirm the experiments panel makes the project-to-experiment relationship obvious.
    - Review the `Raw Files` tab first. This is the highest-growth SDMS table and should feel fast, searchable, and readable.
    - Review the `Processing Jobs` tab. Confirm the state model is visible: `queued`, `assigned`, `running`, `complete`, `failed`, and `retrying`.
    - Confirm jobs show the assigned node when available.
    - Review `Samples`, `Runs`, and `Acquisitions` as nested project records, not top-level navigation.
+   - Open `/app/projects/<project_id>/experiments/<experiment_id>` and confirm a single experiment reads like one upload series.
    - Review `Analysis Viz` as a Phase 2 prototype. The current chromatogram is demo-backed; production trace data should come from signed object-storage URLs.
 
 3. Review `/app/qc`.

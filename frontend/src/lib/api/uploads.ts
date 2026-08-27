@@ -10,6 +10,7 @@ export type CreateDirectUploadInput = {
   content_type?: string;
   chunk_size_bytes: number;
   file_role?: RawFile["file_role"];
+  delivery_mode?: "direct" | "watcher";
   metadata?: Record<string, unknown>;
 };
 

@@ -198,10 +198,11 @@ class Command(BaseCommand):
         parameters = {
             "adapter": "diann",
             "required_engine": "diann",
+            "required_engine_version": options["diann_version"],
             "executable": options["diann_executable"],
             "software_version": options["diann_version"],
             "version_command": [options["diann_executable"]],
-            "report": "diann-report.tsv",
+            "report": "diann-report.parquet",
         }
         if options["diann_settings_key"]:
             parameters["settings_ref"] = options["diann_settings_key"]

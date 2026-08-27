@@ -1,0 +1,289 @@
+services:
+  web:
+    image: ${MSCONNECT_IMAGE:-msconnect:local}
+    build: .
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             gunicorn msconnect.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
+    env_file:
+      - .env
+    environment:
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
+      MSCONNECT_PRTC_SKYLINE_PIPELINE_ID: ${MSCONNECT_PRTC_SKYLINE_PIPELINE_ID:-}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${MSCONNECT_MEDIA_HOST_PATH:-./media}:/app/media
+      - ${MSCONNECT_STATIC_HOST_PATH:-./staticfiles}:/app/staticfiles
+      - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
+    ports:
+      - "${MSCONNECT_WEB_PORT:-8000}:8000"
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/readyz/', timeout=5)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  watcher:
+    image: ${MSCONNECT_IMAGE:-msconnect:local}
+    build: .
+    command: >
+      sh -c "python manage.py run_watcher_agent --match-run-by-name"
+    env_file:
+      - .env
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_WATCHER_TOKEN:-watcher-token}
+      MSCONNECT_AGENT_NAME: ${WATCHER_AGENT_NAME:-watcher-1}
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming:ro
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "agent_healthcheck", "--role", "watcher"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  processor:
+    image: ${MSCONNECT_IMAGE:-msconnect:local}
+    build: .
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - .env
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${PROCESSOR_AGENT_NAME:-processor-1}
+      MSCONNECT_PROCESSOR_ENGINE: ${PROCESSOR_ENGINE:-processor}
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming:ro
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "agent_healthcheck", "--role", "processor"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  processor-diann:
+    profiles: ["engines"]
+    image: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.0}
+    build:
+      context: .
+      dockerfile: docker/processor/diann.Dockerfile
+      args:
+        DIANN_LINUX_URL: ${DIANN_LINUX_URL:-}
+        DIANN_VERSION: ${DIANN_ENGINE_VERSION:-2.0}
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - .env
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${DIANN_AGENT_NAME:-diann-1}
+      MSCONNECT_PROCESSOR_ENGINE: diann
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: ${DIANN_ENGINE_VERSION:-2.0}
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: ${DIANN_ENGINE_PROFILE:-diann:2.0}
+      MSCONNECT_IMAGE: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.0}
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "agent_healthcheck", "--role", "processor"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  processor-fragpipe:
+    profiles: ["engines"]
+    image: ${MSCONNECT_FRAGPIPE_IMAGE:-msconnect-processor-fragpipe:local}
+    build:
+      context: .
+      dockerfile: docker/processor/fragpipe.Dockerfile
+      args:
+        FRAGPIPE_URL: ${FRAGPIPE_URL:-}
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - .env
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${FRAGPIPE_AGENT_NAME:-fragpipe-1}
+      MSCONNECT_PROCESSOR_ENGINE: fragpipe
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: ${FRAGPIPE_ENGINE_VERSION:-site-pinned}
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: ${FRAGPIPE_ENGINE_PROFILE:-fragpipe:site-pinned}
+      MSCONNECT_IMAGE: ${MSCONNECT_FRAGPIPE_IMAGE:-msconnect-processor-fragpipe:local}
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "agent_healthcheck", "--role", "processor"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  processor-pwiz:
+    profiles: ["conversion"]
+    image: ${MSCONNECT_PWIZ_IMAGE:-msconnect-processor-pwiz:local}
+    build:
+      context: .
+      dockerfile: docker/processor/pwiz.Dockerfile
+    command: >
+      sh -c "python3 manage.py run_processor_agent"
+    env_file:
+      - .env
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${PWIZ_AGENT_NAME:-pwiz-1}
+      MSCONNECT_PROCESSOR_ENGINE: msconvert
+      MSCONNECT_MSCONVERT_EXECUTABLE: msconvert
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "manage.py", "agent_healthcheck", "--role", "processor"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  processor-skyline:
+    profiles: ["engines"]
+    image: ${MSCONNECT_SKYLINE_IMAGE:-msconnect-processor-skyline:26.1}
+    build:
+      context: .
+      dockerfile: docker/processor/skyline.Dockerfile
+      args:
+        SKYLINE_BASE_IMAGE: ${SKYLINE_BASE_IMAGE:-proteowizard/pwiz-skyline-i-agree-to-the-vendor-licenses:skyline_26.1.0.057-c07debd}
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - .env
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${SKYLINE_AGENT_NAME:-skyline-1}
+      MSCONNECT_PROCESSOR_ENGINE: skyline
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: ${SKYLINE_ENGINE_VERSION:-26.1.0}
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: ${SKYLINE_ENGINE_PROFILE:-skyline:26.1.0}
+      MSCONNECT_IMAGE: ${MSCONNECT_SKYLINE_IMAGE:-msconnect-processor-skyline:26.1}
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "agent_healthcheck", "--role", "processor"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  archive-worker:
+    image: ${MSCONNECT_IMAGE:-msconnect:local}
+    build: .
+    command: >
+      sh -c "python manage.py archive_raw_files --loop --interval ${ARCHIVE_WORKER_INTERVAL_SECONDS:-300}"
+    env_file:
+      - .env
+    environment:
+      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
+      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw:ro
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
+      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
+    depends_on:
+      web:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "${MSCONNECT_NGINX_PORT:-8080}:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${MSCONNECT_STATIC_HOST_PATH:-./staticfiles}:/static:ro
+      - ${MSCONNECT_MEDIA_HOST_PATH:-./media}:/media:ro
+    depends_on:
+      web:
+        condition: service_healthy

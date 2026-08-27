@@ -13,6 +13,34 @@ from core.processing.postprocess import skyline_prtc_postprocess
 
 
 class ProcessorAdapterTests(SimpleTestCase):
+    def test_diann_adapter_merges_performance_and_experimental_tags(self):
+        with TemporaryDirectory() as temp_dir:
+            results_dir = Path(temp_dir)
+            plan = render_adapter_plan(
+                adapter="diann",
+                parameters={
+                    "executable": "diann",
+                    "report": "diann-report.tsv",
+                    "tags": {
+                        "performance": {"threads": 12},
+                        "experimental": {"q_value": 0.005, "matrices": True},
+                    },
+                },
+                placeholders={
+                    "job_id": "77",
+                    "raw_file_path": "/data/raw/sample.raw",
+                    "results_dir": str(results_dir),
+                    "run_name": "Sample Run",
+                },
+                results_dir=results_dir,
+            )
+
+        self.assertIn("--threads", plan.command)
+        self.assertIn("12", plan.command)
+        self.assertIn("--qvalue", plan.command)
+        self.assertIn("0.005", plan.command)
+        self.assertIn("--matrices", plan.command)
+
     def test_skyline_adapter_builds_skylinecmd_report_command(self):
         with TemporaryDirectory() as temp_dir:
             results_dir = Path(temp_dir)
@@ -162,11 +190,17 @@ class ProcessorAdapterTests(SimpleTestCase):
             execution = prepare_job_execution(job_payload, results_root=root / "results")
 
             self.assertTrue(execution.runtime_manifest_path.exists())
+            self.assertIn("--temp", execution.command)
+            self.assertEqual(
+                execution.command[execution.command.index("--temp") + 1],
+                str((root / "results" / "jobs" / "42").resolve()),
+            )
             manifest = json.loads(execution.runtime_manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["software"]["adapter"], "diann")
             self.assertEqual(manifest["software"]["declared_version"], "site-pinned")
             self.assertEqual(manifest["shared_storage"]["raw_file_storage_root"], "/shared/raw")
             self.assertEqual(manifest["shared_storage"]["processor_shared_storage_root"], "/shared")
+            self.assertIn(str((root / "results" / "jobs" / "42" / "diann-report.tsv").resolve()), manifest["output_paths"]["artifact_files"])
             self.assertEqual(
                 manifest["input_fingerprints"][0]["sha256"],
                 "d7439bee24773bcbfa2d0a97947ee36227b10d1022b1a55847e928965bb6bfde",
@@ -283,6 +317,141 @@ class ProcessorAdapterTests(SimpleTestCase):
             self.assertIn(str(raw_file), fingerprint_paths)
             self.assertIn(str(fasta), fingerprint_paths)
             self.assertIn(str(library), fingerprint_paths)
+
+    def test_diann_adapter_can_generate_a_speclib_on_first_pass(self):
+        with TemporaryDirectory() as temp_dir:
+            results_dir = Path(temp_dir)
+            plan = render_adapter_plan(
+                adapter="diann",
+                parameters={
+                    "executable": "diann",
+                    "report": "diann-report.tsv",
+                    "fasta": "/data/shared/reference/human.fasta",
+                    "generate_speclib": True,
+                    "out_library": "diann-first-pass.speclib",
+                },
+                placeholders={
+                    "job_id": "77",
+                    "raw_file_path": "/data/raw/sample.raw",
+                    "results_dir": str(results_dir),
+                    "run_name": "Sample Run",
+                },
+                results_dir=results_dir,
+            )
+
+        self.assertIn("--gen-spec-lib", plan.command)
+        self.assertIn("--predictor", plan.command)
+        self.assertEqual(plan.command.count("--fasta-search"), 1)
+        self.assertTrue(any(arg.endswith("diann-first-pass.speclib") for arg in plan.command))
+        self.assertTrue(
+            any(
+                artifact["artifact_type"] == "other"
+                and artifact["metadata"]["role"] == "diann_speclib"
+                and artifact["path"].endswith("diann-first-pass.predicted.speclib")
+                for artifact in plan.artifact_files
+            )
+        )
+
+    def test_prepare_job_execution_uses_raw_input_for_diann(self):
+        with TemporaryDirectory() as temp_dir:
+            results_root = Path(temp_dir) / "results"
+            mzml = Path(temp_dir) / "sample.mzML"
+            mzml.write_text("mzml", encoding="utf-8")
+            execution = prepare_job_execution(
+                {
+                    "id": 101,
+                    "run": {"name": "Sample Run"},
+                    "raw_file": {
+                        "storage_path": "/data/raw/sample.raw",
+                        "derivatives": [
+                            {
+                                "derivative_type": "mzml",
+                                "status": "ready",
+                                "path": str(mzml),
+                                "format": "mzML",
+                            }
+                        ],
+                    },
+                    "pipeline": {
+                        "parameters": {
+                            "adapter": "diann",
+                            "required_engine": "diann",
+                            "report": "diann-report.parquet",
+                        }
+                    },
+                },
+                results_root=results_root,
+            )
+
+        self.assertEqual(execution.command[2], "/data/raw/sample.raw")
+
+    def test_prepare_job_execution_does_not_infer_reuse_without_explicit_library_source(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_file = root / "sample.raw"
+            raw_file.write_text("raw", encoding="utf-8")
+            execution = prepare_job_execution(
+                {
+                    "id": 103,
+                    "run": {
+                        "name": "Sample Run",
+                        "experiment_metadata": {
+                            "diann": {
+                                "preferred_speclib_path": "/data/shared/reference/human.speclib",
+                            }
+                        },
+                    },
+                    "raw_file": {"storage_path": str(raw_file)},
+                    "pipeline": {
+                        "parameters": {
+                            "adapter": "diann",
+                            "required_engine": "diann",
+                            "generate_speclib": False,
+                            "report": "diann-first-pass.parquet",
+                        }
+                    },
+                },
+                results_root=root / "results",
+            )
+
+        self.assertNotIn("--lib", execution.command)
+        self.assertNotIn("--gen-spec-lib", execution.command)
+        self.assertNotIn("--fasta-search", execution.command)
+
+    def test_prepare_job_execution_uses_preferred_speclib_when_explicitly_requested(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_file = root / "sample.raw"
+            raw_file.write_text("raw", encoding="utf-8")
+            execution = prepare_job_execution(
+                {
+                    "id": 104,
+                    "run": {
+                        "name": "Sample Run",
+                        "experiment_metadata": {
+                            "diann": {
+                                "preferred_speclib_path": "/data/shared/reference/human.speclib",
+                            }
+                        },
+                    },
+                    "raw_file": {"storage_path": str(raw_file)},
+                    "pipeline": {
+                        "parameters": {
+                            "adapter": "diann",
+                            "required_engine": "diann",
+                            "library_source": "preferred_speclib_path",
+                            "report": "diann-report.parquet",
+                        }
+                    },
+                },
+                results_root=root / "results",
+            )
+
+        self.assertIn("--lib", execution.command)
+        self.assertIn("/data/shared/reference/human.speclib", execution.command)
+        self.assertNotIn("--gen-spec-lib", execution.command)
+        self.assertNotIn("--fasta", execution.command)
+        self.assertNotIn("--fasta-search", execution.command)
 
     def test_processor_registry_cli_registers_image_and_external_engine_profiles(self):
         with TemporaryDirectory() as temp_dir:

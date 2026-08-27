@@ -1,24 +1,28 @@
-FROM proteowizard/pwiz-skyline-i-agree-to-the-vendor-licenses:latest
+FROM proteowizard/pwiz-skyline-i-agree-to-the-vendor-licenses:latest AS vendor
+
+FROM msconnect:local
 
 USER root
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
-COPY requirements.txt /app/
-RUN python3 -m pip install --break-system-packages --no-cache-dir -r requirements.txt
-
-COPY . /app/
+COPY --from=vendor /opt/wine-staging /opt/wine-staging
+COPY --from=vendor /usr/bin/wine /usr/bin/wine
+COPY --from=vendor /usr/bin/wineserver /usr/bin/wineserver
+COPY --from=vendor /wineprefix64 /wineprefix64
 
 RUN id -u appuser >/dev/null 2>&1 || useradd --create-home --shell /bin/sh appuser \
-    && printf '#!/bin/sh\nexec wine msconvert "$@"\n' > /usr/local/bin/msconvert \
+    && mkdir -p /usr/lib \
+    && dpkg --add-architecture i386 \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libc6-i386 libstdc++6:i386 zlib1g:i386 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sfn /opt/wine-staging/lib/wine /usr/lib/wine \
+    && printf '#!/bin/sh\nexec wine /wineprefix64/drive_c/pwiz/skyline/msconvert.exe "$@"\n' > /usr/local/bin/msconvert \
     && chmod +x /usr/local/bin/msconvert \
     && mkdir -p /app/data /app/media /app/staticfiles /data/raw /data/results \
     && chown -R appuser:appuser /app /data
 
 USER appuser
 
-CMD ["python3", "manage.py", "run_processor_agent"]
+CMD ["python", "manage.py", "run_processor_agent"]

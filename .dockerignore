@@ -5,6 +5,8 @@ __pycache__
 *.pyc
 .pytest_cache
 .ruff_cache
+frontend/node_modules
+frontend/dist
 data
 incoming
 media
@@ -12,4 +14,3 @@ raw-storage
 staticfiles
 db.sqlite3
 .env
-

@@ -4,17 +4,23 @@ import { Activity, FlaskConical, HardDrive, LayoutDashboard, LineChart, Search, 
 import { useNavigate } from "react-router-dom";
 
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { fetchProjects, queryKeys } from "@/lib/api/queries";
+import { fetchCurrentUser, fetchProjects, queryKeys } from "@/lib/api/queries";
+import { isOperatorRole } from "@/lib/ui-surface";
 import { useUiStore } from "@/store/ui-store";
 
 export function CommandPalette() {
   const navigate = useNavigate();
   const open = useUiStore((state) => state.commandOpen);
   const setOpen = useUiStore((state) => state.setCommandOpen);
+  const currentUserQuery = useQuery({
+    queryKey: queryKeys.currentUser(),
+    queryFn: fetchCurrentUser,
+  });
   const { data } = useQuery({
     queryKey: queryKeys.projects({ page_size: 20 }),
     queryFn: () => fetchProjects({ page_size: 20 }),
   });
+  const isOperator = isOperatorRole(currentUserQuery.data?.global_role);
 
   function go(path: string) {
     setOpen(false);
@@ -44,22 +50,26 @@ export function CommandPalette() {
                 <FlaskConical className="h-4 w-4" />
                 Projects
               </Command.Item>
-              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/admin")}>
-                <ShieldAlert className="h-4 w-4" />
-                Admin
-              </Command.Item>
-              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/processing")}>
-                <Activity className="h-4 w-4" />
-                Processing
-              </Command.Item>
-              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/processing/admin")}>
-                <Server className="h-4 w-4" />
-                Processor Admin
-              </Command.Item>
-              <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/monitoring")}>
-                <LineChart className="h-4 w-4" />
-                Monitoring
-              </Command.Item>
+              {isOperator ? (
+                <>
+                  <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/monitoring")}>
+                    <LineChart className="h-4 w-4" />
+                    Monitoring
+                  </Command.Item>
+                  <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/admin")}>
+                    <ShieldAlert className="h-4 w-4" />
+                    Admin
+                  </Command.Item>
+                  <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/processing")}>
+                    <Activity className="h-4 w-4" />
+                    Processing
+                  </Command.Item>
+                  <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/processing/admin")}>
+                    <Server className="h-4 w-4" />
+                    Processor Admin
+                  </Command.Item>
+                </>
+              ) : null}
             </Command.Group>
             <Command.Group heading="Projects" className="text-xs text-muted-foreground">
               {(data?.results ?? []).map((project) => (

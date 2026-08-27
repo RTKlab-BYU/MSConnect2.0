@@ -21,6 +21,19 @@ export type Project = {
   updated_at: string;
 };
 
+export type Experiment = {
+  id: EntityId;
+  project: EntityId;
+  name: string;
+  hypothesis: string;
+  started_on: string | null;
+  ended_on: string | null;
+  created_by: EntityId | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
 export type CurrentUser = {
   id: EntityId;
   username: string;
@@ -141,10 +154,37 @@ export type PreAcquisitionSetupPayload = {
   instrument_configuration?: EntityId | null;
   organisms: string[];
   processing_preset: string;
+  fasta_path?: string;
+  speclib_path?: string;
   fasta_upload_name?: string;
   speclib_upload_name?: string;
   diann_version: string;
   diann_settings: Record<string, unknown>;
+};
+
+export type PreAcquisitionSetupPreflightResponse = {
+  title: string;
+  code: string;
+  source: "project_pipeline" | "site_defaults";
+  source_label: string;
+  source_detail: string;
+  lab: { id: EntityId; name: string; facility: EntityId };
+  instrument_configuration: InstrumentConfiguration | null;
+  sample_count: number;
+  healthy_count: number;
+  diseased_count: number;
+  hye_interval: number;
+  planned_runs: number;
+  processing_preset: string;
+  diann_version: string;
+  speclib_mode: string;
+  reference_assets: Record<string, unknown>;
+  settings: Record<string, unknown>;
+  performance_tags: Record<string, unknown>;
+  experimental_tags: Record<string, unknown>;
+  options: string[];
+  validation_errors: string[];
+  is_valid: boolean;
 };
 
 export type PreAcquisitionSetupResponse = {
@@ -222,6 +262,8 @@ export type InstrumentConfiguration = {
 export type ProjectSummary = {
   project_id: EntityId;
   project_code: string;
+  experiment_id?: EntityId;
+  experiment_name?: string;
   experiment_count: number;
   sample_count: number;
   run_count: number;
@@ -444,7 +486,27 @@ export type DeploymentSettings = {
   targeted_skyline_pipeline: EntityId | null;
   targeted_skyline_pipeline_name: string;
   targeted_skyline_pipeline_version: string;
+  metadata: Record<string, unknown>;
   updated_at: string;
+};
+
+export type DiannPreflightResponse = {
+  project: Project;
+  source: "project_pipeline" | "site_defaults";
+  source_label: string;
+  source_detail: string;
+  worklist: AcquisitionWorklist | null;
+  pipeline: ProcessingPipeline | null;
+  processing_preset: string;
+  diann_version: string;
+  speclib_mode: string;
+  reference_assets: Record<string, unknown>;
+  settings: Record<string, unknown>;
+  performance_tags: Record<string, unknown>;
+  experimental_tags: Record<string, unknown>;
+  options: string[];
+  validation_errors: string[];
+  is_valid: boolean;
 };
 
 export type ProcessingJobOverview = {
@@ -655,6 +717,7 @@ export type ProjectResearcherRun = {
 export type ProjectResearcherStatus = {
   project: Project;
   summary: ProjectSummary;
+  experiment?: Experiment;
   system_health: {
     status: "green" | "yellow" | "red";
     failed_jobs: number;

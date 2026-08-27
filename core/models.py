@@ -50,6 +50,12 @@ class RunStatus(models.TextChoices):
     FAILED = "failed", "Failed"
 
 
+class ExperimentStatus(models.TextChoices):
+    ACTIVE = "active", "Active"
+    COMPLETE = "complete", "Complete"
+    ARCHIVED = "archived", "Archived"
+
+
 class RawFileStatus(models.TextChoices):
     DISCOVERED = "discovered", "Discovered"
     VALIDATED = "validated", "Validated"
@@ -111,6 +117,21 @@ class ProcessingStatus(models.TextChoices):
     COMPLETE = "complete", "Complete"
     FAILED = "failed", "Failed"
     RETRYING = "retrying", "Retrying"
+
+
+class PipelineEventType(models.TextChoices):
+    FILE_DISCOVERED = "file_discovered", "File discovered"
+    FILE_UPLOADED = "file_uploaded", "File uploaded"
+    FILE_STORED = "file_stored", "File stored"
+    RAW_FILE_IMPORTED = "raw_file_imported", "Raw file imported"
+    PROCESSING_QUEUED = "processing_queued", "Processing queued"
+    PROCESSING_STARTED = "processing_started", "Processing started"
+    PROCESSING_COMPLETED = "processing_completed", "Processing completed"
+    RESULT_FILES_UPLOADED = "result_files_uploaded", "Result files uploaded"
+    RESULTS_PARSED = "results_parsed", "Results parsed"
+    EXPERIMENT_COMPLETED = "experiment_completed", "Experiment completed"
+    PROJECT_COMPLETED = "project_completed", "Project completed"
+    MIGRATION_IMPORTED = "migration_imported", "Migration imported"
 
 
 class DirectUploadStatus(models.TextChoices):
@@ -298,6 +319,7 @@ class Project(TimestampedModel):
     code = models.CharField(max_length=80)
     pi = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="owned_projects")
     status = models.CharField(max_length=32, choices=ProjectStatus.choices, default=ProjectStatus.ACTIVE)
+    completed_at = models.DateTimeField(blank=True, null=True)
     description = models.TextField(blank=True)
 
     class Meta:
@@ -420,6 +442,8 @@ class ProjectIntakeRequest(TimestampedModel):
 class Experiment(TimestampedModel):
     project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name="experiments")
     name = models.CharField(max_length=255)
+    status = models.CharField(max_length=32, choices=ExperimentStatus.choices, default=ExperimentStatus.ACTIVE)
+    completed_at = models.DateTimeField(blank=True, null=True)
     hypothesis = models.TextField(blank=True)
     started_on = models.DateField(blank=True, null=True)
     ended_on = models.DateField(blank=True, null=True)
@@ -440,6 +464,50 @@ class Experiment(TimestampedModel):
 
     def __str__(self) -> str:
         return self.name
+
+
+class PipelineEvent(TimestampedModel):
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="pipeline_events", blank=True, null=True)
+    experiment = models.ForeignKey(
+        Experiment,
+        on_delete=models.CASCADE,
+        related_name="pipeline_events",
+        blank=True,
+        null=True,
+    )
+    run = models.ForeignKey("Run", on_delete=models.CASCADE, related_name="pipeline_events", blank=True, null=True)
+    raw_file = models.ForeignKey(
+        "RawFile",
+        on_delete=models.CASCADE,
+        related_name="pipeline_events",
+        blank=True,
+        null=True,
+    )
+    job = models.ForeignKey(
+        "ProcessingJob",
+        on_delete=models.CASCADE,
+        related_name="pipeline_events",
+        blank=True,
+        null=True,
+    )
+    event_type = models.CharField(max_length=64, choices=PipelineEventType.choices)
+    from_status = models.CharField(max_length=32, blank=True)
+    to_status = models.CharField(max_length=32, blank=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="pipeline_events",
+        blank=True,
+        null=True,
+    )
+    message = models.TextField(blank=True)
+    payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+
+    def __str__(self) -> str:
+        return f"{self.event_type} {self.project_id or self.experiment_id or self.run_id or self.raw_file_id or self.job_id}"
 
 
 class Sample(TimestampedModel):

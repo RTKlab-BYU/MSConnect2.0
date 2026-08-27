@@ -21,6 +21,7 @@ const MonitoringPage = lazy(() => import("@/features/monitoring/monitoring-page"
 const ProcessingPage = lazy(() => import("@/features/processing/processing-page"));
 const ProcessingAdminPage = lazy(() => import("@/features/processing/processing-admin-page"));
 const SpectraPage = lazy(() => import("@/features/spectra/spectra-page"));
+const WatcherPage = lazy(() => import("@/features/watcher/watcher-page"));
 const UploadsPage = lazy(() => import("@/features/uploads/uploads-page"));
 const SettingsPage = lazy(() => import("@/features/settings/settings-page"));
 
@@ -89,25 +90,31 @@ export const router = createBrowserRouter(
         {
           path: "qc",
           element: (
-            <Suspense fallback={<RouteFallback label="Loading QC workspace" />}>
-              <QcPage />
-            </Suspense>
+            <RoleGuard allow={["admin", "pi"]}>
+              <Suspense fallback={<RouteFallback label="Loading QC workspace" />}>
+                <QcPage />
+              </Suspense>
+            </RoleGuard>
           ),
         },
         {
           path: "qc/hye/:worklistId/:pairLabel",
           element: (
-            <Suspense fallback={<RouteFallback label="Loading HYE record" />}>
-              <HyePairPage />
-            </Suspense>
+            <RoleGuard allow={["admin", "pi"]}>
+              <Suspense fallback={<RouteFallback label="Loading HYE record" />}>
+                <HyePairPage />
+              </Suspense>
+            </RoleGuard>
           ),
         },
         {
           path: "monitoring",
           element: (
-            <Suspense fallback={<RouteFallback label="Loading monitoring dashboard" />}>
-              <MonitoringPage />
-            </Suspense>
+            <RoleGuard allow={["admin", "pi"]}>
+              <Suspense fallback={<RouteFallback label="Loading monitoring dashboard" />}>
+                <MonitoringPage />
+              </Suspense>
+            </RoleGuard>
           ),
         },
         {
@@ -139,11 +146,23 @@ export const router = createBrowserRouter(
           ),
         },
         {
+          path: "watcher",
+          element: (
+            <RoleGuard allow={["admin", "pi"]}>
+              <Suspense fallback={<RouteFallback label="Loading watcher console" />}>
+                <WatcherPage />
+              </Suspense>
+            </RoleGuard>
+          ),
+        },
+        {
           path: "uploads",
           element: (
-            <Suspense fallback={<RouteFallback label="Loading upload manager" />}>
-              <UploadsPage />
-            </Suspense>
+            <RoleGuard allow={["admin", "pi"]}>
+              <Suspense fallback={<RouteFallback label="Loading upload redirect" />}>
+                <UploadsPage />
+              </Suspense>
+            </RoleGuard>
           ),
         },
         {
@@ -179,6 +198,14 @@ export const router = createBrowserRouter(
           ),
         },
         {
+          path: "projects/:projectId/experiments/:experimentId",
+          element: (
+            <Suspense fallback={<RouteFallback label="Loading experiment workspace" />}>
+              <ProjectWorkspacePage />
+            </Suspense>
+          ),
+        },
+        {
           path: "projects/:projectId/samples/:sampleId",
           element: (
             <Suspense fallback={<RouteFallback label="Loading sample report" />}>
@@ -189,9 +216,11 @@ export const router = createBrowserRouter(
         {
           path: "settings",
           element: (
-            <Suspense fallback={<RouteFallback label="Loading settings" />}>
-              <SettingsPage />
-            </Suspense>
+            <RoleGuard allow={["admin", "pi"]}>
+              <Suspense fallback={<RouteFallback label="Loading settings" />}>
+                <SettingsPage />
+              </Suspense>
+            </RoleGuard>
           ),
         },
         {

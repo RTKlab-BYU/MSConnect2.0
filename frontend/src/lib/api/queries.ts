@@ -4,7 +4,10 @@ import type {
   ChromatogramsResponse,
   CurrentUser,
   DeploymentSettings,
+  DiannPreflightResponse,
+  Experiment,
   FindingsWorkspaceResponse,
+  DirectUploadSession,
   InstrumentConfiguration,
   Paginated,
   IntakeMetrics,
@@ -13,6 +16,7 @@ import type {
   PrepareFindingsWorkspacePayload,
   PrepareFindingsWorkspaceResponse,
   PreAcquisitionSetupPayload,
+  PreAcquisitionSetupPreflightResponse,
   PreAcquisitionSetupResponse,
   ProcessingJob,
   ProcessingJobOverview,
@@ -42,8 +46,13 @@ import type {
 export const queryKeys = {
   projects: (params?: ListParams) => ["projects", params] as const,
   project: (id: number) => ["project", id] as const,
+  projectExperiments: (id: number) => ["project", id, "experiments"] as const,
+  experiment: (id: number) => ["experiment", id] as const,
+  directUploadSessions: (params?: ListParams) => ["direct-upload-sessions", params] as const,
   projectSummary: (id: number) => ["project", id, "summary"] as const,
-  projectResearcherStatus: (id: number) => ["project", id, "researcher-status"] as const,
+  projectResearcherStatus: (id: number, params?: ListParams) => ["project", id, "researcher-status", params] as const,
+  projectDiannPreflight: (id: number, params?: ListParams) => ["project", id, "diann-preflight", params] as const,
+  projectProcessingJobs: (id: number) => ["project", id, "processing-jobs"] as const,
   findingsWorkspace: (id: number) => ["project", id, "findings-workspace"] as const,
   currentUser: () => ["current-user"] as const,
   rawFiles: (params: ListParams) => ["raw-files", params] as const,
@@ -86,19 +95,43 @@ export function signupAccount(payload: {
 }
 
 export function fetchProjects(params?: ListParams): Promise<Paginated<Project>> {
-  return paginatedResource<Project>("/projects/", { ordering: "code", ...params });
+  return paginatedResource<Project>("/projects/", { ordering: "-updated_at", ...params });
 }
 
 export function fetchProject(id: number): Promise<Project> {
   return getResource<Project>(`/projects/${id}/`);
 }
 
+export function fetchExperiments(params?: ListParams): Promise<Paginated<Experiment>> {
+  return paginatedResource<Experiment>("/experiments/", { ordering: "-updated_at", ...params });
+}
+
+export function fetchExperiment(id: number): Promise<Experiment> {
+  return getResource<Experiment>(`/experiments/${id}/`);
+}
+
+export function fetchDirectUploadSessions(params?: ListParams): Promise<Paginated<DirectUploadSession>> {
+  return paginatedResource<DirectUploadSession>("/direct-uploads/", { ordering: "-updated_at", ...params });
+}
+
 export function fetchProjectSummary(id: number): Promise<ProjectSummary> {
   return getResource<ProjectSummary>(`/projects/${id}/summary/`);
 }
 
-export function fetchProjectResearcherStatus(id: number): Promise<ProjectResearcherStatus> {
-  return getResource<ProjectResearcherStatus>(`/projects/${id}/researcher-status/`);
+export function fetchProjectResearcherStatus(id: number, params?: ListParams): Promise<ProjectResearcherStatus> {
+  const query = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
+  });
+  return getResource<ProjectResearcherStatus>(`/projects/${id}/researcher-status/${query.toString() ? `?${query}` : ""}`);
+}
+
+export function fetchProjectDiannPreflight(id: number, params?: ListParams): Promise<DiannPreflightResponse> {
+  const query = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
+  });
+  return getResource<DiannPreflightResponse>(`/projects/${id}/diann-preflight/${query.toString() ? `?${query}` : ""}`);
 }
 
 export function fetchIntakeRequests(params?: ListParams): Promise<Paginated<ProjectIntakeRequest>> {
@@ -164,18 +197,45 @@ export function createPreAcquisitionSetup(payload: PreAcquisitionSetupPayload): 
   return postResource<PreAcquisitionSetupResponse>("/projects/pre-acquisition-setup/", payload);
 }
 
+export function previewPreAcquisitionSetup(payload: PreAcquisitionSetupPayload): Promise<PreAcquisitionSetupPreflightResponse> {
+  return postResource<PreAcquisitionSetupPreflightResponse>("/projects/pre-acquisition-preflight/", payload);
+}
+
 export function importProjectWorklist(projectId: number, payload: WorklistImportPayload): Promise<WorklistImportResponse> {
   return postResource<WorklistImportResponse>(`/projects/${projectId}/import-worklist/`, payload);
 }
 
-export function queueProjectReadyRuns(projectId: number): Promise<{ queued: number; jobs: ProcessingJob[] }> {
-  return postResource(`/projects/${projectId}/queue-ready-runs/`, {});
+export function queueProjectReadyRuns(projectId: number, experimentId?: number): Promise<{ queued: number; jobs: ProcessingJob[] }> {
+  return postResource(`/projects/${projectId}/queue-ready-runs/`, experimentId ? { experiment: experimentId } : {});
 }
 
 export function queueProjectRuns(projectId: number, runIds: number): Promise<{ requested: number; queued: number; jobs: ProcessingJob[] }>;
 export function queueProjectRuns(projectId: number, runIds: number[]): Promise<{ requested: number; queued: number; jobs: ProcessingJob[] }>;
-export function queueProjectRuns(projectId: number, runIds: number | number[]): Promise<{ requested: number; queued: number; jobs: ProcessingJob[] }> {
-  return postResource(`/projects/${projectId}/queue-runs/`, { run_ids: Array.isArray(runIds) ? runIds : [runIds] });
+export function queueProjectRuns(
+  projectId: number,
+  runIds: number | number[],
+  experimentId?: number,
+): Promise<{ requested: number; queued: number; jobs: ProcessingJob[] }>;
+export function queueProjectRuns(
+  projectId: number,
+  runIds: number | number[],
+  experimentId?: number,
+): Promise<{ requested: number; queued: number; jobs: ProcessingJob[] }> {
+  return postResource(`/projects/${projectId}/queue-runs/`, {
+    run_ids: Array.isArray(runIds) ? runIds : [runIds],
+    ...(experimentId ? { experiment: experimentId } : {}),
+  });
+}
+
+export function rerunLatestDiannBatch(projectId: number): Promise<{
+  worklist_id: number;
+  project_id: number;
+  pipeline_id: number;
+  converted: number;
+  rerun: number;
+  skipped: number;
+}> {
+  return postResource(`/projects/${projectId}/rerun-latest-diann-batch/`, {});
 }
 
 export function updateWorklistEntry(id: number, payload: Partial<AcquisitionWorklist> & Record<string, unknown>): Promise<unknown> {
@@ -255,7 +315,7 @@ export function fetchDeploymentSettings(): Promise<DeploymentSettings> {
 }
 
 export function updateDeploymentSettings(
-  payload: Partial<Pick<DeploymentSettings, "prtc_skyline_pipeline" | "targeted_skyline_pipeline">>,
+  payload: Partial<Pick<DeploymentSettings, "prtc_skyline_pipeline" | "targeted_skyline_pipeline" | "metadata">>,
 ) {
   return patchResource<DeploymentSettings>("/deployment-settings/", payload);
 }

@@ -1,5 +1,38 @@
 # MSConnect Worklog
 
+## 2026-08-05
+
+### Completed
+
+- Re-identified the live batch as `EN1033-DIANN` and confirmed it has 93 raw files attached through `RawFile -> Run -> Sample -> Experiment -> Project`.
+- Added the batch rerun path for the project and confirmed the rerun command can requeue the latest worklist batch.
+- Brought the core app, watcher, DIA-NN worker, and `processor-pwiz` service back up under Docker.
+- Rebuilt the `processor-pwiz` image so the container import now includes `msconvert` in the processor registry.
+
+### Verified
+
+- `docker compose exec -T web python manage.py rerun_latest_diann_batch --project-code EN1033-DIANN`
+- `docker compose --profile conversion ps`
+- `docker compose exec -T processor-pwiz python3 -c "from core.processing.registry import ENGINE_NAMES; print(sorted(ENGINE_NAMES))"`
+
+### Errors / blockers observed
+
+- The first `processor-pwiz` rebuild used snapshot/apt-based Wine installation and failed on Debian package hash mismatches from the mirror.
+- The vendor Wine image already contained Wine, so the Dockerfile was switched to copy the vendor runtime instead of installing `wine64`.
+- The container then failed at runtime because `wine` could not load `ntdll.so` from `/usr/bin/../lib/wine/x86_64-unix/ntdll.so`; the required Wine library tree had not been made available at the path Wine resolves.
+- Earlier `processor-pwiz` containers imported a stale registry without `msconvert`, which caused `Unsupported processor engine: msconvert`.
+- The msconvert jobs themselves were failing with `Command exited with status 1.` once the container launched, so the batch did not drain cleanly.
+
+### Current review state
+
+- Queueing and rerun orchestration are in place, but the live conversion worker still needs the Wine runtime path fixed cleanly before the EN1033-DIANN batch can complete end to end.
+- DIA-NN jobs remain queued behind the conversion side of the pipeline.
+
+### Deferred / next session
+
+- Fix the `processor-pwiz` Wine runtime path in the Docker image and rerun the batch from a clean queue.
+- Once conversion is stable, verify the downstream DIA-NN claims and output artifacts.
+
 ## 2026-08-04
 
 ### Completed

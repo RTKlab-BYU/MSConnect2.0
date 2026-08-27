@@ -11,6 +11,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { fetchCurrentUser, fetchProcessingJobsOverview, fetchProjectSummary, fetchProjects, fetchQcOverview, fetchRawFilesOverview, queryKeys } from "@/lib/api/queries";
 import type { CountBy, CurrentUser, Project, ProjectSummary } from "@/lib/api/types";
 import { formatDate } from "@/lib/format";
+import { isOperatorRole } from "@/lib/ui-surface";
 
 const numberFormat = new Intl.NumberFormat();
 const chartColors = [
@@ -66,6 +67,7 @@ export default function DashboardPage() {
   const completedProjects = projects.filter((project) => project.status === "complete").length;
   const attentionCount = (jobsQuery.data?.failed ?? 0) + (rawFilesQuery.data?.unmatched ?? 0) + (qcQuery.data?.out_of_spec_pair_count ?? 0);
   const currentUser = currentUserQuery.data;
+  const isOperator = isOperatorRole(currentUser?.global_role);
   const greeting = currentUser ? `Hello, ${currentUser.username}` : "Welcome back";
   const roleLabel = currentUser ? roleTitle(currentUser.global_role) : "Workspace";
   const quickSignals = [
@@ -103,7 +105,7 @@ export default function DashboardPage() {
       <PageHero
         eyebrow={roleLabel}
         title={greeting}
-        description="Here is what you missed across projects, uploads, processing, and QC. Open a project, inspect the sample, or jump straight into the live files."
+        description="Here is what you missed across projects, processing, and QC. Open a project, inspect the sample, or jump straight into the active workflow."
         actions={
           <>
             <div className="hidden rounded-full border bg-secondary/70 px-4 py-2 text-sm font-semibold text-muted-foreground md:block">
@@ -169,9 +171,8 @@ export default function DashboardPage() {
             <CardDescription>Fast entry points for the most common workflows.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 p-5">
-            <QuickPath title="Projects" description="Open a project, inspect samples, and download raw or processed files." to="/projects" />
-            <QuickPath title="Uploads" description="Watch raw file intake, manifest matching, and upload progress." to="/uploads" />
-            <QuickPath title="Monitoring" description="Check connected nodes, queue pressure, and processing health." to="/monitoring" />
+            <QuickPath title="Projects" description="Open a project, inspect samples, and follow the active workflow." to="/projects" />
+            {isOperator ? <QuickPath title="Monitoring" description="Check connected nodes, queue pressure, and processing health." to="/monitoring" /> : null}
           </CardContent>
         </Card>
       </section>

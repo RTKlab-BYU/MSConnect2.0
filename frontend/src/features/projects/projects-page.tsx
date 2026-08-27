@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Plus, Search, Wand2 } from "lucide-react";
 import type { FormEvent } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { PageHero } from "@/components/layout/page-section";
@@ -13,9 +13,17 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { createPreAcquisitionSetup, fetchInstrumentConfigurations, fetchProjects, quickStartProject, queryKeys } from "@/lib/api/queries";
+import {
+  createPreAcquisitionSetup,
+  fetchInstrumentConfigurations,
+  fetchProjects,
+  previewPreAcquisitionSetup,
+  quickStartProject,
+  queryKeys,
+} from "@/lib/api/queries";
 import { queryClient } from "@/lib/api/query-client";
 import { projectColumns } from "@/features/projects/table-columns";
+import type { PreAcquisitionSetupPreflightResponse } from "@/lib/api/types";
 
 type SampleDraft = {
   sample_id: string;
@@ -31,6 +39,48 @@ const conditionStyles: Record<string, string> = {
   diseased: "border-rose-300 bg-rose-100 text-rose-950",
   hye: "border-sky-300 bg-sky-100 text-sky-950",
 };
+const DIANN_PRESET_SPECLIB_BUILD = "DIA-NN speclib build";
+const DIANN_PRESET_SPECLIB_REUSE = "DIA-NN speclib reuse";
+const DIANN_PRESET_SMOKE = "DIA-NN smoke test";
+const shieldHumanFastaPath = "/Volumes/T7_Shield/msconnect/shared/reference/human.fasta";
+const shieldHumanSpeclibPath = "/Volumes/T7_Shield/msconnect/shared/reference/human.speclib";
+const shieldHumanDemoRows = [
+  "EN1033_TB500_NanoAG_rep1_ch2_GC13_DIA100win2uL_run42",
+  "EN1033_GLP_NanoAG_rep1_ch2_GC2_DIA100win2uL_run34",
+  "EN1033_TB500_UFBW_rep1_ch2_GD12_DIA100win2uL_run26",
+  "EN1033_GLP_BacStat_rep1_ch1_GB3_DIA100win2uL_run9",
+];
+
+function parseDiannSettings(text: string) {
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+      return { error: "DIA-NN settings must be a JSON object." };
+    }
+    return { value: parsed as Record<string, unknown> };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "DIA-NN settings must be valid JSON." };
+  }
+}
+
+function tagEntries(value: Record<string, unknown> | null | undefined) {
+  return Object.entries(value ?? {})
+    .filter(([, tagValue]) => tagValue !== undefined && tagValue !== null && `${tagValue}`.trim() !== "")
+    .map(([key, tagValue]) => ({ key, value: tagValue }));
+}
+
+function formatTagValue(value: unknown) {
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "-";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.join(", ");
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return "-";
+}
+
+function buildShieldHumanSampleText() {
+  return ["sample_id,condition,subject_id,timepoint", ...shieldHumanDemoRows.map((sampleId, index) => `${sampleId},healthy,SHIELD-${String(index + 1).padStart(3, "0")},baseline`)].join("\n");
+}
 
 export default function ProjectsPage() {
   const navigate = useNavigate();
@@ -56,10 +106,15 @@ export default function ProjectsPage() {
   const [hyeInterval, setHyeInterval] = useState("10");
   const [instrumentConfiguration, setInstrumentConfiguration] = useState("none");
   const [organisms, setOrganisms] = useState(["human", "yeast", "ecoli"]);
-  const [processingPreset, setProcessingPreset] = useState("Standard DIA-NN plasma");
+  const [processingPreset, setProcessingPreset] = useState(DIANN_PRESET_SPECLIB_BUILD);
+  const [fastaPath, setFastaPath] = useState("/data/shared/reference/human.fasta");
+  const [speclibPath, setSpeclibPath] = useState("/data/shared/reference/human.speclib");
   const [fastaUploadName, setFastaUploadName] = useState("");
   const [speclibUploadName, setSpeclibUploadName] = useState("");
-  const [diannVersion, setDiannVersion] = useState("1.9");
+  const [diannVersion, setDiannVersion] = useState("2.0");
+  const [diannSettingsText, setDiannSettingsText] = useState(() => JSON.stringify(settingsForPreset(DIANN_PRESET_SPECLIB_BUILD), null, 2));
+  const [preflightPreview, setPreflightPreview] = useState<PreAcquisitionSetupPreflightResponse | null>(null);
+  const [preflightError, setPreflightError] = useState("");
 
   const params = useMemo(
     () => ({
@@ -83,40 +138,14 @@ export default function ProjectsPage() {
   const conditionCounts = useMemo(() => countConditions(samples), [samples]);
   const hyePairCount = Number(hyeInterval) > 0 ? Math.floor(samples.length / Number(hyeInterval)) : 0;
   const plannedRunCount = samples.length + hyePairCount * 2;
-  const setupMutation = useMutation({
-    mutationFn: createPreAcquisitionSetup,
-    onSuccess: async (response) => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.projects(params) });
-      setDialogOpen(false);
-      setStep(0);
-      navigate(`/projects/${response.project.id}`);
-    },
-    onError: (error) => {
-      setSetupError(error instanceof Error ? error.message : "Could not create pre-acquisition project.");
-    },
-  });
-  const quickStartMutation = useMutation({
-    mutationFn: quickStartProject,
-    onSuccess: async (response) => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.projects(params) });
-      setQuickStartOpen(false);
-      navigate(`/projects/${response.project.id}`);
-    },
-    onError: (error) => {
-      setQuickStartError(error instanceof Error ? error.message : "Could not create quick-start project.");
-    },
-  });
-
-  function submitSetup(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSetupError("");
-    if (!samples.length) {
-      setSetupError("Add at least one sample row with sample_id and condition.");
-      setStep(1);
-      return;
-    }
-
-    setupMutation.mutate({
+  const diannSettings = useMemo(() => parseDiannSettings(diannSettingsText), [diannSettingsText]);
+  const preflightTone = {
+    card: "border-sky-300 bg-sky-50/80",
+    banner: "border-sky-300 bg-sky-100 text-sky-950",
+    chip: "border-sky-300 bg-sky-100 text-sky-950",
+  };
+  const setupPayload = useMemo(
+    () => ({
       title: projectForm.title,
       code: projectForm.code,
       sample_rows: samples.map((sample) => ({
@@ -133,11 +162,84 @@ export default function ProjectsPage() {
       instrument_configuration: instrumentConfiguration === "none" ? null : Number(instrumentConfiguration),
       organisms,
       processing_preset: processingPreset,
+      fasta_path: fastaPath,
+      speclib_path: speclibPath,
       fasta_upload_name: fastaUploadName,
       speclib_upload_name: speclibUploadName,
       diann_version: diannVersion,
-      diann_settings: settingsForPreset(processingPreset),
-    });
+      diann_settings: diannSettings.value ?? {},
+    }),
+    [
+      diannSettings.value,
+      diannVersion,
+      fastaPath,
+      fastaUploadName,
+      hyeInterval,
+      instrumentConfiguration,
+      organisms,
+      plateType,
+      processingPreset,
+      projectForm.code,
+      projectForm.experimentName,
+      projectForm.title,
+      projectForm.worklistName,
+      sampleText,
+      samples,
+      speclibPath,
+      speclibUploadName,
+    ],
+  );
+  const setupMutation = useMutation({
+    mutationFn: createPreAcquisitionSetup,
+    onSuccess: async (response) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.projects(params) });
+      setDialogOpen(false);
+      setStep(0);
+      navigate(response.experiment?.id ? `/projects/${response.project.id}/experiments/${response.experiment.id}` : `/projects/${response.project.id}`);
+    },
+    onError: (error) => {
+      setSetupError(error instanceof Error ? error.message : "Could not create pre-acquisition project.");
+    },
+  });
+  const previewMutation = useMutation({
+    mutationFn: previewPreAcquisitionSetup,
+    onSuccess: (response) => {
+      setPreflightPreview(response);
+      setPreflightError("");
+    },
+    onError: (error) => {
+      setPreflightError(error instanceof Error ? error.message : "Could not preview pre-acquisition setup.");
+      setPreflightPreview(null);
+    },
+  });
+  const quickStartMutation = useMutation({
+    mutationFn: quickStartProject,
+    onSuccess: async (response) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.projects(params) });
+      setQuickStartOpen(false);
+      navigate(response.experiment?.id ? `/projects/${response.project.id}/experiments/${response.experiment.id}` : `/projects/${response.project.id}`);
+    },
+    onError: (error) => {
+      setQuickStartError(error instanceof Error ? error.message : "Could not create quick-start project.");
+    },
+  });
+
+  function submitSetup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSetupError("");
+    if (!samples.length) {
+      setSetupError("Add at least one sample row with sample_id and condition.");
+      setStep(1);
+      return;
+    }
+
+    if (diannSettings.error) {
+      setSetupError(diannSettings.error);
+      setStep(3);
+      return;
+    }
+
+    setupMutation.mutate(setupPayload);
   }
 
   function submitQuickStart(event: FormEvent<HTMLFormElement>) {
@@ -148,6 +250,43 @@ export default function ProjectsPage() {
       code: quickStartForm.code || undefined,
     });
   }
+
+  function seedShieldHumanPreview() {
+    setProjectForm((current) => ({
+      ...current,
+      title: "T7 Shield Human DIA Preview",
+      experimentName: "Shield human preview",
+      worklistName: "Shield human preview worklist",
+    }));
+    setSampleText(buildShieldHumanSampleText());
+    setPlateType("96");
+    setHyeInterval("0");
+    setInstrumentConfiguration("none");
+    setOrganisms(["human"]);
+    setProcessingPreset(DIANN_PRESET_SPECLIB_BUILD);
+    setFastaPath(shieldHumanFastaPath);
+    setSpeclibPath(shieldHumanSpeclibPath);
+    setFastaUploadName("");
+    setSpeclibUploadName("");
+    setDiannVersion("2.0");
+    setDiannSettingsText(JSON.stringify(settingsForPreset(DIANN_PRESET_SPECLIB_BUILD), null, 2));
+    setPreflightPreview(null);
+    setPreflightError("");
+    setStep(4);
+  }
+
+  useEffect(() => {
+    if (!dialogOpen || step !== 4) return;
+    if (diannSettings.error) {
+      setPreflightError(diannSettings.error);
+      setPreflightPreview(null);
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      previewMutation.mutate(setupPayload);
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [diannSettings.error, dialogOpen, previewMutation, setupPayload, step]);
 
   return (
     <div className="grid gap-4">
@@ -290,17 +429,37 @@ export default function ProjectsPage() {
                         </label>
                         <label className="grid gap-1 text-sm font-bold">
                           DIA-NN preset
-                          <Select value={processingPreset} onValueChange={setProcessingPreset}>
+                          <Select
+                            value={processingPreset}
+                            onValueChange={(value) => {
+                              setProcessingPreset(value);
+                              setDiannSettingsText(JSON.stringify(settingsForPreset(value), null, 2));
+                            }}
+                          >
                             <SelectTrigger>
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="Standard DIA-NN plasma">Standard DIA-NN plasma</SelectItem>
-                              <SelectItem value="High confidence IDs">High confidence IDs</SelectItem>
-                              <SelectItem value="Fast smoke test">Fast smoke test</SelectItem>
+                              <SelectItem value={DIANN_PRESET_SPECLIB_BUILD}>{DIANN_PRESET_SPECLIB_BUILD}</SelectItem>
+                              <SelectItem value={DIANN_PRESET_SPECLIB_REUSE}>{DIANN_PRESET_SPECLIB_REUSE}</SelectItem>
+                              <SelectItem value={DIANN_PRESET_SMOKE}>{DIANN_PRESET_SMOKE}</SelectItem>
                             </SelectContent>
                           </Select>
+                          <p className="text-xs font-normal text-muted-foreground">
+                            Build creates a new speclib from the shared FASTA. Reuse runs against the project speclib from an earlier pass. Smoke is a fast launcher check, not the production search path.
+                          </p>
                         </label>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-background/60 px-4 py-3">
+                        <div className="grid gap-1">
+                          <div className="text-sm font-black">Shield human preview</div>
+                          <div className="text-xs text-muted-foreground">
+                            Prefill the review path with the T7_Shield human FASTA and a small set of real raw-file sample ids.
+                          </div>
+                        </div>
+                        <Button type="button" variant="secondary" onClick={seedShieldHumanPreview}>
+                          Seed T7_Shield human preview
+                        </Button>
                       </div>
                       <div className="grid gap-3 md:grid-cols-3">
                         {[
@@ -324,7 +483,11 @@ export default function ProjectsPage() {
                         ))}
                       </div>
                       <div className="grid gap-3 md:grid-cols-3">
+                        <TextField label="FASTA path" value={fastaPath} onChange={setFastaPath} />
+                        <TextField label="Spectral library path" value={speclibPath} onChange={setSpeclibPath} />
                         <TextField label="DIA-NN version" value={diannVersion} onChange={setDiannVersion} />
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
                         <label className="grid gap-1 text-sm font-bold">
                           Optional FASTA upload
                           <Input type="file" accept=".fasta,.fa" onChange={(event) => setFastaUploadName(event.target.files?.[0]?.name ?? "")} />
@@ -336,21 +499,165 @@ export default function ProjectsPage() {
                           {speclibUploadName ? <span className="text-xs text-muted-foreground">{speclibUploadName}</span> : null}
                         </label>
                       </div>
+                        <div className="grid gap-1 text-sm font-bold">
+                        DIA-NN experimental settings JSON
+                        <textarea
+                          className="min-h-56 rounded-2xl border border-input bg-background/80 px-3 py-2 font-mono text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          value={diannSettingsText}
+                          onChange={(event) => setDiannSettingsText(event.target.value)}
+                        />
+                        <p className="text-xs font-normal text-muted-foreground">
+                          Put researcher-controlled DIA-NN options under `tags.experimental`. Performance limits such as threads and temp are controlled by the site.
+                        </p>
+                      </div>
                     </section>
                   ) : null}
 
                   {step === 4 ? (
-                    <section className="grid gap-3 md:grid-cols-2">
-                      <Metric label="Project" value={projectForm.code || "-"} detail={projectForm.title} />
-                      <Metric label="Samples" value={samples.length} detail={`${conditionCounts.healthy ?? 0} healthy, ${conditionCounts.diseased ?? 0} diseased`} />
-                      <Metric label="Plate" value={`${plateType} well`} detail={`HYE every ${hyeInterval || 0} samples`} />
-                      <Metric label="Runs" value={plannedRunCount} detail={`${hyePairCount} HYE pairs`} />
-                      <Metric label="Processing" value={processingPreset} detail={`${organisms.join(", ")} on DIA-NN ${diannVersion}`} />
-                      <Metric
-                        label="Configuration"
-                        value={configurationName(configurationQuery.data?.results ?? [], instrumentConfiguration)}
-                        detail="Saved lab LC-MS setup"
-                      />
+                    <section className="grid gap-4">
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <Metric label="Project" value={projectForm.code || "-"} detail={projectForm.title} />
+                        <Metric label="Samples" value={samples.length} detail={`${conditionCounts.healthy ?? 0} healthy, ${conditionCounts.diseased ?? 0} diseased`} />
+                        <Metric label="Plate" value={`${plateType} well`} detail={`HYE every ${hyeInterval || 0} samples`} />
+                        <Metric label="Runs" value={plannedRunCount} detail={`${hyePairCount} HYE pairs`} />
+                        <Metric label="Processing" value={processingPreset} detail={`${organisms.join(", ")} on DIA-NN ${diannVersion}`} />
+                        <Metric
+                          label="Speclib"
+                          value={speclibModeLabel(preflightPreview?.speclib_mode ?? diannSpeclibModeForPreset(processingPreset))}
+                          detail={speclibModeDetail(preflightPreview?.speclib_mode ?? diannSpeclibModeForPreset(processingPreset))}
+                        />
+                        <Metric
+                          label="Configuration"
+                          value={configurationName(configurationQuery.data?.results ?? [], instrumentConfiguration)}
+                          detail="Saved lab LC-MS setup"
+                        />
+                      </div>
+                      <Card className={`border-primary/25 ${preflightTone.card}`}>
+                        <CardHeader className="pb-3">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <CardTitle>Resolved DIA-NN preflight</CardTitle>
+                              <CardDescription>Preview the exact settings that will be created for this project before you submit it.</CardDescription>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              onClick={() => previewMutation.mutate(setupPayload)}
+                              disabled={previewMutation.isPending || Boolean(diannSettings.error)}
+                            >
+                              {previewMutation.isPending ? "Refreshing..." : "Refresh preview"}
+                            </Button>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="grid gap-4 xl:grid-cols-[1fr_360px]">
+                          <div className="grid gap-3">
+                            <div className={`rounded-2xl border px-4 py-3 ${preflightTone.banner}`}>
+                              <div className="text-xs font-bold uppercase tracking-[0.16em] opacity-80">Draft setup preview</div>
+                              <div className="mt-1 text-lg font-black">
+                                {preflightPreview?.source_label ?? "Draft setup preview"}
+                              </div>
+                              <div className="mt-1 text-sm">
+                                {preflightPreview?.source_detail ?? "The preview is using the draft setup and site-controlled defaults."}
+                              </div>
+                              <div className="mt-2 inline-flex rounded-full border px-3 py-1 text-xs font-bold uppercase tracking-[0.14em]">
+                                {speclibModeLabel(preflightPreview?.speclib_mode ?? diannSpeclibModeForPreset(processingPreset))}
+                              </div>
+                              <div className="mt-3 inline-flex rounded-full border px-3 py-1 text-xs font-bold uppercase tracking-[0.14em]">
+                                Draft preview
+                              </div>
+                            </div>
+                            <div className="rounded-2xl border bg-background/80 p-3">
+                              <div className="text-xs font-bold uppercase text-muted-foreground">Status</div>
+                              {diannSettings.error ? (
+                                <div className="mt-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">{diannSettings.error}</div>
+                              ) : preflightError ? (
+                                <div className="mt-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">{preflightError}</div>
+                              ) : preflightPreview ? (
+                                <div className="mt-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">
+                                  Ready to submit. The preflight snapshot is valid and uses the site-controlled DIA-NN performance tags.
+                                </div>
+                              ) : (
+                                <div className="mt-2 rounded-lg border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                                  Preview will appear automatically on this step.
+                                </div>
+                              )}
+                            </div>
+                            <div className="rounded-2xl border bg-background/80 p-3">
+                              <div className="text-xs font-bold uppercase text-muted-foreground">Resolved settings</div>
+                              <div className="mt-2 grid gap-2 text-sm">
+                                <div className="rounded-lg border bg-background/70 p-3">
+                                  <div className="text-xs font-bold uppercase text-muted-foreground">Preset</div>
+                                  <div className="mt-1 font-semibold">{preflightPreview?.processing_preset ?? processingPreset}</div>
+                                </div>
+                                <div className="rounded-lg border bg-background/70 p-3">
+                                  <div className="text-xs font-bold uppercase text-muted-foreground">Version</div>
+                                  <div className="mt-1 font-semibold">DIA-NN {preflightPreview?.diann_version ?? diannVersion}</div>
+                                </div>
+                                <div className="rounded-lg border bg-background/70 p-3">
+                                  <div className="text-xs font-bold uppercase text-muted-foreground">Speclib mode</div>
+                                  <div className="mt-1 font-semibold">{speclibModeLabel(preflightPreview?.speclib_mode ?? diannSpeclibModeForPreset(processingPreset))}</div>
+                                  <div className="mt-1 text-xs text-muted-foreground">
+                                    {speclibModeDetail(preflightPreview?.speclib_mode ?? diannSpeclibModeForPreset(processingPreset))}
+                                  </div>
+                                </div>
+                                <div className="rounded-lg border bg-background/70 p-3">
+                                  <div className="text-xs font-bold uppercase text-muted-foreground">Reference assets</div>
+                                  <div className="mt-1 break-all text-xs text-muted-foreground">
+                                    <div>FASTA: {String(preflightPreview?.reference_assets?.fasta_path ?? fastaPath)}</div>
+                                    <div>SPECLIB: {String(preflightPreview?.reference_assets?.speclib_path ?? speclibPath)}</div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="grid gap-3">
+                            <div className="rounded-2xl border bg-background/80 p-3">
+                              <div className="text-xs font-bold uppercase text-muted-foreground">Performance tags</div>
+                              <div className="mt-2 grid gap-2">
+                                {tagEntries(preflightPreview?.performance_tags).length ? (
+                                  tagEntries(preflightPreview?.performance_tags).map((entry) => (
+                                    <div key={entry.key} className={`rounded-lg border px-3 py-2 text-sm ${preflightTone.chip}`}>
+                                      <div className="text-xs font-bold uppercase text-muted-foreground">{entry.key}</div>
+                                      <div className="mt-1 font-mono">{formatTagValue(entry.value)}</div>
+                                    </div>
+                                  ))
+                                ) : (
+                                  <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">No performance tags resolved.</div>
+                                )}
+                              </div>
+                            </div>
+                            <div className="rounded-2xl border bg-background/80 p-3">
+                              <div className="text-xs font-bold uppercase text-muted-foreground">Experimental tags</div>
+                              <div className="mt-2 grid gap-2">
+                                {tagEntries(preflightPreview?.experimental_tags).length ? (
+                                  tagEntries(preflightPreview?.experimental_tags).map((entry) => (
+                                    <div key={entry.key} className="rounded-lg border bg-background px-3 py-2 text-sm">
+                                      <div className="text-xs font-bold uppercase text-muted-foreground">{entry.key}</div>
+                                      <div className="mt-1 font-mono">{formatTagValue(entry.value)}</div>
+                                    </div>
+                                  ))
+                                ) : (
+                                  <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">No experimental tags resolved.</div>
+                                )}
+                              </div>
+                            </div>
+                            <div className="rounded-2xl border bg-background/80 p-3">
+                              <div className="text-xs font-bold uppercase text-muted-foreground">Command options</div>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {(preflightPreview?.options ?? []).length ? (
+                                  preflightPreview?.options.map((option) => (
+                                    <span key={option} className="rounded-full border bg-background px-3 py-1 font-mono text-xs">
+                                      {option}
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span className="text-sm text-muted-foreground">No explicit DIA-NN options resolved yet.</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
                     </section>
                   ) : null}
 
@@ -540,9 +847,73 @@ function toggleOrganism(value: string, setOrganisms: (updater: (current: string[
 }
 
 function settingsForPreset(preset: string) {
-  if (preset === "Fast smoke test") return { q_value: 0.01, matrices: false, threads: 4 };
-  if (preset === "High confidence IDs") return { q_value: 0.005, matrices: true, protein_inference: "strict", threads: 8 };
-  return { q_value: 0.01, matrices: true, threads: 8 };
+  if (preset === DIANN_PRESET_SMOKE) {
+    return {
+      tags: {
+        experimental: {
+          report: "diann-first-pass.parquet",
+          q_value: 0.01,
+          matrices: false,
+          individual_reports: false,
+          individual_mass_acc: false,
+          individual_windows: false,
+          generate_speclib: false,
+          fasta_search: false,
+          out_library: "",
+        },
+      },
+    };
+  }
+  if (preset === DIANN_PRESET_SPECLIB_REUSE) {
+    return {
+      tags: {
+        experimental: {
+          report: "diann-report.parquet",
+          q_value: 0.005,
+          matrices: true,
+          individual_reports: true,
+          individual_mass_acc: true,
+          individual_windows: true,
+          generate_speclib: false,
+          fasta_search: false,
+          out_library: "",
+        },
+      },
+    };
+  }
+  return {
+    tags: {
+      experimental: {
+        report: "diann-first-pass.parquet",
+        q_value: 0.005,
+        matrices: true,
+        individual_reports: true,
+        individual_mass_acc: true,
+        individual_windows: true,
+        generate_speclib: true,
+        fasta_search: true,
+        out_library: "diann-first-pass.speclib",
+      },
+    },
+  };
+}
+
+function diannSpeclibModeForPreset(preset: string) {
+  if (preset === DIANN_PRESET_SPECLIB_REUSE) return "reuse";
+  if (preset === DIANN_PRESET_SMOKE) return "smoke";
+  return "build";
+}
+
+function speclibModeLabel(mode: string) {
+  if (mode === "reuse") return "Reuse speclib";
+  if (mode === "smoke") return "Smoke only";
+  return "Build speclib";
+}
+
+function speclibModeDetail(mode: string) {
+  if (mode === "reuse") return "Use the generated project speclib for report runs.";
+  if (mode === "smoke") return "Launcher check only. Not the production search path.";
+  return "Generate a project speclib on the first pass.";
 }
 
 function configurationName(configurations: Array<{ id: number; name: string }>, value: string) {

@@ -95,13 +95,29 @@ class Command(BaseCommand):
         prefix = [py, str(mock_engine)]
         return [
             {
-                "name": "diann",
+                "name": "diann-speclib-build",
                 "parameters": {
                     "adapter": "diann",
                     "executable": [*prefix, "diann"],
                     "software_version": "mock-diann 1.0",
                     "version_command": [*prefix, "version", "DIA-NN mock 1.0"],
-                    "report": "diann-report.tsv",
+                    "report": "diann-build-report.tsv",
+                    "generate_speclib": True,
+                    "fasta_search": True,
+                    "fasta": "/data/shared/reference/human.fasta",
+                    "out_library": "diann-build.speclib",
+                },
+            },
+            {
+                "name": "diann-speclib-reuse",
+                "parameters": {
+                    "adapter": "diann",
+                    "executable": [*prefix, "diann"],
+                    "software_version": "mock-diann 1.0",
+                    "version_command": [*prefix, "version", "DIA-NN mock 1.0"],
+                    "report": "diann-reuse-report.tsv",
+                    "library": "/data/shared/reference/human.speclib",
+                    "fasta_search": False,
                 },
             },
             {
@@ -196,6 +212,11 @@ if mode == "version":
 elif mode == "diann":
     out = args[args.index("--out") + 1]
     write(out, "protein\\tq_value\\nP001\\t0.001\\n")
+    if "--gen-spec-lib" in args and "--out-lib" in args:
+        out_lib = args[args.index("--out-lib") + 1]
+        write(out_lib, "library\\nmock\\n")
+        predicted = str(Path(out_lib).with_suffix(".predicted.speclib"))
+        write(predicted, "library\\nmock\\n")
 elif mode == "fragpipe":
     workdir = args[args.index("--workdir") + 1]
     write(Path(workdir) / "fragpipe-output.tsv", "protein\\tscore\\nP001\\t100\\n")

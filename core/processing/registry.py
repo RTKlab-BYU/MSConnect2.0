@@ -7,8 +7,10 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import CommandError
 
+from core.processing.diann import validation_errors
+
 REFERENCE_KINDS = {"fasta", "speclib", "skyline_document", "fragpipe_workflow"}
-ENGINE_NAMES = {"diann", "fragpipe", "proteome-discoverer", "skyline", "spectronaut"}
+ENGINE_NAMES = {"diann", "fragpipe", "msconvert", "proteome-discoverer", "skyline", "spectronaut"}
 IMAGE_ENGINE_NAMES = {"diann", "fragpipe", "skyline"}
 
 
@@ -158,22 +160,29 @@ def resolve_pipeline_parameters(parameters: dict, *, engine: str | None = None) 
     resolved = deepcopy(parameters)
     engine_version = resolved.get("required_engine_version") or resolved.get("engine_version")
     if engine_version and normalized_engine:
-        profile = engine_profile(registry=registry, engine=normalized_engine, version=str(engine_version))
-        resolved.setdefault("executable", profile.get("executable") or _default_executable(normalized_engine))
-        if profile.get("version_command"):
-            resolved.setdefault("version_command", profile["version_command"])
-        resolved.setdefault("software_version", profile.get("software_version") or str(engine_version))
-        resolved.setdefault("required_engine_version", profile["version"])
-        resolved.setdefault(
-            "engine_profile",
-            {
-                "engine": profile["engine"],
-                "version": profile["version"],
-                "install_type": profile["install_type"],
-                "image": profile.get("image", ""),
-                "image_digest": profile.get("image_digest", ""),
-            },
-        )
+        try:
+            profile = engine_profile(registry=registry, engine=normalized_engine, version=str(engine_version))
+        except CommandError:
+            profile = None
+        if profile:
+            resolved.setdefault("executable", profile.get("executable") or _default_executable(normalized_engine))
+            if profile.get("version_command"):
+                resolved.setdefault("version_command", profile["version_command"])
+            resolved.setdefault("software_version", profile.get("software_version") or str(engine_version))
+            resolved.setdefault("required_engine_version", profile["version"])
+            resolved.setdefault(
+                "engine_profile",
+                {
+                    "engine": profile["engine"],
+                    "version": profile["version"],
+                    "install_type": profile["install_type"],
+                    "image": profile.get("image", ""),
+                    "image_digest": profile.get("image_digest", ""),
+                },
+            )
+        else:
+            resolved.setdefault("required_engine_version", str(engine_version))
+            resolved.setdefault("software_version", f"{_engine_label(normalized_engine)} {engine_version}")
 
     settings_ref = resolved.get("settings_ref")
     if settings_ref:
@@ -214,6 +223,10 @@ def resolve_pipeline_parameters(parameters: dict, *, engine: str | None = None) 
         _append_input_files(resolved, ["document"])
 
     return resolved
+
+
+def validate_diann_pipeline_settings(settings_payload: dict | None, *, allow_performance_tags: bool) -> list[str]:
+    return validation_errors(settings_payload, allow_performance_tags=allow_performance_tags)
 
 
 def validate_registry_selection(*, engine: str, settings_key: str = "", require_executable: bool = False) -> list[str]:

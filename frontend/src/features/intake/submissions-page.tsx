@@ -9,12 +9,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { StatusBadge } from "@/components/ui/status-badge";
 import { fetchCurrentUser, fetchIntakeRequests, queryKeys } from "@/lib/api/queries";
 import { formatDate } from "@/lib/format";
+import { isOperatorRole } from "@/lib/ui-surface";
 
 export default function SubmissionsPage() {
   const currentUserQuery = useQuery({
     queryKey: queryKeys.currentUser(),
     queryFn: fetchCurrentUser,
   });
+  const isOperator = isOperatorRole(currentUserQuery.data?.global_role);
   const submissionsQuery = useQuery({
     queryKey: queryKeys.intakeRequests({ mine: true, page: 1, page_size: 100 }),
     queryFn: () => fetchIntakeRequests({ mine: true, page: 1, page_size: 100 }),
@@ -36,12 +38,14 @@ export default function SubmissionsPage() {
                 New request
               </Link>
             </Button>
-            <Button asChild>
-              <Link to="/uploads">
-                <ArrowRight className="h-4 w-4" />
-                Upload files
-              </Link>
-            </Button>
+            {isOperator ? (
+              <Button asChild>
+                <Link to="/monitoring">
+                  <ArrowRight className="h-4 w-4" />
+                  Open monitoring
+                </Link>
+              </Button>
+            ) : null}
           </>
         }
       />

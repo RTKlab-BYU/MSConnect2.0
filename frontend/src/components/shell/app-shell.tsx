@@ -1,27 +1,22 @@
 import { useQuery } from "@tanstack/react-query";
-import { FlaskConical, LayoutDashboard, Moon, Search, ShieldAlert, Sun } from "lucide-react";
+import { FlaskConical, LayoutDashboard, Moon, Search, Sun } from "lucide-react";
 import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { CommandPalette } from "@/components/shell/command-palette";
 import { fetchCurrentUser, queryKeys } from "@/lib/api/queries";
+import { isOperatorRole } from "@/lib/ui-surface";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/store/ui-store";
 
 const collaboratorNavItems = [
   { to: "/projects", label: "Projects", icon: FlaskConical },
-  { to: "/submissions", label: "Submissions", icon: LayoutDashboard },
-  { to: "/uploads", label: "Uploads", icon: Search },
-  { to: "/monitoring", label: "Status", icon: ShieldAlert },
 ];
 
 const operatorNavItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/projects", label: "Projects", icon: FlaskConical },
-  { to: "/intake", label: "Intake", icon: ShieldAlert },
-  { to: "/admin", label: "Admin", icon: ShieldAlert },
-  { to: "/processing", label: "Processing", icon: Search },
   { to: "/monitoring", label: "Monitoring", icon: Search },
 ];
 
@@ -34,12 +29,7 @@ export function AppShell() {
     queryFn: fetchCurrentUser,
   });
   const currentUser = currentUserQuery.data;
-  const navItems =
-    currentUser?.global_role === "collaborator"
-      ? collaboratorNavItems
-      : currentUser?.global_role === "researcher"
-        ? collaboratorNavItems
-        : operatorNavItems;
+  const navItems = isOperatorRole(currentUser?.global_role) ? operatorNavItems : collaboratorNavItems;
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {

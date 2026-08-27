@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.processing.diann import build_diann_command_options, diann_effective_settings
+
 
 @dataclass(frozen=True)
 class AdapterPlan:
@@ -93,33 +95,63 @@ def _msconvert_plan(*, parameters: dict, placeholders: dict[str, str], results_d
 
 
 def _diann_plan(*, parameters: dict, placeholders: dict[str, str], results_dir: Path) -> AdapterPlan:
-    executable = _command_prefix(parameters.get("executable") or "diann")
-    report_name = _substitute(str(parameters.get("report") or "diann-report.tsv"), placeholders)
+    effective = diann_effective_settings(parameters)
+    executable = _command_prefix(effective.get("executable") or "diann")
+    report_name = _substitute(str(effective.get("report") or "diann-report.parquet"), placeholders)
+    temp_dir = _substitute(str(effective.get("temp") or str(results_dir)), placeholders)
+    report_path = str((results_dir / report_name).resolve())
+    report_format = Path(report_name).suffix.lower().lstrip(".") or "parquet"
     command = [
         *executable,
         "--f",
         placeholders["raw_file_path"],
         "--out",
-        str((results_dir / report_name).resolve()),
+        report_path,
+        "--temp",
+        temp_dir,
     ]
-    library = parameters.get("library")
+    library = effective.get("library")
+    generate_speclib = bool(effective.get("generate_speclib"))
     if library:
         command.extend(["--lib", _substitute(str(library), placeholders)])
-    fasta = parameters.get("fasta")
+    fasta = effective.get("fasta")
     if fasta:
         command.extend(["--fasta", _substitute(str(fasta), placeholders)])
-    command.extend(_string_list(parameters.get("options") or [], placeholders))
+    if generate_speclib:
+        requested_out_library = _substitute(str(effective.get("out_library") or f"{Path(report_name).stem}.speclib"), placeholders)
+        out_library_name = (
+            requested_out_library
+            if requested_out_library.endswith(".predicted.speclib")
+            else str(Path(requested_out_library).with_suffix(".predicted.speclib"))
+        )
+        out_library_path = str((results_dir / out_library_name).resolve())
+        command.extend(["--gen-spec-lib", "--predictor"])
+        if bool(effective.get("fasta_search", True)):
+            command.append("--fasta-search")
+        command.extend(["--out-lib", str((results_dir / requested_out_library).resolve())])
+        command.extend(build_diann_command_options({**effective, "fasta_search": False}))
+    else:
+        command.extend(build_diann_command_options(effective))
     artifact_files = [
         {
             "artifact_type": "diann_report",
-            "path": str((results_dir / report_name).resolve()),
-            "format": "tsv",
+            "path": report_path,
+            "format": report_format,
         }
     ]
-    artifact_files.extend(list(parameters.get("artifact_files") or []))
+    if generate_speclib:
+        artifact_files.append(
+            {
+                "artifact_type": "other",
+                "path": out_library_path,
+                "format": "speclib",
+                "metadata": {"role": "diann_speclib"},
+            }
+        )
+    artifact_files.extend(list(effective.get("artifact_files") or []))
     return AdapterPlan(
         command=command,
-        result_files=dict(parameters.get("result_files") or {}),
+        result_files=dict(effective.get("result_files") or {}),
         artifact_files=artifact_files,
     )
 

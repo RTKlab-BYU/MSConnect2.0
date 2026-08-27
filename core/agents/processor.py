@@ -33,17 +33,29 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
     raw_file = job_payload.get("raw_file") or {}
     run = job_payload.get("run") or {}
     parameters = pipeline.get("parameters") or {}
+    experiment_metadata = run.get("experiment_metadata") or {}
+    diann_metadata = experiment_metadata.get("diann") or {}
+    if not parameters.get("library") and not parameters.get("generate_speclib"):
+        library_source = str(parameters.get("library_source") or "").strip()
+        if library_source == "preferred_speclib_path":
+            preferred_speclib_path = str(diann_metadata.get("preferred_speclib_path") or "").strip()
+            if not preferred_speclib_path:
+                raise ValueError(
+                    "DIA-NN pipeline requested preferred speclib reuse, but the experiment has no generated speclib yet."
+                )
+            parameters = {**parameters, "library": preferred_speclib_path}
     parameters = resolve_pipeline_parameters(
         parameters,
         engine=parameters.get("required_engine") or parameters.get("adapter") or "",
     )
+    raw_file_path = _select_input_path(raw_file=raw_file, parameters=parameters)
     results_dir = (results_root / "jobs" / str(job_payload["id"])).resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
     log_path = (results_dir / "process.log").resolve()
 
     placeholders = {
         "job_id": str(job_payload["id"]),
-        "raw_file_path": str(raw_file.get("storage_path") or ""),
+        "raw_file_path": raw_file_path,
         "results_dir": str(results_dir),
         "run_name": str(run.get("name") or ""),
     }
@@ -93,6 +105,24 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
     delimiter = result_files.get("delimiter")
     if delimiter is not None and not isinstance(delimiter, str):
         raise ValueError("Processing pipeline parameters.result_files.delimiter must be a string when provided.")
+    resolved_artifact_files = _resolve_declared_artifacts(artifact_files, results_dir=results_dir, placeholders=placeholders)
+    resolved_derivative_files = [
+        {**derivative, "path": str(Path(str(derivative.get("path") or "")).resolve())}
+        for derivative in derivative_files
+    ]
+    output_paths = {
+        "result_files": {
+            key: str(path.resolve())
+            for key, path in {
+                "protein_table": protein_table_path,
+                "peptide_table": peptide_table_path,
+                "stats_json": stats_json_path,
+            }.items()
+            if path is not None
+        },
+        "artifact_files": [item["path"] for item in resolved_artifact_files],
+        "derivative_files": [item["path"] for item in resolved_derivative_files],
+    }
 
     runtime_manifest_path = (results_dir / "runtime-manifest.json").resolve()
     shared_roots = {
@@ -108,6 +138,7 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
         raw_file_path=placeholders["raw_file_path"],
         parameters=parameters,
         shared_roots=shared_roots,
+        output_paths=output_paths,
     )
     write_runtime_manifest(runtime_manifest_path, runtime_metadata)
 
@@ -123,7 +154,7 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
         delimiter=delimiter,
         derivative_files=derivative_files,
         artifact_files=[
-            *_resolve_declared_artifacts(artifact_files, results_dir=results_dir, placeholders=placeholders),
+            *resolved_artifact_files,
             {
                 "artifact_type": "other",
                 "path": str(runtime_manifest_path),
@@ -136,6 +167,18 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
         runtime_manifest_path=runtime_manifest_path,
         runtime_metadata=runtime_metadata,
     )
+
+
+def _select_input_path(*, raw_file: dict, parameters: dict) -> str:
+    raw_path = str(raw_file.get("storage_path") or "")
+    if not raw_path:
+        return ""
+
+    adapter = str(parameters.get("adapter") or "").strip().lower()
+    if adapter in {"diann", "dia-nn"}:
+        return raw_path
+
+    return raw_path
 
 
 def _substitute_string(value: str, placeholders: dict[str, str], *, field_name: str) -> str:

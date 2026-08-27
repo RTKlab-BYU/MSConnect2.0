@@ -14,12 +14,13 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { Link } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 
 import { MetricCard, PageHero } from "@/components/layout/page-section";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
@@ -73,9 +74,9 @@ const featureLinks = [
     icon: Microscope,
   },
   {
-    title: "Uploads",
+    title: "Watcher",
     description: "Direct upload sessions, raw-file storage registration, and file intake checks.",
-    href: "/uploads",
+    href: "/watcher",
     icon: FileUp,
   },
   {
@@ -182,6 +183,40 @@ const readinessCommands = [
 ];
 
 const UNSET_PIPELINE = "__unset__";
+const EMPTY_DIANN_PERFORMANCE_TAGS = { threads: "", temp: "" };
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readDiannPerformanceTags(metadata: Record<string, unknown> | undefined) {
+  const diann = isPlainObject(metadata?.diann) ? metadata.diann : {};
+  const performanceTags = isPlainObject(diann.performance_tags) ? diann.performance_tags : {};
+  return {
+    threads: typeof performanceTags.threads === "number" || typeof performanceTags.threads === "string" ? String(performanceTags.threads) : "",
+    temp: typeof performanceTags.temp === "string" ? performanceTags.temp : "",
+  };
+}
+
+function buildDeploymentMetadata(
+  metadata: Record<string, unknown> | undefined,
+  performanceTags: { threads: string; temp: string },
+) {
+  const nextMetadata = { ...(metadata ?? {}) };
+  const diann = isPlainObject(nextMetadata.diann) ? { ...nextMetadata.diann } : {};
+  const nextPerformanceTags: Record<string, unknown> = {};
+
+  if (performanceTags.threads.trim()) {
+    nextPerformanceTags.threads = Number(performanceTags.threads);
+  }
+  if (performanceTags.temp.trim()) {
+    nextPerformanceTags.temp = performanceTags.temp.trim();
+  }
+
+  diann.performance_tags = nextPerformanceTags;
+  nextMetadata.diann = diann;
+  return nextMetadata;
+}
 
 export default function AdminDashboardPage() {
   const projectsQuery = useQuery({
@@ -227,9 +262,17 @@ export default function AdminDashboardPage() {
   });
   const [selectedPrtcPipeline, setSelectedPrtcPipeline] = useState(UNSET_PIPELINE);
   const [selectedTargetedPipeline, setSelectedTargetedPipeline] = useState(UNSET_PIPELINE);
+  const [performanceThreads, setPerformanceThreads] = useState(EMPTY_DIANN_PERFORMANCE_TAGS.threads);
+  const [performanceTemp, setPerformanceTemp] = useState(EMPTY_DIANN_PERFORMANCE_TAGS.temp);
+  const [deploymentMetadataError, setDeploymentMetadataError] = useState("");
   const nodes = nodesQuery.data?.results ?? [];
   const systemHealth = systemHealthQuery.data;
   const deploymentSettings = deploymentSettingsQuery.data;
+  const deploymentPerformanceTags = readDiannPerformanceTags(deploymentSettings?.metadata);
+  const deploymentMetadataPreview = buildDeploymentMetadata(deploymentSettings?.metadata, {
+    threads: performanceThreads,
+    temp: performanceTemp,
+  });
   const skylinePipelines = (pipelinesQuery.data?.results ?? []).filter((pipeline) => pipelineSupportsSkyline(pipeline));
   const activePrtcPipelineId = deploymentSettings?.prtc_skyline_pipeline ? String(deploymentSettings.prtc_skyline_pipeline) : UNSET_PIPELINE;
   const activeTargetedPipelineId = deploymentSettings?.targeted_skyline_pipeline
@@ -243,18 +286,32 @@ export default function AdminDashboardPage() {
     : "Unset";
   const selectedPipelineChanged =
     selectedPrtcPipeline !== activePrtcPipelineId || selectedTargetedPipeline !== activeTargetedPipelineId;
+  const deploymentMetadataChanged =
+    performanceThreads !== deploymentPerformanceTags.threads || performanceTemp !== deploymentPerformanceTags.temp;
   const deploymentMutation = useMutation({
-    mutationFn: () =>
-      updateDeploymentSettings({
+    mutationFn: () => {
+      const threads = performanceThreads.trim();
+      if (threads && !/^\d+$/.test(threads)) {
+        throw new Error("Performance threads must be a positive integer.");
+      }
+      const metadata = buildDeploymentMetadata(deploymentSettings?.metadata, {
+        threads,
+        temp: performanceTemp,
+      });
+      return updateDeploymentSettings({
         prtc_skyline_pipeline: selectedPrtcPipeline === UNSET_PIPELINE ? null : Number(selectedPrtcPipeline),
         targeted_skyline_pipeline: selectedTargetedPipeline === UNSET_PIPELINE ? null : Number(selectedTargetedPipeline),
-      }),
+        metadata,
+      });
+    },
     onSuccess: async () => {
+      setDeploymentMetadataError("");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.deploymentSettings() }),
         queryClient.invalidateQueries({ queryKey: queryKeys.systemHealth() }),
       ]);
     },
+    onError: (error) => setDeploymentMetadataError(error instanceof Error ? error.message : "Could not save deployment settings."),
   });
   const redNodes = nodes.filter((node) => node.health === "red").length;
   const yellowNodes = nodes.filter((node) => node.health === "yellow").length;
@@ -268,6 +325,11 @@ export default function AdminDashboardPage() {
     setSelectedTargetedPipeline(activeTargetedPipelineId);
   }, [activePrtcPipelineId, activeTargetedPipelineId]);
 
+  useEffect(() => {
+    setPerformanceThreads(deploymentPerformanceTags.threads);
+    setPerformanceTemp(deploymentPerformanceTags.temp);
+  }, [deploymentPerformanceTags.temp, deploymentPerformanceTags.threads]);
+
   return (
     <div className="grid gap-4">
       <Breadcrumbs items={[{ label: "Admin" }]} />
@@ -275,7 +337,7 @@ export default function AdminDashboardPage() {
       <PageHero
         eyebrow="System administration"
         title="Admin dashboard"
-        description="System-wide operations across projects, raw storage, processing, QC, uploads, agent health, and Django records."
+        description="System-wide operations across projects, watcher intake, raw storage, processing, QC, agent health, and Django records."
         actions={
           <>
             <StatusBadge status={healthBadgeStatus(systemStatus)} />
@@ -368,7 +430,7 @@ export default function AdminDashboardPage() {
         <CardContent className="grid gap-4 xl:grid-cols-[1fr_1fr]">
           <LanePanel
             title="PRTC"
-            description="Active upload routing. PRTC uploads land here first."
+            description="Active ingest routing. PRTC files land here first."
             currentLabel={currentPrtcLabel}
             updatedAt={deploymentSettings?.updated_at}
             selectLabel="Active PRTC pipeline"
@@ -393,6 +455,60 @@ export default function AdminDashboardPage() {
             <Button disabled={!selectedPipelineChanged || deploymentMutation.isPending} onClick={() => deploymentMutation.mutate()}>
               {deploymentMutation.isPending ? "Saving..." : "Save Skyline lanes"}
             </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>DIA-NN performance tags</CardTitle>
+          <CardDescription>Admin-owned worker limits that are merged into every DIA-NN pipeline preview and run.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 xl:grid-cols-[320px_1fr]">
+          <div className="grid gap-3">
+            <label className="grid gap-1 text-sm font-bold">
+              Threads
+              <Input
+                type="number"
+                min="1"
+                step="1"
+                value={performanceThreads}
+                onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                  setDeploymentMetadataError("");
+                  setPerformanceThreads(event.target.value);
+                }}
+                placeholder="8"
+              />
+            </label>
+            <label className="grid gap-1 text-sm font-bold">
+              Temp path
+              <Input
+                value={performanceTemp}
+                onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                  setDeploymentMetadataError("");
+                  setPerformanceTemp(event.target.value);
+                }}
+                placeholder="/scratch/diann"
+              />
+            </label>
+            <div className="text-xs text-muted-foreground">
+              Researchers can still choose experimental DIA-NN settings. These values are reserved for system capacity limits.
+            </div>
+            {deploymentMetadataError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{deploymentMetadataError}</div> : null}
+            <Button disabled={(!selectedPipelineChanged && !deploymentMetadataChanged) || deploymentMutation.isPending} onClick={() => deploymentMutation.mutate()}>
+              {deploymentMutation.isPending ? "Saving..." : "Save deployment settings"}
+            </Button>
+          </div>
+          <div className="grid gap-3">
+            <div className="rounded-2xl border bg-background/70 p-4">
+              <div className="text-xs font-bold uppercase text-muted-foreground">Resolved metadata preview</div>
+              <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">
+                <code>{JSON.stringify(deploymentMetadataPreview, null, 2)}</code>
+              </pre>
+            </div>
+            <div className="rounded-2xl border bg-background/70 p-4 text-sm text-muted-foreground">
+              Saved at <span className="font-mono">{formatDate(deploymentSettings?.updated_at)}</span>. DIA-NN previews and uploads will use this site profile.
+            </div>
           </div>
         </CardContent>
       </Card>

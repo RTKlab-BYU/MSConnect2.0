@@ -25,6 +25,14 @@ For best replication, pipeline definitions should set a pinned `software_version
 }
 ```
 
+For DIA-NN, use explicit presets instead of implicit guessing:
+
+- `DIA-NN speclib build` generates a new speclib from the approved FASTA and writes the report.
+- `DIA-NN speclib reuse` runs later samples against the generated speclib without rebuilding it.
+- `DIA-NN smoke test` is a fast launcher check only and is not the production search path.
+
+Keep the DIA-NN worker single-threaded per node by default so the predictor does not saturate CPU or RAM on a shared processor host.
+
 ## Shared Storage
 
 Processors need the same logical paths for raw files, result outputs, references, workflows, libraries, and enterprise handoff folders. Configure these roots consistently across Linux containers and Windows workers:
@@ -65,7 +73,7 @@ $env:PROCESSOR_SHARED_STORAGE_ROOT='\\nas\msconnect'
 .\.venv\Scripts\python manage.py run_processor_agent --engine proteome-discoverer
 ```
 
-Use one node name per live process, such as `diann-01`, `fragpipe-01`, `skyline-win-01`, `spectronaut-win-01`, and `pd-win-01`. For persistent operations, wrap the same command in `systemd`, Docker Compose, Windows Task Scheduler, or a Windows service runner. `pause` and `drain` controls stop a node from claiming new jobs; `stop` and `restart` acknowledge the control and exit the process so the host supervisor can stop or restart it.
+Use one node name per live process, such as `diann-01`, `fragpipe-01`, `skyline-win-01`, `spectronaut-win-01`, and `pd-win-01`. For persistent operations, wrap the same command in `systemd`, Docker Compose, Windows Task Scheduler, or a Windows service runner. `pause` and `drain` controls stop a node from claiming new jobs; `stop` and `restart` acknowledge the control and exit the process so the host supervisor can stop or restart it. Run one DIA-NN worker process per node.
 
 Before starting a long-running node, run preflight from that same host:
 
@@ -336,11 +344,22 @@ Legacy pipelines can continue using `parameters.command`. New pipelines should p
   "adapter": "diann",
   "executable": "diann",
   "software_version": "DIA-NN 1.9.2",
+  "required_engine_version": "1.9",
   "library": "/data/reference/project.speclib",
   "fasta": "/data/reference/project.fasta",
-  "options": ["--threads", "8"]
+  "tags": {
+    "performance": {
+      "threads": 8
+    },
+    "experimental": {
+      "q_value": 0.01,
+      "matrices": true
+    }
+  }
 }
 ```
+
+For DIA-NN lanes, keep `tags.performance` site-managed and reserve `tags.experimental` for researcher-selected analysis options. Pin `required_engine_version` to the site-approved worker version so job claiming stays aligned with the container image. The admin dashboard can store site defaults in `deployment_settings.metadata.diann.performance_tags`.
 
 ```json
 {
@@ -408,7 +427,7 @@ python manage.py smoke_test_processors \
   --results-root results/processor-smoke
 ```
 
-This runs mock DIA-NN, FragPipe, Skyline, Spectronaut, and Proteome Discoverer commands against one file. It is not a scientific validation of the vendor engines; it validates the processor wrapper contract. On machines with real engine binaries, create real queued jobs with site-pinned pipeline definitions and confirm each `runtime-manifest.json` captures the vendor version output and shared storage paths.
+This runs mock DIA-NN build and reuse cases, plus FragPipe, Skyline, Spectronaut, and Proteome Discoverer commands against one file. It is not a scientific validation of the vendor engines; it validates the processor wrapper contract. On machines with real engine binaries, create real queued jobs with site-pinned pipeline definitions and confirm each `runtime-manifest.json` captures the vendor version output, shared storage paths, and the resolved report or speclib outputs.
 
 ## Spectra Viewing
 

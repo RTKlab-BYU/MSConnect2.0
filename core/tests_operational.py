@@ -1,12 +1,15 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import (
+    Facility,
+    Lab,
     Peptide,
     PeptideQuant,
     ProcessingArtifactType,
@@ -28,6 +31,7 @@ from core.models import (
     RawFileStatus,
     RunFileRole,
     RunStatus,
+    University,
     WorklistEntry,
 )
 
@@ -44,6 +48,28 @@ class OperationalSmokeCommandTests(TestCase):
 
             self.assertEqual(run.expected_filename, "E2E-UNIT_run01.mzML")
             self.assertTrue((root / "incoming" / "E2E-UNIT_run01.mzML").exists())
+
+    def test_create_e2e_smoke_fixture_can_stage_real_source_file(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source" / "JM1025_DigestMix_other_RK9_rep5_ch1_DIA100win_dry_run77.raw"
+            source.parent.mkdir(parents=True)
+            source.write_text("real raw placeholder bytes", encoding="utf-8")
+
+            with override_settings(INCOMING_RAW_ROOT=str(root / "incoming")):
+                call_command(
+                    "create_e2e_smoke_fixture",
+                    code="E2E-REAL",
+                    source_file=str(source),
+                )
+
+            project = Project.objects.get(code="E2E-REAL")
+            run = project.experiments.get().samples.get().runs.get()
+            staged = root / "incoming" / source.name
+
+            self.assertEqual(run.expected_filename, source.name)
+            self.assertTrue(staged.exists())
+            self.assertEqual(staged.read_text(encoding="utf-8"), source.read_text(encoding="utf-8"))
 
     def test_verify_e2e_smoke_fixture_fails_before_processing(self):
         with TemporaryDirectory() as temp_dir:
@@ -242,6 +268,80 @@ class OperationalSmokeCommandTests(TestCase):
                 2,
             )
 
+    def test_cleanup_processing_state_removes_transient_jobs_and_resets_nodes(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            results_root = root / "results"
+            results_root.mkdir()
+            jobs_root = results_root / "jobs"
+            jobs_root.mkdir()
+
+            user = get_user_model().objects.create(username="cleanup-user")
+            university = University.objects.create(name="Cleanup University")
+            facility = Facility.objects.create(university=university, name="Cleanup Facility", slug="cleanup-facility")
+            lab = Lab.objects.create(facility=facility, name="Cleanup Lab", slug="cleanup-lab", pi=user)
+            project = Project.objects.create(lab=lab, code="CLEANUP-UNIT", title="Cleanup Unit", pi=user)
+            experiment = project.experiments.create(name="Cleanup Experiment")
+            run = experiment.samples.create(name="Cleanup Sample").runs.create(run_name="cleanup-run")
+            raw_file = RawFile.objects.create(
+                run=run,
+                source_path=str(root / "incoming" / "cleanup.raw"),
+                storage_path=str(root / "raw" / "cleanup.raw"),
+                filename="cleanup.raw",
+                checksum_sha256="c" * 64,
+                size_bytes=128,
+                status=RawFileStatus.IMPORTED,
+            )
+            pipeline = ProcessingPipeline.objects.create(name="Cleanup Pipeline", version="1.0")
+            complete_job = ProcessingJob.objects.create(
+                run=run,
+                raw_file=raw_file,
+                pipeline=pipeline,
+                status=ProcessingStatus.COMPLETE,
+                log_path=str(jobs_root / "99" / "process.log"),
+            )
+            queued_job = ProcessingJob.objects.create(
+                run=run,
+                raw_file=raw_file,
+                pipeline=pipeline,
+                status=ProcessingStatus.QUEUED,
+                log_path=str(jobs_root / "100" / "process.log"),
+            )
+            running_job = ProcessingJob.objects.create(
+                run=run,
+                raw_file=raw_file,
+                pipeline=pipeline,
+                status=ProcessingStatus.RUNNING,
+                node=None,
+                log_path=str(jobs_root / "101" / "process.log"),
+            )
+            for job in (queued_job, running_job):
+                job_dir = jobs_root / str(job.id)
+                job_dir.mkdir(parents=True)
+                (job_dir / "process.log").write_text("job log", encoding="utf-8")
+
+            node = ProcessingNode.objects.create(
+                name="cleanup-node",
+                node_type="diann",
+                status=ProcessingNodeStatus.BUSY,
+                last_heartbeat_at=timezone.now(),
+                metadata={"control": {"id": "ctrl-1", "command": "pause"}},
+            )
+
+            with override_settings(RESULTS_ROOT=str(results_root)):
+                call_command("cleanup_processing_state")
+
+            self.assertTrue(ProcessingJob.objects.filter(pk=complete_job.pk).exists())
+            self.assertFalse(ProcessingJob.objects.filter(pk=queued_job.pk).exists())
+            self.assertFalse(ProcessingJob.objects.filter(pk=running_job.pk).exists())
+            self.assertFalse((jobs_root / str(queued_job.id)).exists())
+            self.assertFalse((jobs_root / str(running_job.id)).exists())
+            node.refresh_from_db()
+            self.assertEqual(node.status, ProcessingNodeStatus.OFFLINE)
+            self.assertIsNone(node.last_heartbeat_at)
+            self.assertNotIn("control", node.metadata)
+            self.assertIn("cleanup", node.metadata)
+
     def test_storage_capacity_report_runs_with_configured_roots(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -340,6 +440,66 @@ class OperationalSmokeCommandTests(TestCase):
                 entries[0].worklist.metadata["processing_pipeline_id"],
                 ProcessingPipeline.objects.get(name="Filename matching DIA-NN", version="site-managed").id,
             )
+
+    def test_rerun_latest_diann_batch_requeues_failed_jobs_and_backfills_conversion(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with override_settings(INCOMING_RAW_ROOT=str(root / "incoming")):
+                call_command(
+                    "create_filename_worklist",
+                    code="BATCH-UNIT",
+                    project_title="Batch rerun smoke project",
+                    worklist_name="Batch rerun worklist",
+                    filename=["BATCH-01.raw"],
+                )
+
+            project = Project.objects.get(code="BATCH-UNIT")
+            worklist = project.experiments.get().worklists.get()
+            entry = worklist.entries.get(position=1)
+            run = entry.run
+            raw_file = RawFile.objects.create(
+                run=run,
+                source_path="/incoming/BATCH-01.raw",
+                storage_path=str(root / "raw" / "aa" / "batch-01.raw"),
+                filename="BATCH-01.raw",
+                checksum_sha256="f" * 64,
+                size_bytes=1024,
+                imported_at=timezone.now(),
+                status=RawFileStatus.IMPORTED,
+            )
+            failed_node = ProcessingNode.objects.create(
+                name="diann-rerun-test",
+                node_type="diann",
+                status=ProcessingNodeStatus.IDLE,
+                last_heartbeat_at=timezone.now(),
+            )
+            diann_pipeline = ProcessingPipeline.objects.get(name="Filename matching DIA-NN", version="site-managed")
+            failed_job = ProcessingJob.objects.create(
+                run=run,
+                raw_file=raw_file,
+                pipeline=diann_pipeline,
+                node=failed_node,
+                status=ProcessingStatus.FAILED,
+                error_message="previous failure",
+            )
+
+            call_command("rerun_latest_diann_batch", project_code="BATCH-UNIT")
+
+            failed_job.refresh_from_db()
+            conversion_job = ProcessingJob.objects.get(
+                run=run,
+                raw_file=raw_file,
+                pipeline__name="ProteoWizard msconvert",
+            )
+
+            self.assertEqual(failed_job.status, ProcessingStatus.QUEUED)
+            self.assertIsNone(failed_job.node_id)
+            self.assertEqual(failed_job.error_message, "")
+            self.assertEqual(failed_job.started_at, None)
+            self.assertEqual(failed_job.finished_at, None)
+            self.assertEqual(conversion_job.status, ProcessingStatus.QUEUED)
+            self.assertEqual(conversion_job.metadata["purpose"], "spectra_conversion")
+            self.assertEqual(conversion_job.metadata["backfill"], True)
 
     def test_processor_registry_create_pipeline_pins_engine_profile(self):
         with TemporaryDirectory() as temp_dir:

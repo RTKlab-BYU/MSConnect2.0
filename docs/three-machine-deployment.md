@@ -46,7 +46,7 @@ python manage.py check_agent_runtime --role watcher --write-test
 python manage.py run_watcher_agent --match-run-by-name
 ```
 
-Worklists are the queue source of truth. Upload/import the worklist before acquisition when possible so expected filenames exist before the watcher sees files. The watcher matches expected filename first through the API path and run-name fallback second.
+Worklists are the queue source of truth. Upload/import the worklist before acquisition when possible so expected filenames exist before the watcher sees files. The watcher matches expected filename first through the API path and only falls back to run-name matching for compatibility.
 If the Django URL is not known in advance, set `MSCONNECT_API_DISCOVERY_HOSTS` so the agent can keep searching common hostnames until it finds the API.
 
 ## Processor

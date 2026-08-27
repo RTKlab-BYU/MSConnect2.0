@@ -9,6 +9,7 @@ from django.db.models import F
 from django.utils import timezone
 
 from core.models import IngestionFailure, RawFile, RawFileStatus, Run
+from core.services.lifecycle import record_pipeline_event, record_raw_file_import
 
 DEFAULT_RAW_SUFFIXES = (".raw", ".RAW", ".mzML", ".mzXML", ".wiff", ".scan", ".d")
 
@@ -77,11 +78,35 @@ def import_raw_path(
             skipped=True,
         )
 
+    if matched_run:
+        experiment = matched_run.sample.experiment
+        record_pipeline_event(
+            event_type="file_discovered",
+            project=experiment.project,
+            experiment=experiment,
+            run=matched_run,
+            to_status=RawFileStatus.DISCOVERED,
+            message="Watcher discovered a legacy raw file.",
+            payload={"source_path": str(source_path.resolve()), "filename": source_path.name},
+        )
+
     destination = build_storage_path(storage_root, source_path, checksum)
     if dry_run:
         return RawFileImportResult(source_path=source_path, checksum_sha256=checksum, size_bytes=size_bytes)
 
     copy_raw_path(source_path, destination)
+
+    if matched_run:
+        experiment = matched_run.sample.experiment
+        record_pipeline_event(
+            event_type="file_uploaded",
+            project=experiment.project,
+            experiment=experiment,
+            run=matched_run,
+            to_status=RawFileStatus.IMPORTED,
+            message="Watcher uploaded raw file into managed storage.",
+            payload={"source_path": str(source_path.resolve()), "storage_path": str(destination.resolve())},
+        )
 
     with transaction.atomic():
         raw_file = RawFile.objects.create(
@@ -94,6 +119,33 @@ def import_raw_path(
             imported_at=timezone.now(),
             status=RawFileStatus.IMPORTED,
             metadata={"importer": "ingest_raw_files", "filename_metadata": filename_metadata},
+        )
+        record_pipeline_event(
+            event_type="file_stored",
+            project=matched_run.sample.experiment.project if matched_run else None,
+            experiment=matched_run.sample.experiment if matched_run else None,
+            run=matched_run,
+            raw_file=raw_file,
+            from_status=RawFileStatus.DISCOVERED,
+            to_status=RawFileStatus.IMPORTED,
+            message="Managed storage copy was created.",
+            payload={
+                "source_path": str(source_path.resolve()),
+                "storage_path": str(destination.resolve()),
+                "checksum_sha256": checksum,
+                "size_bytes": size_bytes,
+            },
+        )
+        record_raw_file_import(
+            raw_file,
+            message="Raw file copied into managed storage.",
+            payload={
+                "source_path": str(source_path.resolve()),
+                "storage_path": str(destination.resolve()),
+                "checksum_sha256": checksum,
+                "size_bytes": size_bytes,
+                "importer": "ingest_raw_files",
+            },
         )
 
     return RawFileImportResult(

@@ -2,7 +2,6 @@ import hashlib
 import json
 import math
 import re
-import sys
 import uuid
 import shutil
 from pathlib import Path, PurePath
@@ -27,7 +26,16 @@ from rest_framework.views import APIView
 
 from ingest.result_import import ResultTableImportError, import_result_tables
 from ingest.services import build_storage_path, find_run_for_path, parse_filename_metadata, record_ingestion_failure
+from core.services.lifecycle import (
+    recompute_experiment_and_project_status,
+    record_pipeline_event,
+    record_processing_completion,
+    record_raw_file_import,
+    record_result_files_uploaded,
+)
 from msconnect.health import _database_check, _path_check
+from core.services.batch_rerun import rerun_latest_diann_batch
+from core.services.processing_routing import should_queue_spectra_conversion_for_raw_file
 
 from .agent_auth import AgentTokenAuthentication
 from .models import (
@@ -76,6 +84,12 @@ from .models import (
     WorklistStatus,
 )
 from .permissions import AgentRolePermission, RoleScopedWritePermission, active_lab_ids, is_admin, user_role
+from core.processing.diann import (
+    build_diann_command_options,
+    normalize_diann_settings,
+    site_performance_tags,
+)
+from core.processing.registry import resolve_pipeline_parameters, validate_diann_pipeline_settings
 
 User = get_user_model()
 
@@ -155,14 +169,20 @@ class ProjectPreAcquisitionSetupSerializer(serializers.Serializer):
     fasta_path = serializers.CharField(max_length=1024, allow_blank=True, required=False)
     speclib_path = serializers.CharField(max_length=1024, allow_blank=True, required=False)
     organisms = serializers.ListField(child=serializers.CharField(max_length=128), required=False)
-    processing_preset = serializers.CharField(max_length=128, default="Standard DIA-NN plasma")
+    processing_preset = serializers.CharField(max_length=128, default="DIA-NN speclib build")
     fasta_upload_name = serializers.CharField(max_length=255, allow_blank=True, required=False)
     speclib_upload_name = serializers.CharField(max_length=255, allow_blank=True, required=False)
-    diann_version = serializers.CharField(max_length=128, default="1.9")
+    diann_version = serializers.CharField(max_length=128, default="2.0")
     diann_settings = serializers.JSONField(required=False)
 
     def validate(self, attrs):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
         sample_rows = _normalize_sample_rows(attrs.get("sample_rows") or [])
+        diann_settings = normalize_diann_settings(_ensure_dict(attrs.get("diann_settings"), field_name="diann_settings"))
+        diann_errors = validate_diann_pipeline_settings(diann_settings, allow_performance_tags=is_admin(user))
+        if diann_errors:
+            raise ValidationError({"diann_settings": diann_errors})
         if sample_rows:
             attrs["sample_rows"] = sample_rows
             attrs["sample_count"] = len(sample_rows)
@@ -170,7 +190,7 @@ class ProjectPreAcquisitionSetupSerializer(serializers.Serializer):
             attrs["healthy_count"] = condition_counts.get("healthy", 0)
             attrs["diseased_count"] = condition_counts.get("diseased", 0)
             attrs["organisms"] = _normalize_organisms(attrs.get("organisms"))
-            attrs["diann_settings"] = _ensure_dict(attrs.get("diann_settings"), field_name="diann_settings")
+            attrs["diann_settings"] = diann_settings
             return attrs
 
         sample_count = attrs.get("sample_count") or 0
@@ -191,7 +211,7 @@ class ProjectPreAcquisitionSetupSerializer(serializers.Serializer):
         attrs["diseased_count"] = diseased_count
         attrs["sample_rows"] = []
         attrs["organisms"] = _normalize_organisms(attrs.get("organisms"))
-        attrs["diann_settings"] = _ensure_dict(attrs.get("diann_settings"), field_name="diann_settings")
+        attrs["diann_settings"] = diann_settings
         return attrs
 
 
@@ -220,7 +240,7 @@ class WorklistImportRowSerializer(serializers.Serializer):
 class WorklistImportSerializer(serializers.Serializer):
     worklist_name = serializers.CharField(max_length=255, default="Imported LC-MS worklist")
     experiment_name = serializers.CharField(max_length=255, default="Default experiment")
-    diann_version = serializers.CharField(max_length=128, default="1.9")
+    diann_version = serializers.CharField(max_length=128, default="2.0")
     rows = WorklistImportRowSerializer(many=True)
 
     def validate_rows(self, rows):
@@ -455,6 +475,13 @@ def _direct_upload_session_root(session: DirectUploadSession) -> Path:
     return _direct_upload_root() / str(session.upload_id)
 
 
+def _direct_upload_delivery_root(session: DirectUploadSession) -> Path:
+    delivery_mode = str((session.metadata or {}).get("delivery_mode") or "direct").strip().lower()
+    if delivery_mode == "watcher":
+        return Path(settings.INCOMING_RAW_ROOT).resolve()
+    return Path(settings.RAW_FILE_STORAGE_ROOT).resolve()
+
+
 def _direct_upload_chunk_path(session: DirectUploadSession, part_number: int) -> Path:
     return _direct_upload_session_root(session) / "chunks" / f"{part_number:05d}.part"
 
@@ -479,6 +506,7 @@ class ProcessingPipelineSerializer(BaseSerializer):
 
 
 class DeploymentSettingsSerializer(serializers.ModelSerializer):
+    metadata = serializers.JSONField(required=False)
     prtc_skyline_pipeline_name = serializers.SerializerMethodField()
     prtc_skyline_pipeline_version = serializers.SerializerMethodField()
     targeted_skyline_pipeline_name = serializers.SerializerMethodField()
@@ -494,6 +522,7 @@ class DeploymentSettingsSerializer(serializers.ModelSerializer):
             "targeted_skyline_pipeline",
             "targeted_skyline_pipeline_name",
             "targeted_skyline_pipeline_version",
+            "metadata",
             "updated_at",
         )
         read_only_fields = (
@@ -646,6 +675,15 @@ def _boolish(value) -> bool:
     return str(value).lower() in {"1", "true", "yes", "on"}
 
 
+def _int_or_none(value):
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _filename_token(value: str) -> str:
     token = re.sub(r"[^A-Za-z0-9]+", "_", value.strip()).strip("_")
     return token.upper() or "MSCONNECT"
@@ -793,8 +831,8 @@ def _normalize_run_file_role(value: str | None) -> str:
 REFERENCE_PRESETS = {
     "human": {
         "label": "Human",
-        "fasta_path": "/data/reference/managed/2026Q3/human.fasta",
-        "speclib_path": "/data/reference/managed/2026Q3/human.speclib",
+        "fasta_path": "/data/shared/reference/human.fasta",
+        "speclib_path": "/data/shared/reference/human.speclib",
     },
     "yeast": {
         "label": "Yeast",
@@ -806,6 +844,15 @@ REFERENCE_PRESETS = {
         "fasta_path": "/data/reference/managed/2026Q3/ecoli.fasta",
         "speclib_path": "/data/reference/managed/2026Q3/ecoli.speclib",
     },
+}
+
+DIANN_PRESET_SPECLIB_BUILD = "DIA-NN speclib build"
+DIANN_PRESET_SPECLIB_REUSE = "DIA-NN speclib reuse"
+DIANN_PRESET_SMOKE = "DIA-NN smoke test"
+DIANN_PRESET_LEGACY_ALIASES = {
+    "Standard DIA-NN plasma": DIANN_PRESET_SPECLIB_BUILD,
+    "High confidence IDs": DIANN_PRESET_SPECLIB_BUILD,
+    "Fast smoke test": DIANN_PRESET_SMOKE,
 }
 
 
@@ -857,6 +904,63 @@ def _resolve_reference_assets(data: dict) -> dict:
         },
         "components": [REFERENCE_PRESETS[organism] for organism in organisms],
     }
+
+
+def _diann_settings_for_preset(preset: str) -> dict:
+    normalized = _normalize_diann_preset_name(preset).lower()
+    if normalized == DIANN_PRESET_SMOKE.lower():
+        return {
+            "report": "diann-first-pass.parquet",
+            "q_value": 0.01,
+            "matrices": False,
+            "individual_reports": False,
+            "individual_mass_acc": False,
+            "individual_windows": False,
+            "generate_speclib": False,
+            "fasta_search": False,
+            "out_library": "",
+        }
+    if normalized == DIANN_PRESET_SPECLIB_REUSE.lower():
+        return {
+            "report": "diann-report.parquet",
+            "q_value": 0.005,
+            "matrices": True,
+            "individual_reports": True,
+            "individual_mass_acc": True,
+            "individual_windows": True,
+            "generate_speclib": False,
+            "fasta_search": False,
+            "out_library": "",
+        }
+    return {
+        "report": "diann-first-pass.parquet",
+        "q_value": 0.005,
+        "matrices": True,
+        "individual_reports": True,
+        "individual_mass_acc": True,
+        "individual_windows": True,
+        "generate_speclib": True,
+        "fasta_search": True,
+        "out_library": "diann-first-pass.speclib",
+    }
+
+
+def _normalize_diann_preset_name(preset: str) -> str:
+    canonical = str(preset or "").strip()
+    return DIANN_PRESET_LEGACY_ALIASES.get(canonical, canonical) or DIANN_PRESET_SPECLIB_BUILD
+
+
+def _diann_speclib_mode(preset: str) -> str:
+    canonical = _normalize_diann_preset_name(preset)
+    if canonical == DIANN_PRESET_SPECLIB_REUSE:
+        return "reuse"
+    if canonical == DIANN_PRESET_SMOKE:
+        return "smoke"
+    return "build"
+
+
+def _diann_command_options(settings: dict) -> list[str]:
+    return build_diann_command_options(settings)
 
 
 def _normalize_sample_rows(rows: list[dict]) -> list[dict]:
@@ -1174,7 +1278,13 @@ def _auto_artifact_payloads(
     return payloads
 
 
-def _queue_spectra_conversion_job_for_raw_file(raw_file: RawFile) -> ProcessingJob | None:
+def _queue_spectra_conversion_job_for_raw_file(
+    raw_file: RawFile,
+    *,
+    processing_job: ProcessingJob | None = None,
+) -> ProcessingJob | None:
+    if not should_queue_spectra_conversion_for_raw_file(raw_file, processing_job=processing_job):
+        return None
     if not settings.MSCONNECT_AUTO_QUEUE_SPECTRA_CONVERSION or not raw_file.run_id:
         return None
 
@@ -1255,6 +1365,40 @@ def _queue_processing_job_for_raw_file(raw_file: RawFile) -> ProcessingJob | Non
     except ProcessingPipeline.DoesNotExist:
         return None
 
+    diann_validation_errors = []
+    if _required_engine_for_pipeline(pipeline) in {"diann", "dia-nn"}:
+        diann_validation_errors = validate_diann_pipeline_settings(pipeline.parameters or {}, allow_performance_tags=True)
+    if diann_validation_errors:
+        job, _created = ProcessingJob.objects.get_or_create(
+            run_id=raw_file.run_id,
+            raw_file=raw_file,
+            pipeline=pipeline,
+            defaults={
+                "status": ProcessingStatus.FAILED,
+                "error_message": "DIANN pipeline settings validation failed.",
+                "metadata": {
+                    "queued_by": "watcher_agent",
+                    "worklist_entry_id": entry.id,
+                    "worklist_position": entry.position,
+                    "required_engine": _required_engine_for_pipeline(pipeline),
+                    "validation_errors": diann_validation_errors,
+                },
+            },
+        )
+        if not _created:
+            job.status = ProcessingStatus.FAILED
+            job.error_message = "DIANN pipeline settings validation failed."
+            job.metadata = {
+                **(job.metadata or {}),
+                "queued_by": "watcher_agent",
+                "worklist_entry_id": entry.id,
+                "worklist_position": entry.position,
+                "required_engine": _required_engine_for_pipeline(pipeline),
+                "validation_errors": diann_validation_errors,
+            }
+            job.save(update_fields=["status", "error_message", "metadata", "updated_at"])
+        return job
+
     job, _created = ProcessingJob.objects.get_or_create(
         run_id=raw_file.run_id,
         raw_file=raw_file,
@@ -1289,6 +1433,12 @@ def _resolve_run_for_expected_filename(*, project_id: int, filename: str) -> Run
         .order_by("id")
         .first()
     )
+
+
+def _resolve_experiment_for_project(*, project_id: int, experiment_id: int | None):
+    if not experiment_id:
+        return None
+    return Experiment.objects.filter(project_id=project_id, pk=experiment_id).select_related("project").first()
 
 
 def _machine_identity_for_run(run: Run | None) -> dict[str, str]:
@@ -1343,6 +1493,28 @@ def _prtc_skyline_pipeline_for_raw_file(raw_file: RawFile) -> ProcessingPipeline
         return ProcessingPipeline.objects.get(pk=int(pipeline_id))
     except (TypeError, ValueError, ProcessingPipeline.DoesNotExist):
         return None
+
+
+def _diann_pipeline_for_run(run: Run | None) -> ProcessingPipeline | None:
+    if not run:
+        return None
+    entry = getattr(run, "worklist_entry", None)
+    if not entry:
+        return None
+    pipeline_id = str((entry.worklist.metadata or {}).get("processing_pipeline_id") or "").strip()
+    if not pipeline_id:
+        return None
+    try:
+        return ProcessingPipeline.objects.get(pk=int(pipeline_id))
+    except (TypeError, ValueError, ProcessingPipeline.DoesNotExist):
+        return None
+
+
+def _validate_diann_pipeline_for_run(run: Run | None) -> list[str]:
+    pipeline = _diann_pipeline_for_run(run)
+    if not pipeline:
+        return []
+    return validate_diann_pipeline_settings(pipeline.parameters or {}, allow_performance_tags=True)
 
 
 def _deployment_setting() -> DeploymentSetting:
@@ -1417,10 +1589,20 @@ def _node_can_run_job(node: ProcessingNode, job: ProcessingJob) -> bool:
         return True
     if required_engine not in _engine_aliases(node.node_type):
         return False
+    if required_engine in {"diann", "dia-nn"} and not _diann_input_ready(job):
+        return False
     required_version = _required_engine_version_for_job(job)
     if not required_version:
         return True
     return required_version == _node_engine_version(node)
+
+
+def _diann_input_ready(job: ProcessingJob) -> bool:
+    raw_file = getattr(job, "raw_file", None)
+    if not raw_file:
+        return False
+    raw_path = str(getattr(raw_file, "storage_path", "") or "").strip()
+    return bool(raw_path)
 
 
 def _node_engine_version(node: ProcessingNode) -> str:
@@ -1436,6 +1618,18 @@ def _node_engine_version(node: ProcessingNode) -> str:
 
 
 def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
+    experiment = job.run.sample.experiment
+    worklist_entry = getattr(job.run, "worklist_entry", None)
+    derivatives = [
+        {
+            "id": derivative.id,
+            "derivative_type": derivative.derivative_type,
+            "status": derivative.status,
+            "path": derivative.path,
+            "format": derivative.format,
+        }
+        for derivative in job.raw_file.derivatives.order_by("derivative_type", "-updated_at")
+    ]
     return {
         "id": job.id,
         "status": job.status,
@@ -1450,6 +1644,11 @@ def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
             "name": job.run.run_name,
             "project_id": job.run.sample.experiment.project_id,
             "project_code": job.run.sample.experiment.project.code,
+            "experiment_id": experiment.id,
+            "experiment_name": experiment.name,
+            "experiment_metadata": experiment.metadata,
+            "worklist_id": worklist_entry.worklist_id if worklist_entry else None,
+            "worklist_metadata": worklist_entry.worklist.metadata if worklist_entry else {},
         },
         "raw_file": {
             "id": job.raw_file_id,
@@ -1457,6 +1656,7 @@ def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
             "storage_path": job.raw_file.storage_path,
             "checksum_sha256": job.raw_file.checksum_sha256,
             "size_bytes": job.raw_file.size_bytes,
+            "derivatives": derivatives,
         },
         "pipeline": {
             "id": job.pipeline_id,
@@ -1624,8 +1824,19 @@ class AgentRawFileImportView(AgentApiView):
                 match_confidence=1.0 if run else 0.0,
                 metadata=metadata,
             )
-            _queue_spectra_conversion_job_for_raw_file(raw_file)
+            record_raw_file_import(
+                raw_file,
+                message="Raw file accepted from watcher upload.",
+                payload={
+                    "source_path": source_path,
+                    "storage_path": str(storage_candidate),
+                    "checksum_sha256": checksum,
+                    "size_bytes": size_bytes,
+                    "match_run_by_name": _boolish(request.data.get("match_run_by_name")),
+                },
+            )
             processing_job = _queue_processing_job_for_raw_file(raw_file)
+            _queue_spectra_conversion_job_for_raw_file(raw_file, processing_job=processing_job)
         return Response(
             {
                 "created": True,
@@ -1854,6 +2065,50 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
                 }
                 for artifact in artifact_records
             ]
+            generated_speclibs = [
+                artifact
+                for artifact in artifact_records
+                if (artifact.metadata or {}).get("role") == "diann_speclib"
+            ]
+            if generated_speclibs:
+                preferred_path = generated_speclibs[0].path
+                experiment = job.run.sample.experiment
+                experiment_metadata = dict(experiment.metadata or {})
+                diann_metadata = dict(experiment_metadata.get("diann") or {})
+                diann_metadata.setdefault("generated_speclib_paths", [])
+                if preferred_path not in diann_metadata["generated_speclib_paths"]:
+                    diann_metadata["generated_speclib_paths"].append(preferred_path)
+                diann_metadata["last_generated_speclib_path"] = preferred_path
+                diann_metadata.setdefault("preferred_speclib_path", preferred_path)
+                experiment_metadata["diann"] = diann_metadata
+                experiment.metadata = experiment_metadata
+                experiment.save(update_fields=["metadata", "updated_at"])
+
+        if result_summary or protein_table or peptide_table:
+            record_pipeline_event(
+                event_type="results_parsed",
+                project=job.run.sample.experiment.project,
+                experiment=job.run.sample.experiment,
+                run=job.run,
+                raw_file=job.raw_file,
+                job=job,
+                to_status=ProcessingStatus.COMPLETE,
+                message="Result tables were parsed into protein and peptide records.",
+                payload={
+                    "result_summary": result_summary or {},
+                    "protein_table_path": str(protein_table) if protein_table else "",
+                    "peptide_table_path": str(peptide_table) if peptide_table else "",
+                },
+            )
+            record_result_files_uploaded(
+                job,
+                payload={
+                    "protein_table_path": str(protein_table) if protein_table else "",
+                    "peptide_table_path": str(peptide_table) if peptide_table else "",
+                    "delimiter": delimiter or "",
+                    "result_summary": result_summary or {},
+                },
+            )
 
         job.status = ProcessingStatus.COMPLETE
         job.finished_at = timezone.now()
@@ -1877,6 +2132,23 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
         job.raw_file.save(update_fields=["status", "updated_at"])
         job.run.status = "processed"
         job.run.save(update_fields=["status", "updated_at"])
+
+        record_processing_completion(
+            job,
+            payload={
+                "stats": stats_payload,
+                "result_summary": result_summary or {},
+                "artifacts": len(artifact_records),
+            },
+        )
+        recompute_experiment_and_project_status(
+            job.run.sample.experiment,
+            payload={
+                "job_id": job.id,
+                "raw_file_id": job.raw_file_id,
+                "pipeline_id": job.pipeline_id,
+            },
+        )
 
         node.status = ProcessingNodeStatus.IDLE
         node.last_heartbeat_at = timezone.now()
@@ -2967,6 +3239,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
     write_scope_lab_path = "lab"
     search_fields = ("code", "title", "description", "lab__name", "pi__username")
     ordering_fields = ("code", "title", "status", "created_at", "updated_at")
+    ordering = ("-updated_at",)
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -3017,12 +3290,24 @@ class ProjectViewSet(AuthenticatedModelViewSet):
     @action(detail=True, methods=["get"])
     def summary(self, request, pk=None):
         project = self.get_object()
+        experiment = _resolve_experiment_for_project(
+            project_id=project.id,
+            experiment_id=_int_or_none(request.query_params.get("experiment")),
+        )
+        if request.query_params.get("experiment") and experiment is None:
+            raise ValidationError({"experiment": "Experiment does not belong to this project."})
         experiments = Experiment.objects.filter(project=project)
         samples = Sample.objects.filter(experiment__project=project)
         runs = Run.objects.filter(sample__experiment__project=project)
         raw_files = RawFile.objects.filter(run__sample__experiment__project=project).prefetch_related("derivatives")
         jobs = ProcessingJob.objects.filter(run__sample__experiment__project=project)
         worklists = AcquisitionWorklist.objects.filter(experiment__project=project)
+        if experiment:
+            samples = samples.filter(experiment=experiment)
+            runs = runs.filter(sample__experiment=experiment)
+            raw_files = raw_files.filter(run__sample__experiment=experiment)
+            jobs = jobs.filter(run__sample__experiment=experiment)
+            worklists = worklists.filter(experiment=experiment)
         raw_file_count = raw_files.count()
         jobs_for_stats = list(jobs)
         raw_files_for_stats = list(raw_files)
@@ -3030,12 +3315,14 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         spectrum_counts = _safe_spectrum_counts_for_raw_files(raw_files_for_stats)
 
         expected_raw_file_count = WorklistEntry.objects.filter(worklist__experiment__project=project).count()
+        if experiment:
+            expected_raw_file_count = WorklistEntry.objects.filter(worklist__experiment=experiment).count()
 
         return Response(
             {
                 "project_id": project.id,
                 "project_code": project.code,
-                "experiment_count": experiments.count(),
+                "experiment_count": 1 if experiment else experiments.count(),
                 "sample_count": samples.count(),
                 "run_count": runs.count(),
                 "acquisition_worklist_count": worklists.count(),
@@ -3056,20 +3343,31 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 ),
                 "jobs_by_status": list(jobs.values("status").annotate(count=Count("id")).order_by("status")),
                 "worklists_by_status": list(worklists.values("status").annotate(count=Count("id")).order_by("status")),
+                **({"experiment_id": experiment.id, "experiment_name": experiment.name} if experiment else {}),
             }
         )
 
     @action(detail=True, methods=["get"], url_path="researcher-status")
     def researcher_status(self, request, pk=None):
         project = self.get_object()
+        experiment = _resolve_experiment_for_project(
+            project_id=project.id,
+            experiment_id=_int_or_none(request.query_params.get("experiment")),
+        )
+        if request.query_params.get("experiment") and experiment is None:
+            raise ValidationError({"experiment": "Experiment does not belong to this project."})
         summary_response = self.summary(request, pk=pk)
         summary = summary_response.data
+        if experiment:
+            summary = {**summary, "experiment_id": experiment.id, "experiment_name": experiment.name}
         runs = (
             Run.objects.filter(sample__experiment__project=project)
             .select_related("sample", "sample__experiment")
             .prefetch_related("raw_files", "processing_jobs", "processing_jobs__artifacts")
             .order_by("worklist_position", "run_name", "id")
         )
+        if experiment:
+            runs = runs.filter(sample__experiment=experiment)
         rows = []
         failed_count = 0
         active_count = 0
@@ -3116,6 +3414,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             {
                 "project": ProjectSerializer(project).data,
                 "summary": summary,
+                **({"experiment": ExperimentSerializer(experiment).data} if experiment else {}),
                 "system_health": {
                     "status": health,
                     "failed_jobs": failed_count,
@@ -3125,6 +3424,17 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 "runs": rows,
             }
         )
+
+    @action(detail=True, methods=["get"], url_path="diann-preflight")
+    def diann_preflight(self, request, pk=None):
+        project = self.get_object()
+        experiment = _resolve_experiment_for_project(
+            project_id=project.id,
+            experiment_id=_int_or_none(request.query_params.get("experiment")),
+        )
+        if request.query_params.get("experiment") and experiment is None:
+            raise ValidationError({"experiment": "Experiment does not belong to this project."})
+        return Response(self._build_diann_preflight(project, experiment=experiment))
 
     @action(detail=True, methods=["post"], url_path="import-worklist")
     def import_worklist(self, request, pk=None):
@@ -3147,7 +3457,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     "organisms": ["human", "yeast", "ecoli"],
                     "diann_settings": {},
                     "diann_version": data["diann_version"],
-                    "processing_preset": "Standard DIA-NN plasma",
+                    "processing_preset": DIANN_PRESET_SPECLIB_BUILD,
                 }
             )
             worklist, _created = AcquisitionWorklist.objects.get_or_create(
@@ -3284,11 +3594,19 @@ class ProjectViewSet(AuthenticatedModelViewSet):
     @action(detail=True, methods=["post"], url_path="queue-ready-runs")
     def queue_ready_runs(self, request, pk=None):
         project = self.get_object()
+        experiment = _resolve_experiment_for_project(
+            project_id=project.id,
+            experiment_id=_int_or_none(request.data.get("experiment") or request.query_params.get("experiment")),
+        )
+        if (request.data.get("experiment") or request.query_params.get("experiment")) and experiment is None:
+            raise ValidationError({"experiment": "Experiment does not belong to this project."})
         raw_files = RawFile.objects.filter(
             run__sample__experiment__project=project,
             run__isnull=False,
             run__processing_jobs__isnull=True,
         ).select_related("run")
+        if experiment:
+            raw_files = raw_files.filter(run__sample__experiment=experiment)
         queued_jobs = []
         for raw_file in raw_files:
             job = _queue_processing_job_for_raw_file(raw_file)
@@ -3309,12 +3627,20 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         serializer = QueueRunsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         run_ids = serializer.validated_data["run_ids"]
+        experiment = _resolve_experiment_for_project(
+            project_id=project.id,
+            experiment_id=_int_or_none(request.data.get("experiment") or request.query_params.get("experiment")),
+        )
+        if (request.data.get("experiment") or request.query_params.get("experiment")) and experiment is None:
+            raise ValidationError({"experiment": "Experiment does not belong to this project."})
         raw_files = RawFile.objects.filter(
             run__sample__experiment__project=project,
             run_id__in=run_ids,
             run__isnull=False,
             run__processing_jobs__isnull=True,
         ).select_related("run")
+        if experiment:
+            raw_files = raw_files.filter(run__sample__experiment=experiment)
         queued_jobs = []
         for raw_file in raw_files:
             job = _queue_processing_job_for_raw_file(raw_file)
@@ -3329,6 +3655,15 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
+
+    @action(detail=True, methods=["post"], url_path="rerun-latest-diann-batch")
+    def rerun_latest_diann_batch(self, request, pk=None):
+        project = self.get_object()
+        try:
+            result = rerun_latest_diann_batch(project_code=project.code)
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        return Response(result, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="pre-acquisition-setup")
     def pre_acquisition_setup(self, request):
@@ -3413,6 +3748,62 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    @action(detail=False, methods=["post"], url_path="pre-acquisition-preflight")
+    def pre_acquisition_preflight(self, request):
+        serializer = ProjectPreAcquisitionSetupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        lab = data.get("lab") or self._default_lab_for_user(request.user)
+        if lab is None:
+            raise ValidationError({"lab": "No lab was provided and no active lab membership was found."})
+        if not is_admin(request.user) and lab.id not in set(active_lab_ids(request.user)):
+            raise PermissionDenied("This project targets a lab outside your membership scope.")
+
+        configuration = data.get("instrument_configuration")
+        if configuration and configuration.facility_id != lab.facility_id:
+            raise ValidationError(
+                {"instrument_configuration": "Configuration must belong to the selected lab facility."}
+            )
+
+        parameters = self._build_diann_pipeline_parameters(data)
+        validation_errors = validate_diann_pipeline_settings(parameters, allow_performance_tags=True)
+        normalized = normalize_diann_settings(parameters)
+        tags = normalized.get("tags") or {}
+        sample_count = int(data["sample_count"] or 0)
+        planned_runs = sample_count + (sample_count // data["hye_interval"]) * 2 if data["hye_interval"] else sample_count
+        source = "site_defaults"
+        source_label = "Draft setup preview"
+        source_detail = "This preview reflects the draft setup, including site-controlled performance tags, before project creation."
+
+        return Response(
+            {
+                "title": data["title"],
+                "code": data["code"],
+                "source": source,
+                "source_label": source_label,
+                "source_detail": source_detail,
+                "lab": LabSerializer(lab).data,
+                "instrument_configuration": InstrumentConfigurationSerializer(configuration).data if configuration else None,
+                "sample_count": sample_count,
+                "healthy_count": data["healthy_count"],
+                "diseased_count": data["diseased_count"],
+                "hye_interval": data["hye_interval"],
+                "planned_runs": planned_runs,
+                "processing_preset": data["processing_preset"],
+                "diann_version": data["diann_version"],
+                "speclib_mode": _diann_speclib_mode(data["processing_preset"]),
+                "reference_assets": parameters.get("reference_assets", {}),
+                "settings": normalized,
+                "performance_tags": tags.get("performance") or {},
+                "experimental_tags": tags.get("experimental") or {},
+                "options": _diann_command_options(parameters),
+                "validation_errors": validation_errors,
+                "is_valid": not validation_errors,
+            },
+            status=status.HTTP_200_OK,
+        )
+
     def _default_lab_for_user(self, user):
         membership = LabMembership.objects.select_related("lab").filter(user=user, active=True).order_by("id").first()
         if membership:
@@ -3432,35 +3823,97 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             candidate = f"{base}-{index}"
         return candidate
 
-    def _create_or_update_diann_pipeline(self, data):
+    def _build_diann_pipeline_parameters(self, data):
         reference_assets = _resolve_reference_assets(data)
+        preset_name = _normalize_diann_preset_name(data.get("processing_preset", ""))
+        preset_settings = normalize_diann_settings(_diann_settings_for_preset(preset_name))
+        user_settings = normalize_diann_settings(_ensure_dict(data.get("diann_settings"), field_name="diann_settings"))
+        merged_settings = {
+            **{key: value for key, value in preset_settings.items() if key != "tags"},
+            **{key: value for key, value in user_settings.items() if key != "tags"},
+        }
+        performance_tags = {
+            **(preset_settings.get("tags", {}).get("performance") or {}),
+            **site_performance_tags(),
+            **(user_settings.get("tags", {}).get("performance") or {}),
+        }
+        performance_tags.setdefault("threads", 1)
+        experimental_tags = {
+            **(preset_settings.get("tags", {}).get("experimental") or {}),
+            **(user_settings.get("tags", {}).get("experimental") or {}),
+        }
+        effective_settings = {
+            **merged_settings,
+            **experimental_tags,
+            **performance_tags,
+            "tags": {
+                "performance": performance_tags,
+                "experimental": experimental_tags,
+            },
+        }
+        speclib_mode = _diann_speclib_mode(preset_name)
+        temp_value = str((effective_settings.get("tags", {}).get("performance") or {}).get("temp") or "").strip()
+        fasta_path = str(effective_settings.get("fasta") or reference_assets["fasta_path"])
+        library_path = str(effective_settings.get("library") or "")
+        library_source = ""
+        out_library = str(effective_settings.get("out_library") or "")
+        generate_speclib = _boolish(effective_settings.get("generate_speclib"))
+        fasta_search = _boolish(effective_settings.get("fasta_search"))
+        if speclib_mode == "reuse":
+            library_source = "preferred_speclib_path"
+            fasta_path = ""
+            library_path = ""
+            out_library = ""
+            generate_speclib = False
+            fasta_search = False
+        elif speclib_mode == "smoke":
+            fasta_path = ""
+            library_path = ""
+            out_library = ""
+            generate_speclib = False
+            fasta_search = False
+        effective_settings = {
+            **effective_settings,
+            "fasta": fasta_path,
+            "library": library_path,
+            "library_source": library_source,
+            "out_library": out_library,
+            "generate_speclib": generate_speclib,
+            "fasta_search": fasta_search,
+        }
         parameters = {
             "engine": "diann",
-            "command": [
-                sys.executable,
-                "manage.py",
-                "seed_demo_showcase",
-                "--write-job-results",
-                "{job_id}",
-                "{results_dir}",
-            ],
-            "working_dir": str(settings.BASE_DIR),
-            "result_files": {
-                "protein_table": "proteins.csv",
-                "peptide_table": "peptides.csv",
-                "delimiter": ",",
-            },
+            "adapter": "diann",
+            "required_engine": "diann",
+            "required_engine_version": data.get("diann_version", ""),
+            "executable": "diann",
+            "version_command": ["diann"],
+            "report": str(effective_settings.get("report") or "diann-first-pass.parquet"),
+            "fasta": fasta_path,
+            "library": library_path,
+            "library_source": library_source,
+            "out_library": out_library,
+            "generate_speclib": generate_speclib,
+            "fasta_search": fasta_search,
             "fasta_path": reference_assets["fasta_path"],
             "speclib_path": reference_assets["speclib_path"],
             "reference_assets": reference_assets,
-            "processing_preset": data.get("processing_preset", "Standard DIA-NN plasma"),
-            "settings": data.get("diann_settings") or {},
+            "processing_preset": preset_name,
+            "settings": effective_settings,
+            "tags": effective_settings["tags"],
+            "options": _diann_command_options(effective_settings),
             "project_level_rollup": {
                 "enabled": True,
                 "mode": "combine_runs_after_run_level_processing",
                 "future_executor": "supercomputer",
             },
         }
+        if temp_value:
+            parameters["temp"] = temp_value
+        return resolve_pipeline_parameters(parameters, engine="diann")
+
+    def _create_or_update_diann_pipeline(self, data):
+        parameters = self._build_diann_pipeline_parameters(data)
         pipeline, _created = ProcessingPipeline.objects.update_or_create(
             name="DIA-NN",
             version=data["diann_version"],
@@ -3470,6 +3923,70 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             },
         )
         return pipeline
+
+    def _build_diann_preflight(self, project, experiment=None):
+        worklist = (
+            AcquisitionWorklist.objects.filter(experiment__project=project)
+            .order_by("-updated_at", "-created_at")
+            .first()
+        )
+        if experiment:
+            worklist = (
+                AcquisitionWorklist.objects.filter(experiment=experiment)
+                .order_by("-updated_at", "-created_at")
+                .first()
+            )
+        pipeline = None
+        if worklist:
+            pipeline_id = (worklist.metadata or {}).get("processing_pipeline_id")
+            if pipeline_id:
+                pipeline = ProcessingPipeline.objects.filter(pk=pipeline_id).first()
+
+        if pipeline:
+            parameters = pipeline.parameters or {}
+            processing_preset = str(parameters.get("processing_preset") or "")
+            diann_version = pipeline.version
+            speclib_mode = _diann_speclib_mode(processing_preset)
+            source = "project_pipeline"
+            source_label = "Project pipeline"
+            source_detail = f"Using processing pipeline {pipeline.name} {pipeline.version}."
+        else:
+            parameters = self._build_diann_pipeline_parameters(
+                {
+                    "organisms": ["human", "yeast", "ecoli"],
+                    "diann_settings": {},
+                    "diann_version": "preview",
+                    "processing_preset": DIANN_PRESET_SPECLIB_BUILD,
+                }
+            )
+            processing_preset = DIANN_PRESET_SPECLIB_BUILD
+            diann_version = "preview"
+            speclib_mode = _diann_speclib_mode(processing_preset)
+            source = "site_defaults"
+            source_label = "Site defaults"
+            source_detail = "No project pipeline is configured yet, so this preview reflects the active site defaults."
+
+        validation_errors = validate_diann_pipeline_settings(parameters, allow_performance_tags=True)
+        normalized = normalize_diann_settings(parameters)
+        tags = normalized.get("tags") or {}
+        return {
+            "project": ProjectSerializer(project).data,
+            "source": source,
+            "source_label": source_label,
+            "source_detail": source_detail,
+            "worklist": AcquisitionWorklistSerializer(worklist).data if worklist else None,
+            "pipeline": ProcessingPipelineSerializer(pipeline).data if pipeline else None,
+            "processing_preset": processing_preset,
+            "diann_version": diann_version,
+            "speclib_mode": speclib_mode,
+            "reference_assets": parameters.get("reference_assets", {}),
+            "settings": normalized,
+            "performance_tags": tags.get("performance") or {},
+            "experimental_tags": tags.get("experimental") or {},
+            "options": _diann_command_options(parameters),
+            "validation_errors": validation_errors,
+            "is_valid": not validation_errors,
+        }
 
     def _build_pre_acquisition_entries(self, *, request, project, experiment, worklist, configuration, data):
         if data["sample_rows"]:
@@ -4113,6 +4630,10 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         if size_bytes <= 0:
             raise ValidationError({"size_bytes": "A positive size_bytes value is required."})
 
+        delivery_mode = str(request.data.get("delivery_mode") or "direct").strip().lower()
+        if delivery_mode not in {"direct", "watcher"}:
+            raise ValidationError({"delivery_mode": "delivery_mode must be direct or watcher."})
+
         run_id = request.data.get("run") or None
         if run_id and not Run.objects.filter(pk=run_id, sample__experiment__project=project).exists():
             raise ValidationError({"run": "Run must belong to the selected project."})
@@ -4123,6 +4644,11 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         matched_run = Run.objects.filter(pk=run_id, sample__experiment__project=project).select_related(
             "sample", "sample__experiment"
         ).first() if run_id else None
+
+        if matched_run:
+            diann_validation_errors = _validate_diann_pipeline_for_run(matched_run)
+            if diann_validation_errors:
+                raise ValidationError({"diann_settings": diann_validation_errors})
 
         file_role = request.data.get("file_role") or (matched_run.file_role if matched_run else RunFileRole.SAMPLE)
         if file_role not in {value for value, _label in RunFileRole.choices}:
@@ -4150,8 +4676,9 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
                 "intended_filename": intended_filename,
                 "matched_run_id": matched_run.id if matched_run else None,
                 "match_source": "expected_filename" if intended_filename else "run" if run_id else "project_only",
+                "delivery_mode": delivery_mode,
             },
-            metadata=request.data.get("metadata") or {},
+            metadata={**_ensure_dict(request.data.get("metadata"), field_name="metadata"), "delivery_mode": delivery_mode},
         )
         serializer = self.get_serializer(session)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -4218,14 +4745,17 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         if not run:
             run = _resolve_run_for_expected_filename(project_id=session.project_id, filename=session.filename)
         file_role = run.file_role if run else session.file_role
+        diann_validation_errors = _validate_diann_pipeline_for_run(run)
+        if diann_validation_errors:
+            raise ValidationError({"diann_settings": diann_validation_errors})
 
         chunk_paths = [_direct_upload_chunk_path(session, part_number) for part_number in range(1, session.chunk_count + 1)]
         missing_parts = [str(index + 1) for index, path in enumerate(chunk_paths) if not path.exists()]
         if missing_parts:
             raise ValidationError({"chunks": f"Missing uploaded chunks: {', '.join(missing_parts)}"})
 
-        raw_root = Path(settings.RAW_FILE_STORAGE_ROOT).resolve()
-        destination = build_storage_path(raw_root, Path(session.filename), checksum)
+        delivery_root = _direct_upload_delivery_root(session)
+        destination = build_storage_path(delivery_root, Path(session.filename), checksum)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temp_destination = destination.parent / f".{destination.name}.{session.upload_id}.uploading"
 
@@ -4245,6 +4775,22 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         if size_bytes != session.size_bytes:
             temp_destination.unlink(missing_ok=True)
             raise ValidationError({"size_bytes": "Uploaded chunks do not match the expected file size."})
+
+        delivery_mode = str((session.metadata or {}).get("delivery_mode") or "direct").strip().lower()
+        if delivery_mode == "watcher":
+            if destination.exists():
+                temp_destination.unlink(missing_ok=True)
+                raise ValidationError({"storage_path": "A file already exists at the watcher inbox destination path."})
+            shutil.copy2(temp_destination, destination)
+            temp_destination.unlink(missing_ok=True)
+            session.checksum_sha256 = checksum
+            session.status = DirectUploadStatus.COMPLETE
+            session.save(update_fields=["checksum_sha256", "status", "updated_at"])
+            for path in chunk_paths:
+                path.unlink(missing_ok=True)
+            _direct_upload_cleanup(session)
+            serializer = self.get_serializer(session)
+            return Response(serializer.data, status=status.HTTP_200_OK)
 
         raw_file = RawFile.objects.filter(checksum_sha256=checksum).first()
         if not raw_file:
@@ -4276,9 +4822,20 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         else:
             temp_destination.unlink(missing_ok=True)
 
+        record_raw_file_import(
+            raw_file,
+            message="Raw file completed through direct upload delivery.",
+            payload={
+                "direct_upload_session_id": session.id,
+                "storage_path": str(destination),
+                "checksum_sha256": checksum,
+                "size_bytes": session.size_bytes,
+                "delivery_mode": delivery_mode,
+            },
+        )
         with transaction.atomic():
-            _queue_spectra_conversion_job_for_raw_file(raw_file)
-            _queue_processing_job_for_raw_file(raw_file)
+            processing_job = _queue_processing_job_for_raw_file(raw_file)
+            _queue_spectra_conversion_job_for_raw_file(raw_file, processing_job=processing_job)
         session.checksum_sha256 = checksum
         session.completed_raw_file = raw_file
         session.status = DirectUploadStatus.COMPLETE

@@ -2,6 +2,8 @@
 
 MSConnect is an on-prem SDMS/LIMS scaffold for LC-MS proteomics. The MVP tracks organizational structure, users, projects, experiments, samples, runs, raw files, and peptide/protein result data.
 
+Execution plans live in [`plans/`](plans/), ordered from v1 deployment to legacy transfer, then QC integration and AI integration.
+
 ## Stack
 
 - Django
@@ -30,6 +32,20 @@ results/                Host-mounted processing outputs/artifacts, ignored by gi
 ```
 
 The stable domain model lives in `core`: projects, samples, runs, raw files, processing jobs, derivatives, artifacts, protein/peptide IDs, and quants. New tools should integrate at that boundary instead of duplicating those concepts.
+
+## Domain Model
+
+MSConnect uses a simple hierarchy:
+
+- `Project` is the umbrella record for a study or cohort.
+- `Experiment` is one acquisition series under a project.
+- `Sample` belongs to one experiment.
+- `Run` belongs to one sample.
+- `RawFile` is the uploaded file paired to a run.
+
+Minimum project metadata should stay small: lab, code, title, and PI, plus optional status and description. Experiment-level metadata should carry the acquisition-series details: project, name, optional hypothesis, optional dates, and freeform metadata.
+
+Watcher pairing is intentionally filename-first. The planned `expected_filename` on a run/worklist entry is the primary matching contract; `run_name` remains a fallback for legacy or compatibility cases.
 
 ## Local On-Prem Run
 
@@ -144,7 +160,43 @@ Run a watcher loop:
 docker compose run --rm watcher python manage.py run_watcher_agent --match-run-by-name
 ```
 
-The watcher can link files to runs by filename tokens (for example `SampleA_run07_20260701.raw`) when `--match-run-by-name` is enabled.
+The watcher links files to runs by expected filename first, then falls back to run-name matching when `--match-run-by-name` is enabled.
+
+### Recommended DIA-NN workflow
+
+For real test folders, the cleanest operator flow is watcher-first with exact filename matching and an explicit two-pass DIA-NN preset:
+
+1. Create a filename-matched worklist before the files are picked up.
+2. Put the files under `INCOMING_RAW_ROOT` or mount the source folder there.
+3. Use the `DIA-NN speclib build` preset on the first sample from a new chemistry/FASTA/instrument setup.
+4. Use the `DIA-NN speclib reuse` preset for later samples on the same setup so they run against the generated speclib instead of rebuilding it.
+5. Start the DIANN stack and keep the worker running.
+6. Watch the queue and logs while the watcher imports and the DIANN worker claims jobs.
+
+Example:
+
+```sh
+docker compose exec web python manage.py create_filename_worklist \
+  --code OPS-DIANN \
+  --filename SampleA.raw \
+  --filename SampleB.raw
+
+make diann-up
+make diann-logs
+```
+
+Use `--create-placeholders` only when you want the command to synthesize local files under `INCOMING_RAW_ROOT`; for your `/Volumes/T7_Shield/tempDataMS` test set, the real files should be copied or mounted instead.
+
+For DIA-NN project setup, keep researcher choices in `tags.experimental` and let site defaults provide `tags.performance` through deployment metadata. The worker should stay single-threaded per node by default.
+
+## Canonical Docs
+
+Use these docs as the source of truth instead of spreading the same guidance across multiple markdown files:
+
+- `docs/processing-engines.md` for engine, version, and runtime contracts.
+- `docs/three-machine-deployment.md` for the watcher/server/processor topology.
+- `docs/live-stack-smoke-runbook.md` for end-to-end verification.
+- `docs/app-review-guide.md` for the React `/app/*` surface.
 
 ## Processing Agent
 

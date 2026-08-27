@@ -28,6 +28,7 @@ def capture_runtime_metadata(
     raw_file_path: str,
     parameters: dict,
     shared_roots: dict[str, str],
+    output_paths: dict | None = None,
 ) -> dict:
     executable = command[0] if command else ""
     version_probe = parameters.get("version_command") or version_command_for(executable)
@@ -50,6 +51,7 @@ def capture_runtime_metadata(
         "system": system_metadata(),
         "environment": selected_environment(env),
         "input_fingerprints": fingerprint_inputs([raw_file_path, *parameters.get("input_files", [])]),
+        "output_paths": output_paths or {},
         "pipeline_parameters": scrub_parameters(parameters),
     }
 

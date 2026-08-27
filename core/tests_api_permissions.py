@@ -27,14 +27,17 @@ from core.models import (
     Project,
     ProteinQuant,
     QcProgram,
+    DerivativeStatus,
     RawFile,
     RawFileDerivative,
+    RawFileDerivativeType,
     Run,
     RunFileRole,
     Sample,
     University,
     UserProfile,
     UserRole,
+    WorklistEntry,
 )
 
 User = get_user_model()
@@ -152,6 +155,75 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(summary_response.data["raw_file_count"], 0)
         self.assertEqual(summary_response.data["processing_job_count"], 0)
 
+    def test_projects_default_to_most_recent_first(self):
+        self.client.force_authenticate(user=self.admin)
+        older = Project.objects.create(lab=self.lab_a, title="Older Project", code="OLD-01", pi=self.pi_user)
+        newer = Project.objects.create(lab=self.lab_a, title="Newer Project", code="NEW-01", pi=self.pi_user)
+
+        response = self.client.get("/api/projects/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(
+            response.data[0]["updated_at"],
+            response.data[1]["updated_at"],
+        )
+        self.assertEqual([item["id"] for item in response.data[:2]], [newer.id, older.id])
+
+    def test_project_rerun_latest_diann_batch_requeues_raw_job_without_conversion(self):
+        self.client.force_authenticate(user=self.pi_user)
+        experiment = Experiment.objects.create(project=self.project_a, name="Batch rerun", created_by=self.pi_user)
+        worklist = AcquisitionWorklist.objects.create(
+            experiment=experiment,
+            name="Batch rerun worklist",
+            metadata={},
+        )
+        diann_pipeline = ProcessingPipeline.objects.create(
+            name="DIA-NN",
+            version="2.0",
+            parameters={"adapter": "diann", "required_engine": "diann", "report": "diann-report.parquet"},
+        )
+        worklist.metadata = {**(worklist.metadata or {}), "processing_pipeline_id": diann_pipeline.id}
+        worklist.save(update_fields=["metadata", "updated_at"])
+
+        sample = Sample.objects.create(experiment=experiment, name="Sample 1")
+        run = Run.objects.create(sample=sample, run_name="Run 1")
+        WorklistEntry.objects.create(
+            worklist=worklist,
+            run=run,
+            position=1,
+            expected_filename="Run_1.raw",
+            file_role=RunFileRole.SAMPLE,
+        )
+        raw_file = RawFile.objects.create(
+            run=run,
+            source_path="/incoming/Run_1.raw",
+            storage_path="/data/raw/aa/Run_1.raw",
+            filename="Run_1.raw",
+            checksum_sha256="9" * 64,
+            size_bytes=1024,
+            imported_at=timezone.now(),
+            status="imported",
+        )
+        ProcessingJob.objects.create(
+            run=run,
+            raw_file=raw_file,
+            pipeline=diann_pipeline,
+            status=ProcessingStatus.FAILED,
+            error_message="previous failure",
+        )
+
+        response = self.client.post(f"/api/projects/{self.project_a.id}/rerun-latest-diann-batch/", data={}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["project_id"], self.project_a.id)
+        self.assertEqual(ProcessingPipeline.objects.get(pk=response.data["pipeline_id"]).name, "DIA-NN")
+        self.assertEqual(response.data["converted"], 0)
+        self.assertEqual(response.data["rerun"], 1)
+        diann_job = ProcessingJob.objects.get(run=run, raw_file=raw_file, pipeline=diann_pipeline)
+        self.assertEqual(diann_job.status, ProcessingStatus.QUEUED)
+        self.assertEqual(diann_job.metadata["purpose"], "diann_rerun")
+        self.assertFalse(ProcessingJob.objects.filter(run=run, raw_file=raw_file, pipeline__name="ProteoWizard msconvert").exists())
+
     def test_quick_start_creates_project_and_default_experiment(self):
         self.client.force_authenticate(user=self.researcher)
 
@@ -227,6 +299,7 @@ class ApiPermissionTests(TestCase):
             format="json",
         )
         project_id = quick_response.data["project"]["id"]
+        experiment_id = quick_response.data["experiment"]["id"]
         self.client.post(
             f"/api/projects/{project_id}/import-worklist/",
             data={
@@ -243,15 +316,41 @@ class ApiPermissionTests(TestCase):
             },
             format="json",
         )
+        self.client.post(
+            f"/api/projects/{project_id}/import-worklist/",
+            data={
+                "worklist_name": "Other worklist",
+                "experiment_name": "Other experiment",
+                "rows": [
+                    {
+                        "position": 1,
+                        "sample_name": "Sample-002",
+                        "run_name": "Other Run 1",
+                        "expected_filename": "Other_Run_1.raw",
+                        "file_role": "sample",
+                    }
+                ],
+            },
+            format="json",
+        )
 
         response = self.client.get(f"/api/projects/{project_id}/researcher-status/")
+        scoped_response = self.client.get(f"/api/projects/{project_id}/researcher-status/?experiment={experiment_id}")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["project"]["code"], "STATUS-01")
         self.assertEqual(response.data["system_health"]["status"], "yellow")
-        self.assertEqual(len(response.data["runs"]), 1)
-        self.assertEqual(response.data["runs"][0]["run"]["expected_filename"], "Status_Run_1.raw")
-        self.assertEqual(response.data["runs"][0]["worklist_name"], "Status worklist")
+        self.assertEqual(len(response.data["runs"]), 2)
+        self.assertEqual(
+            {row["run"]["expected_filename"] for row in response.data["runs"]},
+            {"Status_Run_1.raw", "Other_Run_1.raw"},
+        )
+        self.assertEqual(scoped_response.status_code, 200)
+        self.assertEqual(scoped_response.data["experiment"]["id"], experiment_id)
+        self.assertEqual(scoped_response.data["summary"]["experiment_id"], experiment_id)
+        self.assertEqual(len(scoped_response.data["runs"]), 1)
+        self.assertEqual(scoped_response.data["runs"][0]["run"]["expected_filename"], "Status_Run_1.raw")
+        self.assertEqual({row["worklist_name"] for row in response.data["runs"]}, {"Status worklist", "Other worklist"})
 
     def test_queue_ready_runs_queues_uploaded_unqueued_runs(self):
         self.client.force_authenticate(user=self.researcher)
@@ -278,6 +377,25 @@ class ApiPermissionTests(TestCase):
             format="json",
         )
         run = Run.objects.get(run_name="Queue Run 1")
+        other_response = self.client.post(
+            f"/api/projects/{project_id}/import-worklist/",
+            data={
+                "worklist_name": "Other queue worklist",
+                "experiment_name": "Other queue experiment",
+                "rows": [
+                    {
+                        "position": 1,
+                        "sample_name": "Sample-002",
+                        "run_name": "Queue Run 2",
+                        "expected_filename": "Queue_Run_2.raw",
+                        "file_role": "sample",
+                    }
+                ],
+            },
+            format="json",
+        )
+        other_experiment = Experiment.objects.get(pk=other_response.data["worklist"]["experiment"])
+        other_run = Run.objects.get(run_name="Queue Run 2")
         RawFile.objects.create(
             run=run,
             source_path="/incoming/Queue_Run_1.raw",
@@ -288,12 +406,27 @@ class ApiPermissionTests(TestCase):
             status="imported",
             file_role="sample",
         )
+        RawFile.objects.create(
+            run=other_run,
+            source_path="/incoming/Queue_Run_2.raw",
+            storage_path="/data/raw/Queue_Run_2.raw",
+            filename="Queue_Run_2.raw",
+            checksum_sha256="d" * 64,
+            size_bytes=1024,
+            status="imported",
+            file_role="sample",
+        )
 
-        response = self.client.post(f"/api/projects/{project_id}/queue-ready-runs/", data={}, format="json")
+        response = self.client.post(
+            f"/api/projects/{project_id}/queue-ready-runs/?experiment={other_experiment.id}",
+            data={},
+            format="json",
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["queued"], 1)
-        self.assertEqual(ProcessingJob.objects.filter(run=run, status=ProcessingStatus.QUEUED).count(), 1)
+        self.assertEqual(ProcessingJob.objects.filter(run=run, status=ProcessingStatus.QUEUED).count(), 0)
+        self.assertEqual(ProcessingJob.objects.filter(run=other_run, status=ProcessingStatus.QUEUED).count(), 1)
 
     def test_queue_runs_only_queues_selected_uploaded_runs(self):
         self.client.force_authenticate(user=self.researcher)
@@ -547,7 +680,11 @@ class ApiPermissionTests(TestCase):
                 "fasta_path": "/data/reference/hye.fasta",
                 "speclib_path": "/data/reference/hye.speclib",
                 "diann_version": "1.9",
-                "diann_settings": {"q_value": 0.01, "threads": 8},
+                "diann_settings": {
+                    "tags": {
+                        "experimental": {"q_value": 0.01},
+                    }
+                },
             },
             format="json",
         )
@@ -573,8 +710,18 @@ class ApiPermissionTests(TestCase):
         )
 
         pipeline = ProcessingPipeline.objects.get(name="DIA-NN", version="1.9")
+        self.assertEqual(pipeline.parameters["adapter"], "diann")
+        self.assertEqual(pipeline.parameters["required_engine"], "diann")
+        self.assertEqual(pipeline.parameters["required_engine_version"], "1.9")
+        self.assertEqual(pipeline.parameters["executable"], "diann")
         self.assertEqual(pipeline.parameters["fasta_path"], "/data/reference/hye.fasta")
         self.assertEqual(pipeline.parameters["speclib_path"], "/data/reference/hye.speclib")
+        self.assertEqual(pipeline.parameters["report"], "diann-first-pass.parquet")
+        self.assertEqual(pipeline.parameters["library"], "")
+        self.assertIn("--individual-reports", pipeline.parameters["options"])
+        self.assertIn("--individual-mass-acc", pipeline.parameters["options"])
+        self.assertIn("--individual-windows", pipeline.parameters["options"])
+        self.assertIn("--matrices", pipeline.parameters["options"])
         self.assertTrue(pipeline.parameters["project_level_rollup"]["enabled"])
 
     def test_pre_acquisition_setup_accepts_sample_rows_plate_and_reference_presets(self):
@@ -601,9 +748,13 @@ class ApiPermissionTests(TestCase):
                 "hye_interval": 2,
                 "instrument_configuration": configuration.id,
                 "organisms": ["human", "yeast", "ecoli"],
-                "processing_preset": "Standard DIA-NN plasma",
+                "processing_preset": "DIA-NN speclib build",
                 "diann_version": "1.9",
-                "diann_settings": {"q_value": 0.01, "threads": 8},
+                "diann_settings": {
+                    "tags": {
+                        "experimental": {"q_value": 0.01},
+                    }
+                },
             },
             format="json",
         )
@@ -622,9 +773,194 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(first_entry.run.configuration_id, configuration.id)
 
         pipeline = ProcessingPipeline.objects.get(name="DIA-NN", version="1.9")
+        self.assertEqual(pipeline.parameters["adapter"], "diann")
+        self.assertEqual(pipeline.parameters["required_engine_version"], "1.9")
+        self.assertNotIn("command", pipeline.parameters)
         self.assertEqual(pipeline.parameters["reference_assets"]["organisms"], ["human", "yeast", "ecoli"])
         self.assertEqual(pipeline.parameters["reference_assets"]["refresh_policy"], "quarterly")
-        self.assertEqual(pipeline.parameters["processing_preset"], "Standard DIA-NN plasma")
+        self.assertEqual(pipeline.parameters["processing_preset"], "DIA-NN speclib build")
+        self.assertEqual(pipeline.parameters["library_source"], "")
+        self.assertTrue(pipeline.parameters["generate_speclib"])
+        self.assertIn("--individual-reports", pipeline.parameters["options"])
+        self.assertIn("--qvalue", pipeline.parameters["options"])
+
+    def test_pre_acquisition_setup_rejects_researcher_performance_tags(self):
+        self.client.force_authenticate(user=self.researcher)
+
+        response = self.client.post(
+            "/api/projects/pre-acquisition-setup/",
+            data={
+                "title": "Tagged DIA Cohort",
+                "code": "TAG-DIA",
+                "sample_count": 2,
+                "healthy_count": 1,
+                "diseased_count": 1,
+                "hye_interval": 0,
+                "processing_preset": "DIA-NN speclib build",
+                "diann_version": "1.9",
+                "diann_settings": {
+                    "tags": {
+                        "performance": {"threads": 12},
+                        "experimental": {"q_value": 0.01},
+                    }
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("diann_settings", response.data)
+
+    def test_pre_acquisition_preflight_returns_resolved_preview_without_creating_project(self):
+        self.client.force_authenticate(user=self.researcher)
+        project_count = Project.objects.count()
+
+        response = self.client.post(
+            "/api/projects/pre-acquisition-preflight/",
+            data={
+                "title": "Preview DIA Cohort",
+                "code": "PREVIEW-DIA",
+                "sample_count": 4,
+                "healthy_count": 2,
+                "diseased_count": 2,
+                "hye_interval": 2,
+                "processing_preset": "DIA-NN speclib build",
+                "diann_version": "1.9",
+                "diann_settings": {
+                    "tags": {
+                        "experimental": {"q_value": 0.01},
+                    }
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Project.objects.count(), project_count)
+        self.assertEqual(response.data["title"], "Preview DIA Cohort")
+        self.assertEqual(response.data["planned_runs"], 8)
+        self.assertEqual(response.data["processing_preset"], "DIA-NN speclib build")
+        self.assertEqual(response.data["speclib_mode"], "build")
+        self.assertIn("--qvalue", response.data["options"])
+        self.assertTrue(response.data["is_valid"])
+
+    def test_pre_acquisition_preflight_accepts_shield_human_fasta_and_tempdata_sample_id(self):
+        self.client.force_authenticate(user=self.researcher)
+        fasta_path = Path("/Volumes/T7_Shield/msconnect/shared/reference/human.fasta")
+        raw_path = Path("/Volumes/T7_Shield/tempDataMS/EN1033_TB500_NanoAG_rep1_ch2_GC13_DIA100win2uL_run42.raw")
+        if not fasta_path.exists() or not raw_path.exists():
+            self.skipTest("Shield volume human reference or sample raw file is not available.")
+
+        response = self.client.post(
+            "/api/projects/pre-acquisition-preflight/",
+            data={
+                "title": "Shield Human FASTA Preview",
+                "code": "SHIELD-HUMAN",
+                "sample_rows": [
+                    {
+                        "sample_id": raw_path.stem,
+                        "condition": "healthy",
+                        "well": "A01",
+                        "plate": "Plate 1",
+                    }
+                ],
+                "plate_type": "96",
+                "hye_interval": 0,
+                "experiment_name": "Shield preview",
+                "worklist_name": "Shield preview worklist",
+                "organisms": ["human"],
+                "processing_preset": "DIA-NN speclib build",
+                "fasta_path": str(fasta_path),
+                "diann_version": "1.9",
+                "diann_settings": {
+                    "tags": {
+                        "experimental": {"q_value": 0.01},
+                    }
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["reference_assets"]["fasta_path"], str(fasta_path))
+        self.assertEqual(response.data["reference_assets"]["organisms"], ["human"])
+        self.assertEqual(response.data["speclib_mode"], "build")
+        self.assertEqual(response.data["sample_count"], 1)
+        self.assertEqual(response.data["planned_runs"], 1)
+
+    def test_project_diann_preflight_returns_site_defaults_when_no_pipeline_exists(self):
+        self.client.force_authenticate(user=self.researcher)
+        DeploymentSetting.objects.update_or_create(
+            scope="site",
+            defaults={
+                "metadata": {
+                    "diann": {
+                        "performance_tags": {
+                            "threads": 16,
+                            "temp": "/scratch/diann",
+                        }
+                    }
+                }
+            },
+        )
+
+        response = self.client.get(f"/api/projects/{self.project_a.id}/diann-preflight/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["source"], "site_defaults")
+        self.assertEqual(response.data["performance_tags"]["threads"], 16)
+        self.assertEqual(response.data["performance_tags"]["temp"], "/scratch/diann")
+        self.assertEqual(response.data["speclib_mode"], "build")
+        self.assertIn("--threads", response.data["options"])
+        self.assertTrue(response.data["is_valid"])
+
+    def test_project_diann_preflight_returns_project_pipeline_snapshot(self):
+        self.client.force_authenticate(user=self.researcher)
+        experiment = Experiment.objects.create(project=self.project_a, name="Preflight", created_by=self.researcher)
+        worklist = AcquisitionWorklist.objects.create(
+            experiment=experiment,
+            name="Preflight worklist",
+            metadata={},
+        )
+        pipeline = ProcessingPipeline.objects.create(
+            name="DIA-NN",
+            version="2.0",
+            parameters={
+                "adapter": "diann",
+                "required_engine": "diann",
+                "processing_preset": "DIA-NN speclib reuse",
+                "report": "diann-first-pass.parquet",
+                "q_value": 0.005,
+                "generate_speclib": False,
+                "fasta_search": False,
+                "library_source": "preferred_speclib_path",
+                "tags": {
+                    "performance": {
+                        "threads": 20,
+                        "temp": "/scratch/diann",
+                    },
+                    "experimental": {
+                        "matrices": True,
+                    },
+                },
+            },
+        )
+        worklist.metadata = {**(worklist.metadata or {}), "processing_pipeline_id": pipeline.id}
+        worklist.save(update_fields=["metadata", "updated_at"])
+
+        response = self.client.get(f"/api/projects/{self.project_a.id}/diann-preflight/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["source"], "project_pipeline")
+        self.assertEqual(response.data["pipeline"]["id"], pipeline.id)
+        self.assertEqual(response.data["diann_version"], "2.0")
+        self.assertEqual(response.data["processing_preset"], "DIA-NN speclib reuse")
+        self.assertEqual(response.data["speclib_mode"], "reuse")
+        self.assertFalse(response.data["experimental_tags"]["generate_speclib"])
+        self.assertEqual(response.data["settings"]["library_source"], "preferred_speclib_path")
+        self.assertEqual(response.data["performance_tags"]["threads"], 20)
+        self.assertEqual(response.data["experimental_tags"]["matrices"], True)
+        self.assertIn("--qvalue", response.data["options"])
 
     def test_direct_upload_session_issues_signed_urls_and_records_completion(self):
         self.client.force_authenticate(user=self.researcher)
@@ -683,6 +1019,65 @@ class ApiPermissionTests(TestCase):
                     Path(raw_file.storage_path).resolve().is_relative_to(resolved_raw_root),
                     f"{raw_file.storage_path} not under {resolved_raw_root}",
                 )
+
+    def test_direct_upload_session_watcher_mode_stages_into_incoming_root(self):
+        self.client.force_authenticate(user=self.researcher)
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            media_root = root / "media"
+            incoming_root = root / "incoming"
+            raw_root = root / "raw"
+            media_root.mkdir()
+            incoming_root.mkdir()
+            raw_root.mkdir()
+            file_bytes = b"w" * 10_000_000
+            checksum = hashlib.sha256(file_bytes).hexdigest()
+
+            with override_settings(
+                MEDIA_ROOT=str(media_root),
+                INCOMING_RAW_ROOT=str(incoming_root),
+                RAW_FILE_STORAGE_ROOT=str(raw_root),
+                DIRECT_UPLOAD_STAGING_ROOT=str(media_root / "direct-uploads"),
+            ):
+                create_response = self.client.post(
+                    "/api/direct-uploads/",
+                    data={
+                        "project": self.project_a.id,
+                        "filename": "Watcher_Sample.raw",
+                        "size_bytes": len(file_bytes),
+                        "content_type": "application/octet-stream",
+                        "chunk_size_bytes": 5_000_000,
+                        "delivery_mode": "watcher",
+                    },
+                    format="json",
+                )
+                self.assertEqual(create_response.status_code, 201)
+                self.assertEqual(create_response.data["chunk_count"], 2)
+
+                for part in create_response.data["upload_urls"]:
+                    chunk = file_bytes[part["start"] : part["end"]]
+                    chunk_response = self.client.put(
+                        part["url"],
+                        data=chunk,
+                        content_type="application/octet-stream",
+                    )
+                    self.assertEqual(chunk_response.status_code, 200, chunk_response.content.decode("utf-8", errors="replace"))
+
+                upload = DirectUploadSession.objects.get(id=create_response.data["id"])
+                complete_response = self.client.post(
+                    f"/api/direct-uploads/{upload.id}/complete/",
+                    data={"checksum_sha256": checksum},
+                    format="json",
+                )
+
+            self.assertEqual(complete_response.status_code, 200)
+            self.assertEqual(complete_response.data["status"], "complete")
+            self.assertIsNone(complete_response.data["completed_raw_file"])
+            self.assertEqual(RawFile.objects.filter(checksum_sha256=checksum).count(), 0)
+            staged_file = incoming_root / checksum[:2] / f"{checksum}_Watcher_Sample.raw"
+            self.assertTrue(staged_file.exists())
+            self.assertEqual(staged_file.read_bytes(), file_bytes)
 
     def test_direct_upload_session_respects_project_scope(self):
         self.client.force_authenticate(user=self.researcher)
@@ -1029,9 +1424,9 @@ class AgentApiTests(TestCase):
         )
         raw_file = RawFile.objects.create(
             run=self.run,
-            source_path="/incoming/SampleA_run08.raw",
-            storage_path="/data/raw/aa/sample08.raw",
-            filename="SampleA_run08.raw",
+            source_path="/incoming/SampleA_run08.mzML",
+            storage_path="/data/raw/aa/sample08.mzML",
+            filename="SampleA_run08.mzML",
             checksum_sha256="8" * 64,
             size_bytes=1024,
             status="imported",
@@ -1066,6 +1461,38 @@ class AgentApiTests(TestCase):
         self.assertEqual(compatible.data["id"], job.id)
         self.assertEqual(compatible.data["metadata"]["required_engine"], "diann")
         self.assertEqual(compatible.data["metadata"]["required_engine_version"], "2.1.0")
+
+    def test_processor_claim_accepts_raw_input_for_diann(self):
+        processor = self._processor_client()
+        ProcessingNode.objects.create(name="diann-1", node_type="diann", status="idle")
+        raw_file = RawFile.objects.create(
+            run=self.run,
+            source_path="/incoming/SampleA_run09.raw",
+            storage_path="/data/raw/aa/sample09.raw",
+            filename="SampleA_run09.raw",
+            checksum_sha256="7" * 64,
+            size_bytes=1024,
+            status="imported",
+        )
+        pipeline = ProcessingPipeline.objects.create(
+            name="DIA-NN",
+            version="2.0",
+            parameters={"adapter": "diann", "required_engine": "diann", "report": "diann-report.parquet"},
+        )
+        job = ProcessingJob.objects.create(
+            run=self.run,
+            pipeline=pipeline,
+            raw_file=raw_file,
+            status=ProcessingStatus.QUEUED,
+        )
+
+        available = processor.post(
+            "/api/processing-jobs/claim-next/",
+            data={"node_name": "diann-1"},
+            format="json",
+        )
+        self.assertEqual(available.status_code, 200)
+        self.assertEqual(available.data["id"], job.id)
 
     def test_worklist_import_stores_qc_program_and_extended_roles(self):
         self.client.force_authenticate(user=self.pi_user)
@@ -1205,7 +1632,66 @@ class AgentApiTests(TestCase):
         self.assertEqual(raw_file.run.status, "imported")
         self.assertEqual(job.status, ProcessingStatus.QUEUED)
         self.assertEqual(job.pipeline.name, "DIA-NN")
-        self.assertIn("command", job.pipeline.parameters)
+        self.assertEqual(job.pipeline.parameters["adapter"], "diann")
+        self.assertEqual(job.pipeline.parameters["required_engine"], "diann")
+
+    def test_watcher_import_queues_diann_processing_job_without_conversion_for_raw_input(self):
+        self.client.force_authenticate(user=self.pi_user)
+        experiment = Experiment.objects.create(project=self.project, name="Raw import", created_by=self.pi_user)
+        worklist = AcquisitionWorklist.objects.create(
+            experiment=experiment,
+            name="Raw import worklist",
+            metadata={},
+        )
+        diann_pipeline = ProcessingPipeline.objects.create(
+            name="DIA-NN raw",
+            version="site-managed",
+            parameters={"adapter": "diann", "required_engine": "diann", "report": "diann-report.parquet"},
+        )
+        worklist.metadata = {**(worklist.metadata or {}), "processing_pipeline_id": diann_pipeline.id}
+        worklist.save(update_fields=["metadata", "updated_at"])
+        sample = Sample.objects.create(experiment=experiment, name="Raw Sample")
+        run = Run.objects.create(sample=sample, run_name="Raw Sample", expected_filename="Raw Sample.raw", file_role=RunFileRole.SAMPLE)
+        WorklistEntry.objects.create(
+            worklist=worklist,
+            run=run,
+            position=1,
+            expected_filename="Raw Sample.raw",
+            file_role=RunFileRole.SAMPLE,
+        )
+
+        watcher = self._watcher_client()
+        with TemporaryDirectory() as storage_dir:
+            storage_root = Path(storage_dir)
+            file_bytes = b"real-raw-data"
+            checksum = hashlib.sha256(file_bytes).hexdigest()
+            file_path = storage_root / checksum[:2] / f"{checksum}_Raw Sample.raw"
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_bytes(file_bytes)
+
+            with override_settings(RAW_FILE_STORAGE_ROOT=str(storage_root)):
+                import_response = watcher.post(
+                    "/api/agents/raw-files/import/",
+                    data={
+                        "source_path": "/incoming/Raw Sample.raw",
+                        "storage_path": str(file_path),
+                        "filename": "Raw Sample.raw",
+                        "checksum_sha256": checksum,
+                        "size_bytes": len(file_bytes),
+                        "match_run_by_name": True,
+                    },
+                    format="json",
+                )
+
+        self.assertEqual(import_response.status_code, 201)
+        self.assertTrue(import_response.data["created"])
+        self.assertIsNotNone(import_response.data["processing_job"])
+
+        raw_file = RawFile.objects.get(checksum_sha256=checksum)
+        diann_job = ProcessingJob.objects.get(raw_file=raw_file, pipeline=diann_pipeline)
+        self.assertEqual(raw_file.status, "imported")
+        self.assertEqual(diann_job.status, ProcessingStatus.QUEUED)
+        self.assertFalse(ProcessingJob.objects.filter(raw_file=raw_file, pipeline__name="ProteoWizard msconvert").exists())
 
     def test_watcher_import_routes_prtc_run_to_configured_skyline_pipeline(self):
         default_pipeline = ProcessingPipeline.objects.create(

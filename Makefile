@@ -1,4 +1,4 @@
-.PHONY: build up down logs migrate test lint frontend-lint ci-local install-hooks shell createsuperuser watcher processor tagged-fixture tagged-process tagged-verify archive capacity verify-archives operations-report deploy-tag
+.PHONY: build up down logs migrate test lint frontend-lint ci-local install-hooks shell createsuperuser watcher processor diann-build diann-up diann-logs cleanup-state tagged-fixture tagged-process tagged-verify archive capacity verify-archives operations-report deploy-tag
 
 build:
 	docker compose build
@@ -47,6 +47,18 @@ watcher:
 
 processor:
 	docker compose run --rm processor python manage.py run_processor_agent --once
+
+diann-build:
+	docker compose --profile engines build processor-diann
+
+diann-up:
+	docker compose --profile engines up -d --build web nginx watcher processor-diann
+
+cleanup-state:
+	docker compose exec web python manage.py cleanup_processing_state
+
+diann-logs:
+	docker compose logs -f web nginx watcher processor-diann
 
 tagged-fixture:
 	docker compose exec web python manage.py create_tagged_operations_fixture --code-prefix OPS-TAGGED

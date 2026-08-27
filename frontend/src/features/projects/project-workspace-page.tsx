@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { BarChart3, BrainCircuit, CheckCircle2, Copy, FileUp, FolderKanban, HardDrive, RefreshCw, Save, Settings2 } from "lucide-react";
+import { BarChart3, BrainCircuit, CheckCircle2, Copy, FileUp, FolderKanban, RefreshCw, Save, Settings2 } from "lucide-react";
 import type { FormEvent } from "react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { MetricCard, PageHero } from "@/components/layout/page-section";
@@ -13,20 +13,27 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
+  fetchCurrentUser,
+  fetchExperiment,
+  fetchExperiments,
   fetchProjectResearcherStatus,
+  fetchProjectDiannPreflight,
   fetchFindingsWorkspace,
+  fetchProcessingJobs,
   indexFindingsWorkspace,
   importProjectWorklist,
   prepareFindingsWorkspace,
   queueProjectRuns,
   queueProjectReadyRuns,
+  rerunLatestDiannBatch,
   queryKeys,
   updateRun,
   updateWorklistEntry,
 } from "@/lib/api/queries";
 import { queryClient } from "@/lib/api/query-client";
 import { formatBytes, formatDate } from "@/lib/format";
-import type { FindingsWorkspace, ProjectResearcherRun, WorklistImportRow } from "@/lib/api/types";
+import type { FindingsWorkspace, ProcessingJob, ProjectResearcherRun, WorklistImportRow } from "@/lib/api/types";
+import { isOperatorRole } from "@/lib/ui-surface";
 
 const roleOptions = ["sample", "qc", "hye", "prtc", "library", "blank", "true_blank", "wash", "calibration"] as const;
 const runStatusOptions = ["planned", "acquired", "imported", "processed", "failed"] as const;
@@ -43,8 +50,17 @@ type EditDraft = {
   notes: string;
 };
 
+type DiannProcessStep = {
+  key: string;
+  label: string;
+  detail: string;
+  status: string;
+};
+
 export default function ProjectWorkspacePage() {
   const projectId = Number(useParams().projectId);
+  const experimentId = Number(useParams().experimentId);
+  const isExperimentRoute = Number.isFinite(experimentId);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [worklistOpen, setWorklistOpen] = useState(false);
   const [worklistName, setWorklistName] = useState("Imported LC-MS worklist");
@@ -54,20 +70,53 @@ export default function ProjectWorkspacePage() {
   const [selectedRunIds, setSelectedRunIds] = useState<number[]>([]);
   const [workspaceMode, setWorkspaceMode] = useState<"personal" | "shared">("personal");
   const [dataStrategy, setDataStrategy] = useState<"manifest" | "symlink">("manifest");
+  const [rerunNotice, setRerunNotice] = useState("");
+  const statusParams = isExperimentRoute ? { experiment: experimentId } : undefined;
+  const statusQueryKey = queryKeys.projectResearcherStatus(projectId, statusParams);
+  const preflightQueryKey = queryKeys.projectDiannPreflight(projectId, statusParams);
 
   const statusQuery = useQuery({
-    queryKey: queryKeys.projectResearcherStatus(projectId),
-    queryFn: () => fetchProjectResearcherStatus(projectId),
+    queryKey: statusQueryKey,
+    queryFn: () => fetchProjectResearcherStatus(projectId, statusParams),
     enabled: Number.isFinite(projectId),
     refetchInterval: 30_000,
+  });
+  const preflightQuery = useQuery({
+    queryKey: preflightQueryKey,
+    queryFn: () => fetchProjectDiannPreflight(projectId, statusParams),
+    enabled: Number.isFinite(projectId),
+    refetchInterval: 60_000,
+  });
+  const experimentsQuery = useQuery({
+    queryKey: queryKeys.projectExperiments(projectId),
+    queryFn: () => fetchExperiments({ project: projectId, page: 1, page_size: 100 }),
+    enabled: Number.isFinite(projectId),
+  });
+  const experimentQuery = useQuery({
+    queryKey: queryKeys.experiment(experimentId),
+    queryFn: () => fetchExperiment(experimentId),
+    enabled: isExperimentRoute,
+  });
+  const processingJobsQuery = useQuery({
+    queryKey: queryKeys.projectProcessingJobs(projectId),
+    queryFn: () => fetchProcessingJobs({ project: projectId, page: 1, page_size: 50 }),
+    enabled: Number.isFinite(projectId),
+    refetchInterval: 10_000,
   });
   const findingsQuery = useQuery({
     queryKey: queryKeys.findingsWorkspace(projectId),
     queryFn: () => fetchFindingsWorkspace(projectId),
     enabled: Number.isFinite(projectId),
   });
+  const currentUserQuery = useQuery({
+    queryKey: queryKeys.currentUser(),
+    queryFn: fetchCurrentUser,
+  });
   const data = statusQuery.data;
   const project = data?.project;
+  const isOperator = isOperatorRole(currentUserQuery.data?.global_role);
+  const experiment = experimentQuery.data ?? data?.experiment ?? null;
+  const experiments = experimentsQuery.data?.results ?? [];
   const runs = data?.runs ?? [];
   const selectedRun = runs.find((row) => row.run.id === selectedRunId) ?? runs[0];
   const readyToProcess = runs.filter((row) => row.raw_file && !row.processing_job);
@@ -75,11 +124,38 @@ export default function ProjectWorkspacePage() {
   const selectedRows = runs.filter((row) => selectedRunIds.includes(row.run.id));
   const selectedReadyRows = selectedRows.filter((row) => row.raw_file && !row.processing_job);
   const allSelected = Boolean(runs.length) && selectedRunIds.length === runs.length;
+  const latestDiannJob = useMemo(
+    () =>
+      (processingJobsQuery.data?.results ?? []).find(
+        (job) => job.required_engine.toLowerCase().includes("diann") || job.pipeline_name.toLowerCase().includes("diann"),
+      ) ??
+      (processingJobsQuery.data?.results ?? [])[0] ??
+      null,
+    [processingJobsQuery.data?.results],
+  );
+  const diannProcess = useMemo<DiannProcessStep[]>(
+    () => buildDiannProcessSteps(preflightQuery.data?.is_valid ?? false, readyToProcess.length, latestDiannJob),
+    [latestDiannJob, preflightQuery.data?.is_valid, readyToProcess.length],
+  );
+  const pageEyebrow = isExperimentRoute ? "Experiment workspace" : "Project workspace";
+  const pageTitle = experiment?.name ?? project?.code ?? "Loading project";
+  const pageDescription = isExperimentRoute
+    ? experiment
+      ? `${project?.code ?? "Project"} · ${experiment.hypothesis || "Single acquisition series"}`
+      : "Loading experiment."
+    : project?.title ?? "Retrieving project status.";
 
   const importMutation = useMutation({
-    mutationFn: () => importProjectWorklist(projectId, { worklist_name: worklistName, rows: worklistRows }),
+    mutationFn: () =>
+      importProjectWorklist(projectId, {
+        worklist_name: worklistName,
+        experiment_name: experiment?.name ?? undefined,
+        rows: worklistRows,
+      }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.projectResearcherStatus(projectId) });
+      await queryClient.invalidateQueries({ queryKey: statusQueryKey });
+      await queryClient.invalidateQueries({ queryKey: preflightQueryKey });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.projectExperiments(projectId) });
       setWorklistOpen(false);
       setWorklistRows([]);
       setWorklistError("");
@@ -87,16 +163,26 @@ export default function ProjectWorkspacePage() {
     onError: (error) => setWorklistError(error instanceof Error ? error.message : "Could not import worklist."),
   });
   const queueMutation = useMutation({
-    mutationFn: () => queueProjectReadyRuns(projectId),
+    mutationFn: () => queueProjectReadyRuns(projectId, isExperimentRoute ? experimentId : undefined),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.projectResearcherStatus(projectId) });
+      await queryClient.invalidateQueries({ queryKey: statusQueryKey });
     },
   });
   const queueSelectedMutation = useMutation({
-    mutationFn: () => queueProjectRuns(projectId, selectedReadyRows.map((row) => row.run.id)),
+    mutationFn: () => queueProjectRuns(projectId, selectedReadyRows.map((row) => row.run.id), isExperimentRoute ? experimentId : undefined),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.projectResearcherStatus(projectId) });
+      await queryClient.invalidateQueries({ queryKey: statusQueryKey });
       setSelectedRunIds([]);
+    },
+  });
+  const rerunBatchMutation = useMutation({
+    mutationFn: () => rerunLatestDiannBatch(projectId),
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: statusQueryKey });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.projectSummary(projectId) });
+      setRerunNotice(
+        `Converted ${result.converted} file${result.converted === 1 ? "" : "s"} and requeued ${result.rerun} DIA-NN job${result.rerun === 1 ? "" : "s"}.`,
+      );
     },
   });
   const editMutation = useMutation({
@@ -116,7 +202,7 @@ export default function ProjectWorkspacePage() {
       }
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.projectResearcherStatus(projectId) });
+      await queryClient.invalidateQueries({ queryKey: statusQueryKey });
       setEditDraft(null);
     },
   });
@@ -183,18 +269,34 @@ export default function ProjectWorkspacePage() {
       <Breadcrumbs
         items={[
           { label: "Projects", href: "/projects" },
-          { label: project?.code ?? "Project" },
+          { label: project?.code ?? "Project", href: project ? `/projects/${projectId}` : "/projects" },
+          ...(isExperimentRoute ? [{ label: experiment?.name ?? "Experiment" }] : []),
         ]}
       />
 
       <PageHero
-        eyebrow="Researcher project"
-        title={project?.code ?? "Loading project"}
-        description={project?.title ?? "Retrieving project status."}
+        eyebrow={pageEyebrow}
+        title={pageTitle}
+        description={pageDescription}
         actions={
           <>
             {project ? <StatusBadge status={project.status} /> : null}
+            {experiment ? (
+              <span className="inline-flex h-9 items-center rounded-md border bg-secondary/40 px-3 text-sm font-bold text-foreground">
+                Experiment selected
+              </span>
+            ) : null}
             <span className={`inline-flex h-9 items-center rounded-md border px-3 text-sm font-bold ${healthClass}`}>{healthLabel}</span>
+            {!isExperimentRoute && experiments.length ? (
+              <Button asChild variant="secondary">
+                <Link to={`/projects/${projectId}/experiments/${experiments[0].id}`}>Open latest experiment</Link>
+              </Button>
+            ) : null}
+            {isExperimentRoute ? (
+              <Button asChild variant="secondary">
+                <Link to={`/projects/${projectId}`}>Project overview</Link>
+              </Button>
+            ) : null}
             <Dialog open={worklistOpen} onOpenChange={setWorklistOpen}>
               <DialogTrigger asChild>
                 <Button>
@@ -205,7 +307,10 @@ export default function ProjectWorkspacePage() {
               <DialogContent className="max-h-[90vh] max-w-4xl overflow-auto">
                 <DialogHeader>
                   <DialogTitle>Import LC-MS worklist</DialogTitle>
-                  <DialogDescription>Upload a CSV or TSV worklist to create or update the project run ground truth.</DialogDescription>
+                  <DialogDescription>
+                    Upload a CSV or TSV worklist to create or update the run ground truth.
+                    {isExperimentRoute ? " The import will attach to the selected experiment." : " The import will attach to the default experiment for this project."}
+                  </DialogDescription>
                 </DialogHeader>
                 <form className="grid gap-4" onSubmit={submitWorklist}>
                   <div className="grid gap-3 md:grid-cols-[1fr_auto]">
@@ -218,7 +323,7 @@ export default function ProjectWorkspacePage() {
                     <Button type="button" variant="secondary" onClick={() => setWorklistOpen(false)}>
                       Cancel
                     </Button>
-                    <Button type="submit" disabled={importMutation.isPending || !worklistRows.length}>
+                    <Button type="submit" disabled={importMutation.isPending || !worklistRows.length || (isExperimentRoute && !experiment)}>
                       {importMutation.isPending ? "Importing..." : "Import worklist"}
                     </Button>
                   </div>
@@ -230,13 +335,213 @@ export default function ProjectWorkspacePage() {
       />
 
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-        <MetricCard label="Project Status" value={project?.status ?? "-"} detail="research workflow" />
-        <MetricCard label="Runs" value={data?.summary.run_count ?? "-"} detail="planned/acquired" />
+        <MetricCard label={isExperimentRoute ? "Experiment" : "Project Status"} value={isExperimentRoute ? experiment?.name ?? "-" : project?.status ?? "-"} detail={isExperimentRoute ? "single acquisition series" : "research workflow"} />
+        <MetricCard label="Runs" value={data?.summary.run_count ?? "-"} detail={isExperimentRoute ? "in this experiment" : "planned/acquired"} />
         <MetricCard label="Raw Files" value={data?.summary.raw_file_count ?? "-"} detail={`${data?.summary.missing_raw_file_count ?? 0} missing`} />
         <MetricCard label="Queue" value={data?.system_health.active_jobs ?? "-"} detail="active jobs" />
         <MetricCard label="Failed" value={failedRows.length} detail="runs needing review" />
         <MetricCard label="Ready" value={readyToProcess.length} detail="uploaded, not queued" />
       </section>
+      {experiments.length ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Experiments</CardTitle>
+            <CardDescription>Projects can hold multiple experiments. Each experiment is a single acquisition and upload series.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {experiments.map((item) => (
+              <Link
+                key={item.id}
+                to={`/projects/${projectId}/experiments/${item.id}`}
+                className={`rounded-2xl border p-4 transition-colors hover:bg-secondary/45 ${
+                  isExperimentRoute && experiment?.id === item.id ? "border-primary bg-primary/5" : "bg-background/70"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="font-semibold">{item.name}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{item.hypothesis || "No hypothesis recorded"}</div>
+                  </div>
+                  <span className="rounded-full border bg-background px-2 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-muted-foreground">
+                    Experiment
+                  </span>
+                </div>
+                <div className="mt-3 text-xs text-muted-foreground">
+                  Updated {formatDate(item.updated_at)} · {item.started_on || "No start date"}
+                </div>
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+      {rerunNotice ? <div className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">{rerunNotice}</div> : null}
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle>DIA-NN preflight</CardTitle>
+              <CardDescription>Resolved settings and command options that will be used for this project before upload or queueing.</CardDescription>
+            </div>
+            <Button variant="secondary" onClick={() => preflightQuery.refetch()} disabled={preflightQuery.isFetching}>
+              <RefreshCw className="h-4 w-4" />
+              {preflightQuery.isFetching ? "Refreshing..." : "Refresh preflight"}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-4 xl:grid-cols-[1fr_360px]">
+          <div className="grid gap-3">
+            <div className="grid gap-2 md:grid-cols-2">
+              <div className="rounded-lg border bg-background/60 p-3">
+                <div className="text-xs font-bold uppercase text-muted-foreground">Source</div>
+                <div className="mt-1 font-semibold">{preflightQuery.data?.source_label ?? "Loading preflight..."}</div>
+                <div className="mt-1 text-sm text-muted-foreground">{preflightQuery.data?.source_detail ?? "Resolve the pipeline snapshot used for upload."}</div>
+              </div>
+              <div className="rounded-lg border bg-background/60 p-3">
+                <div className="text-xs font-bold uppercase text-muted-foreground">Preset / version</div>
+                <div className="mt-1 font-semibold">{preflightQuery.data?.processing_preset || "-"}</div>
+                <div className="mt-1 text-sm text-muted-foreground">DIA-NN {preflightQuery.data?.diann_version || "-"}</div>
+              </div>
+              <div className="rounded-lg border bg-background/60 p-3">
+                <div className="text-xs font-bold uppercase text-muted-foreground">Speclib mode</div>
+                <div className="mt-1 font-semibold">{speclibModeLabel(preflightQuery.data?.speclib_mode)}</div>
+                <div className="mt-1 text-sm text-muted-foreground">{speclibModeDetail(preflightQuery.data?.speclib_mode)}</div>
+              </div>
+            </div>
+            <div className="rounded-lg border bg-background/60 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-bold uppercase text-muted-foreground">Resolved settings</div>
+                  <div className="text-sm text-muted-foreground">This is the effective pipeline snapshot after site performance tags are applied.</div>
+                </div>
+                <StatusBadge status={preflightQuery.data?.is_valid ? "complete" : "warning"} />
+              </div>
+              <pre className="mt-3 max-h-80 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100">
+                <code>{JSON.stringify(preflightQuery.data?.settings ?? {}, null, 2)}</code>
+              </pre>
+            </div>
+          </div>
+          <div className="grid gap-3">
+            <div className="rounded-lg border bg-background/60 p-3">
+              <div className="text-xs font-bold uppercase text-muted-foreground">Performance tags</div>
+              <pre className="mt-2 overflow-auto rounded-lg bg-background p-3 text-xs">
+                <code>{JSON.stringify(preflightQuery.data?.performance_tags ?? {}, null, 2)}</code>
+              </pre>
+            </div>
+            <div className="rounded-lg border bg-background/60 p-3">
+              <div className="text-xs font-bold uppercase text-muted-foreground">Experimental tags</div>
+              <pre className="mt-2 overflow-auto rounded-lg bg-background p-3 text-xs">
+                <code>{JSON.stringify(preflightQuery.data?.experimental_tags ?? {}, null, 2)}</code>
+              </pre>
+            </div>
+            <div className="rounded-lg border bg-background/60 p-3">
+              <div className="text-xs font-bold uppercase text-muted-foreground">Validation</div>
+              {preflightQuery.data?.validation_errors?.length ? (
+                <ul className="mt-2 grid gap-2 text-sm text-destructive">
+                  {preflightQuery.data.validation_errors.map((error) => (
+                    <li key={error} className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2">
+                      {error}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="mt-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">
+                  No validation errors. The preflight snapshot is ready for upload or processing.
+                </div>
+              )}
+            </div>
+            <div className="rounded-lg border bg-background/60 p-3">
+              <div className="text-xs font-bold uppercase text-muted-foreground">Command options</div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {(preflightQuery.data?.options ?? []).length ? (
+                  preflightQuery.data?.options.map((option) => (
+                    <span key={option} className="rounded-full border bg-background px-3 py-1 font-mono text-xs">
+                      {option}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-sm text-muted-foreground">No explicit DIA-NN options resolved.</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle>DIA-NN process</CardTitle>
+              <CardDescription>Live project execution status, from preflight through queueing to the current DIA-NN job state.</CardDescription>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <StatusBadge status={latestDiannJob ? latestDiannJob.status : readyToProcess.length ? "queued" : "planned"} />
+              {isOperator ? (
+                <Button asChild variant="secondary">
+                  <Link to={`/processing?project=${projectId}&pipeline=all&status=all&active=true`}>
+                    <BarChart3 className="h-4 w-4" />
+                    Open queue
+                  </Link>
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-4 xl:grid-cols-[1fr_360px]">
+          <div className="grid gap-3">
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+              {diannProcess.map((step: DiannProcessStep) => {
+                const { key, ...rest } = step;
+                return <ProcessStepCard key={key} {...rest} />;
+              })}
+            </div>
+          </div>
+          <div className="grid gap-3">
+            <div className="rounded-2xl border bg-background/80 p-4">
+              <div className="text-xs font-bold uppercase text-muted-foreground">Latest DIA-NN job</div>
+              {latestDiannJob ? (
+                <div className="mt-3 grid gap-2 text-sm">
+                  <div className="rounded-lg border bg-background px-3 py-2">
+                    <div className="text-xs font-bold uppercase text-muted-foreground">Status</div>
+                    <div className="mt-1 font-semibold">{latestDiannJob.status}</div>
+                  </div>
+                  <div className="rounded-lg border bg-background px-3 py-2">
+                    <div className="text-xs font-bold uppercase text-muted-foreground">Pipeline</div>
+                    <div className="mt-1 font-semibold">{latestDiannJob.pipeline_name} {latestDiannJob.pipeline_version}</div>
+                  </div>
+                  <div className="rounded-lg border bg-background px-3 py-2">
+                    <div className="text-xs font-bold uppercase text-muted-foreground">Raw file</div>
+                    <div className="mt-1 break-all font-mono text-xs">{latestDiannJob.raw_file_filename}</div>
+                  </div>
+                  <div className="rounded-lg border bg-background px-3 py-2">
+                    <div className="text-xs font-bold uppercase text-muted-foreground">Node</div>
+                    <div className="mt-1 font-semibold">{latestDiannJob.node_name || "Unassigned"}</div>
+                  </div>
+                  <div className="rounded-lg border bg-background px-3 py-2">
+                    <div className="text-xs font-bold uppercase text-muted-foreground">Started / finished</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {formatDate(latestDiannJob.started_at)} · {formatDate(latestDiannJob.finished_at)}
+                    </div>
+                  </div>
+                  {latestDiannJob.error_message ? (
+                    <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                      {latestDiannJob.error_message}
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="mt-3 rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">
+                  No DIA-NN job is running yet. Queue ready runs or refresh after files have been ingested to watch status change here.
+                </div>
+              )}
+            </div>
+            <div className="rounded-2xl border bg-background/80 p-4 text-sm text-muted-foreground">
+              Polling every 10 seconds while the workspace is open. The process view updates automatically as jobs move through queue, assignment, running, and completion.
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <FindingsWorkflowPanel
         workspace={findingsQuery.data?.workspace ?? null}
@@ -257,25 +562,26 @@ export default function ProjectWorkspacePage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <CardTitle>Runs</CardTitle>
-              <CardDescription>Each row is a planned LC-MS injection with raw-file, queue, and result status.</CardDescription>
+              <CardDescription>
+                Each row is a planned LC-MS injection with raw-file, queue, and result status.
+                {isExperimentRoute ? " This view is scoped to the selected experiment." : ""}
+              </CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button variant="secondary" disabled={!readyToProcess.length || queueMutation.isPending} onClick={() => queueMutation.mutate()}>
-                <CheckCircle2 className="h-4 w-4" />
-                {queueMutation.isPending ? "Queueing..." : "Queue ready runs"}
-              </Button>
-              <Button asChild variant="secondary">
-                <Link to={`/uploads?project=${projectId}`}>
-                  <HardDrive className="h-4 w-4" />
-                  Upload files
-                </Link>
-              </Button>
-              <Button asChild variant="secondary">
-                <Link to={`/qc?project=${projectId}`}>
-                  <BarChart3 className="h-4 w-4" />
-                  QC
-                </Link>
-              </Button>
+              {isOperator ? (
+                <>
+                  <Button variant="secondary" disabled={!readyToProcess.length || queueMutation.isPending} onClick={() => queueMutation.mutate()}>
+                    <CheckCircle2 className="h-4 w-4" />
+                    {queueMutation.isPending ? "Queueing..." : "Queue ready runs"}
+                  </Button>
+                  {!isExperimentRoute ? (
+                    <Button variant="secondary" disabled={!project || rerunBatchMutation.isPending} onClick={() => rerunBatchMutation.mutate()}>
+                      <RefreshCw className="h-4 w-4" />
+                      {rerunBatchMutation.isPending ? "Requeueing..." : "Rerun latest batch"}
+                    </Button>
+                  ) : null}
+                </>
+              ) : null}
             </div>
           </div>
         </CardHeader>
@@ -287,6 +593,7 @@ export default function ProjectWorkspacePage() {
             onClear={() => setSelectedRunIds([])}
             onQueue={() => queueSelectedMutation.mutate()}
             queuePending={queueSelectedMutation.isPending}
+            isOperator={isOperator}
           />
           <div className="overflow-x-auto rounded-lg border">
             <table className="w-full min-w-[1120px] text-sm">
@@ -374,7 +681,7 @@ export default function ProjectWorkspacePage() {
         </CardContent>
       </Card>
 
-      {selectedRun ? <RunDetail projectId={projectId} row={selectedRun} onEdit={() => startEdit(selectedRun)} /> : null}
+      {selectedRun ? <RunDetail projectId={projectId} row={selectedRun} onEdit={() => startEdit(selectedRun)} isOperator={isOperator} /> : null}
 
       <Dialog open={Boolean(editDraft)} onOpenChange={(open) => !open && setEditDraft(null)}>
         <DialogContent>
@@ -431,6 +738,7 @@ function SelectedRunsPanel({
   onClear,
   onQueue,
   queuePending,
+  isOperator,
 }: {
   projectId: number;
   rows: ProjectResearcherRun[];
@@ -438,6 +746,7 @@ function SelectedRunsPanel({
   onClear: () => void;
   onQueue: () => void;
   queuePending: boolean;
+  isOperator: boolean;
 }) {
   if (!rows.length) return null;
   const rawFileCount = rows.filter((row) => row.raw_file).length;
@@ -460,10 +769,12 @@ function SelectedRunsPanel({
             </Link>
           </Button>
         ) : null}
-        <Button size="sm" variant="secondary" disabled={!readyCount || queuePending} onClick={onQueue}>
-          <CheckCircle2 className="h-3.5 w-3.5" />
-          {queuePending ? "Queueing..." : "Queue selected"}
-        </Button>
+        {isOperator ? (
+          <Button size="sm" variant="secondary" disabled={!readyCount || queuePending} onClick={onQueue}>
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            {queuePending ? "Queueing..." : "Queue selected"}
+          </Button>
+        ) : null}
         <Button size="sm" variant="ghost" onClick={onClear}>
           Clear
         </Button>
@@ -472,7 +783,17 @@ function SelectedRunsPanel({
   );
 }
 
-function RunDetail({ projectId, row, onEdit }: { projectId: number; row: ProjectResearcherRun; onEdit: () => void }) {
+function RunDetail({
+  projectId,
+  row,
+  onEdit,
+  isOperator,
+}: {
+  projectId: number;
+  row: ProjectResearcherRun;
+  onEdit: () => void;
+  isOperator: boolean;
+}) {
   return (
     <Card>
       <CardHeader>
@@ -495,9 +816,13 @@ function RunDetail({ projectId, row, onEdit }: { projectId: number; row: Project
             {row.raw_file ? (
               formatBytes(row.raw_file.size_bytes)
             ) : (
-              <Link className="font-medium text-primary" to={`/uploads?project=${projectId}&run=${row.run.id}`}>
-                Upload for this run
-              </Link>
+              isOperator ? (
+                <Link className="font-medium text-primary" to={`/watcher?project=${projectId}&run=${row.run.id}`}>
+                  Stream for this run
+                </Link>
+              ) : (
+                "Stream queued through the lab workflow"
+              )
             )}
           </div>
         </div>
@@ -673,6 +998,85 @@ function WorklistPreview({ rows }: { rows: WorklistImportRow[] }) {
         </tbody>
       </table>
       {rows.length > 20 ? <div className="border-t px-3 py-2 text-xs text-muted-foreground">{rows.length - 20} more rows will be imported.</div> : null}
+    </div>
+  );
+}
+
+function speclibModeLabel(mode?: string) {
+  if (mode === "reuse") return "Reuse speclib";
+  if (mode === "smoke") return "Smoke only";
+  if (mode === "build") return "Build speclib";
+  return "-";
+}
+
+function speclibModeDetail(mode?: string) {
+  if (mode === "reuse") return "Use the generated project speclib for report runs.";
+  if (mode === "smoke") return "Launcher check only. Not the production search path.";
+  if (mode === "build") return "Generate a project speclib on the first pass.";
+  return "Resolve the project preflight to see the DIA-NN speclib mode.";
+}
+
+function buildDiannProcessSteps(preflightValid: boolean, readyCount: number, latestJob: ProcessingJob | null) {
+  const latestStatus = latestJob?.status ?? "";
+  const queued = latestStatus === "queued" || latestStatus === "assigned" || latestStatus === "running" || latestStatus === "retrying";
+  const running = latestStatus === "running";
+  const done = latestStatus === "complete";
+  const failed = latestStatus === "failed";
+  return [
+    {
+      key: "preflight",
+      label: "Preflight",
+      detail: preflightValid ? "Resolved settings are ready." : "Resolve settings before queueing.",
+      status: preflightValid ? "complete" : "warning",
+    },
+    {
+      key: "ready",
+      label: "Ready runs",
+      detail: `${readyCount} run${readyCount === 1 ? "" : "s"} can be queued.`,
+      status: readyCount ? "complete" : "warning",
+    },
+    {
+      key: "queued",
+      label: "Queued",
+      detail: queued ? `Latest job is ${latestStatus}.` : "Waiting for queue submission.",
+      status: queued ? "complete" : "warning",
+    },
+    {
+      key: "running",
+      label: "Running",
+      detail: running ? "DIA-NN is executing now." : "Node has not started execution yet.",
+      status: running ? "running" : done ? "complete" : failed ? "failed" : "warning",
+    },
+    {
+      key: "complete",
+      label: "Complete",
+      detail: done ? "Latest job finished successfully." : failed ? "Latest job failed and needs review." : "Completion will appear here after execution.",
+      status: done ? "complete" : failed ? "failed" : "warning",
+    },
+  ] as Array<{
+    key: string;
+    label: string;
+    detail: string;
+    status: string;
+  }>;
+}
+
+function ProcessStepCard({
+  label,
+  detail,
+  status,
+}: {
+  label: string;
+  detail: string;
+  status: string;
+}) {
+  return (
+    <div className="rounded-2xl border bg-background/70 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-sm font-black">{label}</div>
+        <StatusBadge status={status} />
+      </div>
+      <div className="mt-2 text-xs text-muted-foreground">{detail}</div>
     </div>
   );
 }

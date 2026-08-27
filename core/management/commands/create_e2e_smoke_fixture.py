@@ -1,9 +1,10 @@
 import sys
+import shutil
 from pathlib import Path
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from core.models import (
@@ -31,14 +32,35 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--code", default="")
         parser.add_argument("--raw-filename", default="")
+        parser.add_argument(
+            "--source-file",
+            help="Optional real raw file to stage into INCOMING_RAW_ROOT instead of writing a placeholder.",
+        )
+        parser.add_argument(
+            "--stage-method",
+            choices=("copy", "symlink"),
+            default="copy",
+            help="How to stage --source-file into INCOMING_RAW_ROOT.",
+        )
 
     def handle(self, *args, **options):
         code = options["code"] or f"E2E-SMOKE-{timezone.now().strftime('%Y%m%d%H%M%S')}"
-        raw_filename = options["raw_filename"] or f"{code}_run01.mzML"
+        source_file = options["source_file"]
+        if source_file:
+            source_path = Path(source_file).expanduser()
+            if not source_path.exists():
+                raise CommandError(f"source file does not exist: {source_path}")
+            raw_filename = options["raw_filename"] or source_path.name
+        else:
+            source_path = None
+            raw_filename = options["raw_filename"] or f"{code}_run01.mzML"
         incoming_root = Path(settings.INCOMING_RAW_ROOT)
         incoming_root.mkdir(parents=True, exist_ok=True)
         raw_path = incoming_root / raw_filename
-        raw_path.write_text("MSConnect end-to-end smoke raw placeholder\n", encoding="utf-8")
+        if source_path:
+            self._stage_source_file(source_path=source_path, destination=raw_path, stage_method=options["stage_method"])
+        else:
+            raw_path.write_text("MSConnect end-to-end smoke raw placeholder\n", encoding="utf-8")
 
         user = self._user()
         lab = self._lab(user)
@@ -123,6 +145,15 @@ class Command(BaseCommand):
                 f"created e2e smoke fixture code={code} raw_file={raw_path} pipeline={pipeline.id}"
             )
         )
+
+    def _stage_source_file(self, *, source_path: Path, destination: Path, stage_method: str):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            destination.unlink()
+        if stage_method == "symlink":
+            destination.symlink_to(source_path.resolve())
+            return
+        shutil.copy2(source_path, destination)
 
     def _user(self):
         User = get_user_model()
