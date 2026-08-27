@@ -1,12 +1,12 @@
 from django.conf import settings
 from django.contrib import admin
+from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 from django.http import FileResponse, HttpResponse
 from django.urls import include, path, re_path
-from django.conf import settings
 from django.views.generic import RedirectView
-from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 
 from core import api
+
 from .capabilities import capability_urlpatterns
 from .health import healthz, readyz
 

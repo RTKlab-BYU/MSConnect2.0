@@ -6,8 +6,8 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from core.agents.client import AgentApiClient, AgentApiError
-from core.agents.discovery import resolve_api_base_url
 from core.agents.diagnostics import write_heartbeat_marker
+from core.agents.discovery import resolve_api_base_url
 from ingest.services import (
     DEFAULT_RAW_SUFFIXES,
     build_storage_path,

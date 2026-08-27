@@ -1,10 +1,23 @@
-from tempfile import TemporaryDirectory
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
-from core.models import Experiment, Facility, Lab, LabMembership, Project, RawFile, RawFileStatus, Run, Sample, University, UserProfile, UserRole
+from core.models import (
+    Experiment,
+    Facility,
+    Lab,
+    LabMembership,
+    Project,
+    RawFile,
+    RawFileStatus,
+    Run,
+    Sample,
+    University,
+    UserProfile,
+    UserRole,
+)
 
 from .models import FindingsWorkspace
 from .services import prepare_project_workspace

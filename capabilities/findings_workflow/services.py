@@ -11,7 +11,6 @@ from core.models import ProcessingJobArtifact, Project, RawFileDerivative
 
 from .models import FindingsWorkspace, FindingsWorkspaceStatus
 
-
 DEFAULT_ROOT = "MSCONNECT_FINDINGS_WORKSPACE_ROOT"
 
 

@@ -10,8 +10,8 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from core.agents.client import AgentApiClient
-from core.agents.discovery import resolve_api_base_url
 from core.agents.diagnostics import write_heartbeat_marker
+from core.agents.discovery import resolve_api_base_url
 from core.agents.processor import prepare_job_execution
 from core.models import ProcessingNodeStatus
 from core.processing.postprocess import run_postprocess

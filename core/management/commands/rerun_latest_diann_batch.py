@@ -1,4 +1,5 @@
 from django.core.management.base import BaseCommand, CommandError
+
 from core.services.batch_rerun import rerun_latest_diann_batch
 
 

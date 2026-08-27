@@ -2,11 +2,10 @@ import hashlib
 import json
 import math
 import re
-import uuid
 import shutil
+import uuid
 from pathlib import Path, PurePath
 from statistics import mean, median, pstdev
-from urllib.parse import quote, urlencode
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
@@ -24,8 +23,13 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from ingest.result_import import ResultTableImportError, import_result_tables
-from ingest.services import build_storage_path, find_run_for_path, parse_filename_metadata, record_ingestion_failure
+from core.processing.diann import (
+    build_diann_command_options,
+    normalize_diann_settings,
+    site_performance_tags,
+)
+from core.processing.registry import resolve_pipeline_parameters, validate_diann_pipeline_settings
+from core.services.batch_rerun import rerun_latest_diann_batch
 from core.services.lifecycle import (
     recompute_experiment_and_project_status,
     record_pipeline_event,
@@ -33,9 +37,10 @@ from core.services.lifecycle import (
     record_raw_file_import,
     record_result_files_uploaded,
 )
-from msconnect.health import _database_check, _path_check
-from core.services.batch_rerun import rerun_latest_diann_batch
 from core.services.processing_routing import should_queue_spectra_conversion_for_raw_file
+from ingest.result_import import ResultTableImportError, import_result_tables
+from ingest.services import build_storage_path, find_run_for_path, parse_filename_metadata, record_ingestion_failure
+from msconnect.health import _database_check, _path_check
 
 from .agent_auth import AgentTokenAuthentication
 from .models import (
@@ -84,12 +89,6 @@ from .models import (
     WorklistStatus,
 )
 from .permissions import AgentRolePermission, RoleScopedWritePermission, active_lab_ids, is_admin, user_role
-from core.processing.diann import (
-    build_diann_command_options,
-    normalize_diann_settings,
-    site_performance_tags,
-)
-from core.processing.registry import resolve_pipeline_parameters, validate_diann_pipeline_settings
 
 User = get_user_model()
 
