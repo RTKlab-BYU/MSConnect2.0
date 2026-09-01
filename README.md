@@ -61,7 +61,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The direct Django app is published at `http://localhost:8000/` by default. The nginx reverse proxy is published at `http://localhost:8080/` by default so local machines that already use port 80 do not block the stack.
+The image build now compiles the React app and boots Django under a startup lock, so the direct Django app is published at `http://localhost:8000/` without a separate manual frontend build. The nginx reverse proxy is published at `http://localhost:8080/` by default so local machines that already use port 80 do not block the stack.
 
 3. Create an admin user:
 

@@ -4,12 +4,88 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from core.agents.processor import prepare_job_execution
+from core.models import (
+    DerivativeStatus,
+    Facility,
+    Lab,
+    ProcessingJob,
+    ProcessingPipeline,
+    ProcessingStatus,
+    Project,
+    RawFile,
+    RawFileDerivative,
+    RawFileDerivativeType,
+    RawFileStatus,
+    Run,
+    RunStatus,
+    University,
+)
 from core.processing.adapters import render_adapter_plan
 from core.processing.postprocess import skyline_prtc_postprocess
+from core.services.processing_routing import should_queue_spectra_conversion_for_raw_file
+
+
+class ProcessingRoutingTests(TestCase):
+    def _build_raw_file(self, *, filename: str) -> RawFile:
+        user = get_user_model().objects.create_user(username=f"user-{filename}")
+        university = University.objects.create(name=f"University {filename}")
+        facility = Facility.objects.create(
+            university=university,
+            name=f"Facility {filename}",
+            slug=f"facility-{filename.lower().replace('.', '-')}",
+        )
+        lab = Lab.objects.create(
+            facility=facility,
+            name=f"Lab {filename}",
+            slug=f"lab-{filename.lower().replace('.', '-')}",
+            pi=user,
+        )
+        project = Project.objects.create(lab=lab, title=f"Project {filename}", code=f"CODE-{filename}", pi=user)
+        experiment = project.experiments.create(name=f"Experiment {filename}")
+        sample = experiment.samples.create(name=f"Sample {filename}")
+        run = Run.objects.create(sample=sample, run_name=f"Run {filename}", status=RunStatus.PLANNED)
+        return RawFile.objects.create(
+            run=run,
+            source_path=f"/tmp/{filename}",
+            storage_path=f"/tmp/{filename}",
+            filename=filename,
+            checksum_sha256=f"{filename[:1] * 64}",
+            size_bytes=1024,
+            status=RawFileStatus.IMPORTED,
+        )
+
+    def test_queues_for_non_mzml_inputs_without_ready_derivative(self):
+        raw_file = self._build_raw_file(filename="sample.raw")
+
+        self.assertTrue(should_queue_spectra_conversion_for_raw_file(raw_file))
+
+    def test_skips_mzml_inputs(self):
+        raw_file = self._build_raw_file(filename="sample.mzML")
+
+        self.assertFalse(should_queue_spectra_conversion_for_raw_file(raw_file))
+
+    def test_skips_diann_jobs(self):
+        raw_file = self._build_raw_file(filename="sample.raw")
+        pipeline = ProcessingPipeline.objects.create(name="DIA-NN", version="1.0", parameters={"adapter": "diann"})
+        job = ProcessingJob.objects.create(run=raw_file.run, raw_file=raw_file, pipeline=pipeline, status=ProcessingStatus.QUEUED)
+
+        self.assertFalse(should_queue_spectra_conversion_for_raw_file(raw_file, processing_job=job))
+
+    def test_skips_when_ready_derivative_exists(self):
+        raw_file = self._build_raw_file(filename="sample.raw")
+        RawFileDerivative.objects.create(
+            raw_file=raw_file,
+            derivative_type=RawFileDerivativeType.MZML,
+            status=DerivativeStatus.READY,
+            path="/tmp/sample.mzML",
+        )
+
+        self.assertFalse(should_queue_spectra_conversion_for_raw_file(raw_file))
 
 
 class ProcessorAdapterTests(SimpleTestCase):

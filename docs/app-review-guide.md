@@ -28,7 +28,7 @@ From the repo root:
 .venv/bin/python manage.py seed_demo_showcase
 ```
 
-Build the React app into Django static files:
+For a host-side Django review, build the React app into Django static files:
 
 ```sh
 cd frontend
@@ -36,6 +36,8 @@ npm install
 npm run build
 cd ..
 ```
+
+If you are using `docker compose up --build`, the image build performs this step for you and you do not need to run it manually.
 
 Start Django:
 
