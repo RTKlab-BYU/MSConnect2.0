@@ -9,7 +9,6 @@ from core.models import (
     ProcessingStatus,
     RawFile,
 )
-from core.services.processing_routing import should_queue_spectra_conversion_for_raw_file
 
 
 def rerun_latest_diann_batch(*, project_code: str | None = None, worklist_id: int | None = None) -> dict:
@@ -28,6 +27,7 @@ def rerun_latest_diann_batch(*, project_code: str | None = None, worklist_id: in
     converted = 0
     rerun = 0
     skipped = 0
+    queue_conversion = _worklist_requires_conversion(worklist)
     with transaction.atomic():
         for entry in worklist.entries.select_related("run").prefetch_related("run__raw_files", "run__processing_jobs"):
             raw_file = entry.run.raw_files.order_by("-imported_at", "filename").first()
@@ -45,7 +45,7 @@ def rerun_latest_diann_batch(*, project_code: str | None = None, worklist_id: in
                 skipped += 1
                 continue
 
-            if should_queue_spectra_conversion_for_raw_file(raw_file, processing_job=job):
+            if queue_conversion:
                 conversion_pipeline = _msconvert_pipeline()
                 conversion_job = _queue_or_reset_conversion_job(raw_file, conversion_pipeline)
                 if conversion_job:
@@ -71,6 +71,12 @@ def _resolve_worklist(*, worklist_id: int | None, project_code: str | None):
     if project_code:
         return queryset.filter(experiment__project__code=project_code).first()
     return queryset.first()
+
+
+def _worklist_requires_conversion(worklist: AcquisitionWorklist) -> bool:
+    metadata = worklist.metadata or {}
+    required_engine = str(metadata.get("required_engine") or "").strip().lower()
+    return required_engine in {"diann", "dia-nn"}
 
 
 def _msconvert_pipeline() -> ProcessingPipeline:

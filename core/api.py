@@ -313,30 +313,47 @@ class ProjectIntakeRequestSerializer(BaseSerializer):
         user = getattr(request, "user", None)
         lab = attrs.get("lab")
         fallback_email = getattr(user, "email", "") or f"{getattr(user, 'username', 'msconnect')}@localhost"
+        institution_name = attrs.get("institution_name") or getattr(getattr(lab, "facility", None), "name", "")
+        contact_name = (
+            attrs.get("contact_name")
+            or getattr(user, "get_full_name", lambda: "")()
+            or getattr(user, "username", "")
+        )
+        contact_email = attrs.get("contact_email") or fallback_email
+        invoice_email = attrs.get("invoice_email") or fallback_email
+        organism = attrs.get("organism") or "unspecified"
+        matrix = attrs.get("matrix") or "unspecified"
+        plate_format = attrs.get("plate_format") or "96"
+        sample_count = attrs.get("sample_count_estimate")
+        if sample_count in (None, ""):
+            sample_count = 1
+        try:
+            sample_count = int(sample_count)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"sample_count_estimate": "sample_count_estimate must be an integer."}) from exc
+        if sample_count <= 0:
+            raise ValidationError({"sample_count_estimate": "sample_count_estimate must be greater than zero."})
+
         metadata_defaults = {
             "schema_version": INTAKE_METADATA_SCHEMA_VERSION,
             "institution": {
-                "name": attrs.get("institution_name") or getattr(getattr(lab, "facility", None), "name", ""),
+                "name": institution_name,
             },
             "contact": {
-                "name": (
-                    attrs.get("contact_name")
-                    or getattr(user, "get_full_name", lambda: "")()
-                    or getattr(user, "username", "")
-                ),
-                "email": attrs.get("contact_email") or fallback_email,
+                "name": contact_name,
+                "email": contact_email,
             },
             "sample_planning": {
-                "organism": attrs.get("organism") or "unspecified",
-                "matrix": attrs.get("matrix") or "unspecified",
-                "sample_count": attrs.get("sample_count_estimate") or 1,
-                "plate_format": attrs.get("plate_format") or "96",
+                "organism": organism,
+                "matrix": matrix,
+                "sample_count": sample_count,
+                "plate_format": plate_format,
             },
             "shipping": {
                 "expectations": attrs.get("shipping_notes") or "",
             },
             "billing": {
-                "invoice_email": attrs.get("invoice_email") or fallback_email,
+                "invoice_email": invoice_email,
                 "po_reference": "",
                 "billing_address": {},
             },
@@ -345,28 +362,6 @@ class ProjectIntakeRequestSerializer(BaseSerializer):
             },
             "notes": attrs.get("objective") or "",
         }
-        required_fields = {
-            "requested_title": "requested_title",
-            "objective": "objective",
-            "institution_name": "institution_name",
-            "contact_name": "contact_name",
-            "contact_email": "contact_email",
-            "invoice_email": "invoice_email",
-            "organism": "organism",
-            "matrix": "matrix",
-            "plate_format": "plate_format",
-        }
-        missing = [field_name for field_name in required_fields if not str(attrs.get(field_name) or "").strip()]
-        if missing:
-            raise ValidationError({field: f"{field} is required." for field in missing})
-        if attrs.get("sample_count_estimate") in (None, ""):
-            raise ValidationError({"sample_count_estimate": "sample_count_estimate is required."})
-        try:
-            sample_count = int(attrs["sample_count_estimate"])
-        except (TypeError, ValueError) as exc:
-            raise ValidationError({"sample_count_estimate": "sample_count_estimate must be an integer."}) from exc
-        if sample_count <= 0:
-            raise ValidationError({"sample_count_estimate": "sample_count_estimate must be greater than zero."})
         attrs["sample_count_estimate"] = sample_count
         metadata = validate_intake_metadata(_merge_metadata(metadata_defaults, attrs.get("metadata") or {}))
         attrs["metadata"] = metadata
@@ -4185,6 +4180,13 @@ class ProjectIntakeRequestViewSet(viewsets.ModelViewSet):
         if self.action == "list":
             return ProjectIntakeQueueSerializer
         return ProjectIntakeRequestSerializer
+
+    def create(self, request, *args, **kwargs):
+        if not is_admin(request.user):
+            lab_id = _int_or_none(request.data.get("lab"))
+            if lab_id is not None:
+                self._enforce_lab_scope(user=request.user, lab_id=lab_id)
+        return super().create(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         user = self.request.user

@@ -183,7 +183,6 @@ export default function ProjectsPage() {
       projectForm.experimentName,
       projectForm.title,
       projectForm.worklistName,
-      sampleText,
       samples,
       speclibPath,
       speclibUploadName,
