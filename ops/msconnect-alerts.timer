@@ -1,0 +1,10 @@
+[Unit]
+Description=Run MSConnect stale-node notification check every five minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

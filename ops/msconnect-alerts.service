@@ -1,0 +1,9 @@
+[Unit]
+Description=MSConnect stale-node notification check
+Requires=msconnect-server.service
+After=msconnect-server.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%E/MSCONNECT_PROJECT_DIR
+ExecStart=/usr/bin/docker compose --env-file %E/MSCONNECT_ENV_FILE exec -T web python manage.py notify_stale_nodes

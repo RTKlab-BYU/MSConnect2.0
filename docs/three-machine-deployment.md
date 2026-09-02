@@ -100,6 +100,16 @@ docker compose exec -T web python manage.py notify_stale_nodes
 Use `--stale-seconds` and `--cooldown-seconds` to tune sensitivity. Alerts are
 aggregated and recorded per node, so repeated scheduler runs do not flood email.
 
+For a reboot-safe scheduler, install the provided systemd timer on the server:
+
+```sh
+sudo ops/install-msconnect-alerts.sh /opt/msconnect2 /opt/msconnect2/.env
+systemctl list-timers msconnect-alerts.timer
+```
+
+The timer starts after boot and invokes the check through the web container every
+five minutes.
+
 Worklists are the queue source of truth. Upload/import the worklist before acquisition when possible so expected filenames exist before the watcher sees files. The watcher matches expected filename first through the API path and only falls back to run-name matching for compatibility.
 When no worklist exists, the watcher stores the raw file and records a match exception for later classification instead of discarding it.
 If the Django URL is not known in advance, set `MSCONNECT_API_DISCOVERY_HOSTS` so the agent can keep searching common hostnames until it finds the API.
