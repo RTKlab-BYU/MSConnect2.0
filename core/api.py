@@ -38,6 +38,7 @@ from core.services.lifecycle import (
     record_raw_file_import,
     record_result_files_uploaded,
 )
+from core.services.notifications import send_notification
 from core.services.processing_routing import should_queue_spectra_conversion_for_raw_file
 from ingest.result_import import ResultTableImportError, import_result_tables
 from ingest.services import build_storage_path, find_run_for_path, parse_filename_metadata, record_ingestion_failure
@@ -3476,7 +3477,7 @@ class SignupView(APIView):
                 ),
                 from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "msconnect@localhost"),
                 recipient_list=[email],
-                fail_silently=True,
+                fail_silently=settings.MSCONNECT_EMAIL_FAIL_SILENT,
             )
         except Exception:
             pass
@@ -5634,6 +5635,11 @@ class DeploymentReleaseViewSet(AuthenticatedModelViewSet):
             message=f"Verified release {release.version}",
             payload={"release_id": release.id, "action": "verify", "results": results},
         )
+        if any(result["status"] in {"failed", "rollback_pending"} for result in results):
+            send_notification(
+                subject=f"MSConnect release verification: {release.version}",
+                message=f"Release {release.version} verification produced failures. Results: {json.dumps(results)}",
+            )
         return Response({"release": release.version, "results": results, "rollback_release": previous.version if previous else None})
 
 
