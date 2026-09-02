@@ -85,6 +85,12 @@ instrument share read-only and grant the service account write access only to th
 managed raw/results roots. The same API lease and file-stability safeguards apply
 regardless of whether the watcher runs in Linux Compose or Windows Python.
 
+Set `MSCONNECT_UPGRADE_HOOK` on any node that should apply releases automatically.
+The executable receives three positional arguments: release version, image, and
+digest. It should pull/replace the local service and return zero only after the
+new runtime is ready; non-zero results leave the node in `error` for operator
+review. The hook is invoked without a shell and has a 15-minute timeout.
+
 Worklists are the queue source of truth. Upload/import the worklist before acquisition when possible so expected filenames exist before the watcher sees files. The watcher matches expected filename first through the API path and only falls back to run-name matching for compatibility.
 When no worklist exists, the watcher stores the raw file and records a match exception for later classification instead of discarding it.
 If the Django URL is not known in advance, set `MSCONNECT_API_DISCOVERY_HOSTS` so the agent can keep searching common hostnames until it finds the API.

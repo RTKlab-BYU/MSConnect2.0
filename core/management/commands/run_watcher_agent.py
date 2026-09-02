@@ -8,6 +8,7 @@ from django.core.management.base import BaseCommand, CommandError
 from core.agents.client import AgentApiClient, AgentApiError
 from core.agents.diagnostics import write_heartbeat_marker
 from core.agents.discovery import resolve_api_base_url
+from core.agents.upgrade import run_upgrade_hook
 from ingest.services import (
     DEFAULT_RAW_SUFFIXES,
     build_storage_path,
@@ -139,13 +140,13 @@ class Command(BaseCommand):
                 client = self._resolve_client(role="watcher")
                 time.sleep(min(10, max(1, int(options["interval"]))))
 
-    def _heartbeat(self, client: AgentApiClient, *, agent_name: str, status: str, control_state: str):
+    def _heartbeat(self, client: AgentApiClient, *, agent_name: str, status: str, control_state: str, metadata=None):
         response = client.heartbeat(
             name=agent_name,
             node_type="watcher",
             status=status,
             container_image=settings.MSCONNECT_IMAGE,
-            metadata={"mode": "watched-share", "control_state": control_state},
+            metadata={"mode": "watched-share", "control_state": control_state, **(metadata or {})},
             settings={"source": settings.INCOMING_RAW_ROOT, "storage": settings.RAW_FILE_STORAGE_ROOT},
             release_version=settings.MSCONNECT_RELEASE_VERSION,
         )
@@ -166,7 +167,15 @@ class Command(BaseCommand):
             next_state, should_exit = "draining", False
         elif command == "restart":
             next_state, should_exit = "restarting", True
-        elif command in {"stop", "upgrade", "reconfigure"}:
+        elif command == "upgrade":
+            result = run_upgrade_hook(settings.MSCONNECT_UPGRADE_HOOK, control.get("parameters") or {})
+            next_state, should_exit = ("restarting", True) if result["status"] == "succeeded" else ("error", False)
+            self._heartbeat(
+                client, agent_name=agent_name, status="offline" if should_exit else "error",
+                control_state=next_state, metadata={"ack_control_id": control_id, "upgrade_result": result},
+            )
+            return control_id, next_state, should_exit
+        elif command in {"stop", "reconfigure"}:
             next_state, should_exit = "stopped", True
         else:
             return control_id, control_state, False

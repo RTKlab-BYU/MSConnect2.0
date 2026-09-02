@@ -13,6 +13,7 @@ from core.agents.client import AgentApiClient, AgentApiError
 from core.agents.diagnostics import write_heartbeat_marker
 from core.agents.discovery import resolve_api_base_url
 from core.agents.processor import prepare_job_execution
+from core.agents.upgrade import run_upgrade_hook
 from core.models import ProcessingNodeStatus
 from core.processing.postprocess import run_postprocess
 
@@ -330,7 +331,18 @@ class Command(BaseCommand):
         elif command == "restart":
             next_state = "restarting"
             should_exit = True
-        elif command in {"stop", "upgrade", "reconfigure"}:
+        elif command == "upgrade":
+            result = run_upgrade_hook(settings.MSCONNECT_UPGRADE_HOOK, control.get("parameters") or {})
+            next_state = "restarting" if result["status"] == "succeeded" else "error"
+            should_exit = result["status"] == "succeeded"
+            self._heartbeat(
+                client, agent_name=agent_name, node_type=node_type,
+                status=ProcessingNodeStatus.OFFLINE if should_exit else ProcessingNodeStatus.ERROR,
+                control_state=next_state,
+                metadata={"ack_control_id": control_id, "upgrade_result": result},
+            )
+            return control_id, next_state, should_exit
+        elif command in {"stop", "reconfigure"}:
             next_state = "stopped"
             should_exit = True
         else:
