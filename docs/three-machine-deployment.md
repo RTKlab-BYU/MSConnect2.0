@@ -68,6 +68,23 @@ sudo ops/install-msconnect-node.sh --role watcher \
   --project-dir /opt/msconnect2 --env-file /opt/msconnect2/.env
 ```
 
+For the intended Windows instrument computer, install the watcher as a built-in
+Scheduled Task. Run PowerShell as Administrator from the repository checkout:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\ops\install-msconnect-watcher.ps1 `
+  -ProjectDir C:\MSConnect `
+  -EnvFile C:\MSConnect\.env `
+  -PythonExe C:\MSConnect\.venv\Scripts\python.exe
+```
+
+The task starts at boot, runs as `SYSTEM`, retries after process failure, and
+writes timestamped logs under `C:\ProgramData\MSConnect\logs`. Keep the incoming
+instrument share read-only and grant the service account write access only to the
+managed raw/results roots. The same API lease and file-stability safeguards apply
+regardless of whether the watcher runs in Linux Compose or Windows Python.
+
 Worklists are the queue source of truth. Upload/import the worklist before acquisition when possible so expected filenames exist before the watcher sees files. The watcher matches expected filename first through the API path and only falls back to run-name matching for compatibility.
 When no worklist exists, the watcher stores the raw file and records a match exception for later classification instead of discarding it.
 If the Django URL is not known in advance, set `MSCONNECT_API_DISCOVERY_HOSTS` so the agent can keep searching common hostnames until it finds the API.
