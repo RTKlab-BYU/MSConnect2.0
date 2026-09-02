@@ -1,9 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { MetricCard, PageHero } from "@/components/layout/page-section";
 import { MachineTrendChart } from "@/components/data/machine-trend-chart";
-import { SummaryChart } from "@/components/data/summary-chart";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,10 +19,16 @@ import {
 import { formatDate } from "@/lib/format";
 
 export default function QcPage() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const program = searchParams.get("program") === "prtc" ? "prtc" : "hye";
+  const program = location.pathname.includes("/prtc") || searchParams.get("program") === "prtc" ? "prtc" : "hye";
   const project = searchParams.get("project") ?? "all";
   const worklist = searchParams.get("worklist") ?? "all";
+  const machine = searchParams.get("machine") ?? "all";
+  const start = searchParams.get("start") ?? "";
+  const end = searchParams.get("end") ?? "";
+  const metric = searchParams.get("metric") ?? "score";
 
   function updateParam(key: string, value: string) {
     const next = new URLSearchParams(searchParams);
@@ -42,6 +47,9 @@ export default function QcPage() {
     program,
     project: project === "all" ? "" : project,
     worklist: worklist === "all" ? "" : worklist,
+    machine: machine === "all" ? "" : machine,
+    start,
+    end,
   };
 
   const projectsQuery = useQuery({
@@ -63,12 +71,13 @@ export default function QcPage() {
 
   const overview = overviewQuery.data;
   const details = detailsQuery.data;
-  const pairStatusData = (overview?.pair_status_counts ?? []).map((row) => ({ label: row.status, count: row.count }));
   const prtcRuns = details?.runs ?? [];
   const machineSummaries = details?.machine_summaries ?? [];
   const machineSeries = details?.machine_series ?? [];
   const passThreshold = details ? Math.round(details.thresholds.pass_relative_error * 100) : 20;
   const warningThreshold = details ? Math.round(details.thresholds.warning_relative_error * 100) : 50;
+  const healthValues = (details?.pairs ?? []).map((pair) => pair.health_score).filter((value): value is number => value !== null);
+  const healthScore = healthValues.length ? Math.round(healthValues.reduce((sum, value) => sum + value, 0) / healthValues.length) : null;
 
   return (
     <div className="grid gap-4">
@@ -77,7 +86,7 @@ export default function QcPage() {
       <PageHero
         eyebrow="Assay health"
         title="QC"
-        description="Review embedded HYE controls as pseudo-project reporting while keeping room for future PRTC standards."
+        description={program === "hye" ? "Ratio health across instrument configurations, projects, and individual control runs." : "Continuous Skyline monitoring for the PRTC peptide standard."}
         actions={
           <>
             <StatusBadge status="qc" />
@@ -86,7 +95,7 @@ export default function QcPage() {
         }
       />
 
-      <Tabs value={program} onValueChange={(value) => updateParam("program", value)}>
+      <Tabs value={program} onValueChange={(value) => navigate(value === "prtc" ? "/qc/prtc" : "/qc/hye")}>
         <TabsList>
           <TabsTrigger value="hye">HYE</TabsTrigger>
           <TabsTrigger value="prtc">PRTC</TabsTrigger>
@@ -125,9 +134,26 @@ export default function QcPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <div className="rounded-2xl border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
-                Pair pass threshold: within {passThreshold}% of ideal B/A. Warning up to {warningThreshold}%.
-              </div>
+              <Select value={machine} onValueChange={(value) => updateParam("machine", value)}>
+                <SelectTrigger><SelectValue placeholder="Machine" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All machines</SelectItem>
+                  {machineSummaries.map((item) => <SelectItem key={item.machine_key} value={item.machine_key}>{item.machine_label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              {program === "hye" ? <Select value={metric} onValueChange={(value) => updateParam("metric", value)}>
+                <SelectTrigger><SelectValue placeholder="Series" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="score">Aggregate error</SelectItem>
+                  <SelectItem value="health_score">Health score</SelectItem>
+                  <SelectItem value="ratio_homo_sapiens">Human B/A ratio</SelectItem>
+                  <SelectItem value="ratio_saccharomyces_cerevisiae">Yeast B/A ratio</SelectItem>
+                  <SelectItem value="ratio_escherichia_coli">E. coli B/A ratio</SelectItem>
+                </SelectContent>
+              </Select> : null}
+              <label className="grid gap-1 text-xs font-bold uppercase text-muted-foreground">From<input className="h-10 rounded-xl border bg-background px-3 text-sm font-normal text-foreground" type="date" value={start} onChange={(event) => updateParam("start", event.target.value)} /></label>
+              <label className="grid gap-1 text-xs font-bold uppercase text-muted-foreground">To<input className="h-10 rounded-xl border bg-background px-3 text-sm font-normal text-foreground" type="date" value={end} onChange={(event) => updateParam("end", event.target.value)} /></label>
+              <div className="rounded-2xl border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">Ratios within {passThreshold}% pass; warning extends to {warningThreshold}%.</div>
             </div>
           </CardContent>
         </Card>
@@ -138,6 +164,7 @@ export default function QcPage() {
           <MetricCard label="Out of Spec" value={overview?.out_of_spec_pair_count ?? "-"} detail="warning or failed pairs" />
           <MetricCard label="Missing Raw" value={overview?.missing_raw_file_count ?? "-"} detail="expected QC files not uploaded" />
           <MetricCard label="Latest Complete" value={formatDate(overview?.latest_completed_at)} detail="most recent finished pair" />
+          <MetricCard label="HYE Health" value={healthScore === null ? "-" : `${healthScore}/100`} detail="ratio and completeness indicator" />
         </section>
 
         <TabsContent value="hye" className="grid gap-4">
@@ -181,7 +208,6 @@ export default function QcPage() {
               </CardContent>
             </Card>
 
-            <SummaryChart title="Pair Status" data={pairStatusData} />
           </section>
 
           {machineSummaries.length ? (
@@ -192,6 +218,8 @@ export default function QcPage() {
                   title={machine.machine_label}
                   description={`Pairs: ${machine.pair_count} · complete: ${machine.complete_pair_count} · latest: ${formatDate(machine.latest_completed_at)}`}
                   data={machineSeries.filter((point) => point.machine_key === machine.machine_key)}
+                  metric={metric}
+                  metricLabel={metric === "score" ? "Aggregate error" : metric === "health_score" ? "Health score" : metric.replace("ratio_", "").replaceAll("_", " ")}
                 />
               ))}
             </section>
@@ -241,7 +269,7 @@ export default function QcPage() {
                       <div className="mt-1 text-lg font-semibold">{pair.machine_label}</div>
                     </div>
                   </div>
-                  <div className="overflow-x-auto">
+                  <div className="table-scroll">
                     <table className="w-full min-w-[840px] text-sm">
                       <thead className="text-left text-xs uppercase text-muted-foreground">
                         <tr>
@@ -364,7 +392,7 @@ export default function QcPage() {
                 <CardDescription>Per-upload Skyline report stats saved by processor jobs.</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="overflow-x-auto">
+                <div className="table-scroll">
                   <table className="w-full min-w-[980px] text-sm">
                     <thead className="text-left text-xs uppercase text-muted-foreground">
                       <tr>

@@ -28,6 +28,28 @@ class ProjectStatus(models.TextChoices):
     ARCHIVED = "archived", "Archived"
 
 
+class AnalysisPresetType(models.TextChoices):
+    DIA_LIBRARY = "dia_library", "DIA discovery with library"
+    DIA_LIBRARY_FREE = "dia_library_free", "DIA library-free discovery"
+    DIA_LIBRARY_BUILD = "dia_library_build", "DIA spectral-library build"
+    DIA_METHOD_DEVELOPMENT = "dia_method_development", "DIA method development"
+    DIA_QC = "dia_qc", "DIA system suitability"
+
+
+class IntakeRecordStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    READY = "ready", "Ready"
+    PROCESSING = "processing", "Processing"
+    COMPLETE = "complete", "Complete"
+    FAILED = "failed", "Failed"
+
+
+class MatchExceptionStatus(models.TextChoices):
+    OPEN = "open", "Open"
+    RESOLVED = "resolved", "Resolved"
+    IGNORED = "ignored", "Ignored"
+
+
 class IntakeRequestStatus(models.TextChoices):
     SUBMITTED = "submitted", "Submitted"
     IN_REVIEW = "in_review", "In Review"
@@ -123,6 +145,8 @@ class PipelineEventType(models.TextChoices):
     FILE_DISCOVERED = "file_discovered", "File discovered"
     FILE_UPLOADED = "file_uploaded", "File uploaded"
     FILE_STORED = "file_stored", "File stored"
+    MATCH_EXCEPTION_CREATED = "match_exception_created", "Match exception created"
+    FILE_MATCHED = "file_matched", "File matched"
     RAW_FILE_IMPORTED = "raw_file_imported", "Raw file imported"
     PROCESSING_QUEUED = "processing_queued", "Processing queued"
     PROCESSING_STARTED = "processing_started", "Processing started"
@@ -131,6 +155,7 @@ class PipelineEventType(models.TextChoices):
     RESULTS_PARSED = "results_parsed", "Results parsed"
     EXPERIMENT_COMPLETED = "experiment_completed", "Experiment completed"
     PROJECT_COMPLETED = "project_completed", "Project completed"
+    SETTINGS_UPDATED = "settings_updated", "Settings updated"
     MIGRATION_IMPORTED = "migration_imported", "Migration imported"
 
 
@@ -332,6 +357,22 @@ class Project(TimestampedModel):
         return f"{self.code}: {self.title}"
 
 
+class AnalysisPreset(TimestampedModel):
+    code = models.CharField(max_length=64, unique=True)
+    name = models.CharField(max_length=128)
+    analysis_type = models.CharField(max_length=64, choices=AnalysisPresetType.choices)
+    description = models.TextField(blank=True)
+    defaults = models.JSONField(default=dict, blank=True)
+    required_metadata = models.JSONField(default=list, blank=True)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ("name", "code")
+
+    def __str__(self) -> str:
+        return self.name
+
+
 class ProjectIntakeRequest(TimestampedModel):
     lab = models.ForeignKey(Lab, on_delete=models.PROTECT, related_name="intake_requests")
     requested_title = models.CharField(max_length=255)
@@ -464,6 +505,53 @@ class Experiment(TimestampedModel):
 
     def __str__(self) -> str:
         return self.name
+
+
+class SampleManifest(TimestampedModel):
+    experiment = models.ForeignKey(Experiment, on_delete=models.PROTECT, related_name="manifests")
+    analysis_preset = models.ForeignKey("AnalysisPreset", on_delete=models.PROTECT, related_name="manifests", blank=True, null=True)
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="sample_manifests")
+    name = models.CharField(max_length=255)
+    source_filename = models.CharField(max_length=255, blank=True)
+    checksum_sha256 = models.CharField(max_length=64, blank=True)
+    status = models.CharField(max_length=32, choices=IntakeRecordStatus.choices, default=IntakeRecordStatus.DRAFT)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+
+class SampleManifestRow(TimestampedModel):
+    manifest = models.ForeignKey(SampleManifest, on_delete=models.CASCADE, related_name="rows")
+    row_number = models.PositiveIntegerField()
+    sample_name = models.CharField(max_length=255)
+    external_id = models.CharField(max_length=128, blank=True)
+    expected_filename = models.CharField(max_length=255)
+    condition = models.CharField(max_length=128, blank=True)
+    replicate = models.CharField(max_length=64, blank=True)
+    batch = models.CharField(max_length=128, blank=True)
+    method_version = models.CharField(max_length=128, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    matched_run = models.OneToOneField("Run", on_delete=models.PROTECT, related_name="manifest_row", blank=True, null=True)
+
+    class Meta:
+        ordering = ("manifest", "row_number")
+        constraints = (models.UniqueConstraint(fields=("manifest", "row_number"), name="uniq_manifest_row_number"),)
+
+
+class FileMatchException(TimestampedModel):
+    raw_file = models.OneToOneField("RawFile", on_delete=models.CASCADE, related_name="match_exception")
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="file_match_exceptions", blank=True, null=True)
+    experiment = models.ForeignKey(Experiment, on_delete=models.CASCADE, related_name="file_match_exceptions", blank=True, null=True)
+    status = models.CharField(max_length=32, choices=MatchExceptionStatus.choices, default=MatchExceptionStatus.OPEN)
+    reason = models.TextField()
+    candidate_metadata = models.JSONField(default=dict, blank=True)
+    resolved_run = models.ForeignKey("Run", on_delete=models.PROTECT, related_name="resolved_match_exceptions", blank=True, null=True)
+    resolved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name="resolved_match_exceptions", blank=True, null=True)
+    resolution_note = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ("status", "-created_at")
 
 
 class PipelineEvent(TimestampedModel):
@@ -887,6 +975,10 @@ class ProcessingJob(TimestampedModel):
     error_message = models.TextField(blank=True)
     stats = models.JSONField(default=dict, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
+    lease_token = models.CharField(max_length=64, blank=True)
+    lease_expires_at = models.DateTimeField(blank=True, null=True)
+    attempt_count = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=3)
 
     class Meta:
         ordering = ("-created_at",)

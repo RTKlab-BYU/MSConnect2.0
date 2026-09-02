@@ -2,6 +2,8 @@
 
 This is the first operational topology for MSConnect: one web server, one uploader/watcher host, and one processor host. All hosts must see the same raw and results storage paths logically, even if the host mount paths differ.
 
+Compose services use `restart: unless-stopped`. Processor jobs use renewable API leases so outages do not leave work permanently assigned, and watchers wait for stable file or vendor-directory fingerprints before importing an acquisition.
+
 SQLite is the default database for the lightweight deployment. Use Postgres only if you need a multi-process or higher-concurrency upgrade.
 
 ## Roles
@@ -47,6 +49,7 @@ python manage.py run_watcher_agent --match-run-by-name
 ```
 
 Worklists are the queue source of truth. Upload/import the worklist before acquisition when possible so expected filenames exist before the watcher sees files. The watcher matches expected filename first through the API path and only falls back to run-name matching for compatibility.
+When no worklist exists, the watcher stores the raw file and records a match exception for later classification instead of discarding it.
 If the Django URL is not known in advance, set `MSCONNECT_API_DISCOVERY_HOSTS` so the agent can keep searching common hostnames until it finds the API.
 
 ## Processor

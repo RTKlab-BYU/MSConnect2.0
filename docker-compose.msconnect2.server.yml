@@ -1,6 +1,7 @@
 services:
   web:
     image: ${MSCONNECT_IMAGE:-msconnect:local}
+    restart: unless-stopped
     build: .
     env_file:
       - .env
@@ -38,6 +39,7 @@ services:
 
   watcher:
     image: ${MSCONNECT_IMAGE:-msconnect:local}
+    restart: unless-stopped
     build: .
     command: >
       sh -c "python manage.py run_watcher_agent --match-run-by-name"
@@ -69,6 +71,7 @@ services:
 
   processor:
     image: ${MSCONNECT_IMAGE:-msconnect:local}
+    restart: unless-stopped
     build: .
     command: >
       sh -c "python manage.py run_processor_agent"
@@ -102,6 +105,7 @@ services:
   processor-diann:
     profiles: ["engines"]
     image: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.0}
+    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/processor/diann.Dockerfile
@@ -142,6 +146,7 @@ services:
   processor-fragpipe:
     profiles: ["engines"]
     image: ${MSCONNECT_FRAGPIPE_IMAGE:-msconnect-processor-fragpipe:local}
+    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/processor/fragpipe.Dockerfile
@@ -181,6 +186,7 @@ services:
   processor-pwiz:
     profiles: ["conversion"]
     image: ${MSCONNECT_PWIZ_IMAGE:-msconnect-processor-pwiz:local}
+    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/processor/pwiz.Dockerfile
@@ -216,6 +222,7 @@ services:
   processor-skyline:
     profiles: ["engines"]
     image: ${MSCONNECT_SKYLINE_IMAGE:-msconnect-processor-skyline:26.1}
+    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/processor/skyline.Dockerfile
@@ -254,6 +261,7 @@ services:
 
   archive-worker:
     image: ${MSCONNECT_IMAGE:-msconnect:local}
+    restart: unless-stopped
     build: .
     command: >
       sh -c "python manage.py archive_raw_files --loop --interval ${ARCHIVE_WORKER_INTERVAL_SECONDS:-300}"
@@ -274,6 +282,7 @@ services:
 
   nginx:
     image: nginx:1.27-alpine
+    restart: unless-stopped
     ports:
       - "${MSCONNECT_NGINX_PORT:-8080}:80"
     volumes:

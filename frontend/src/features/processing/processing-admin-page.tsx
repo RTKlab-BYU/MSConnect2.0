@@ -20,13 +20,16 @@ import { queryClient } from "@/lib/api/query-client";
 import type { ProcessingNode } from "@/lib/api/types";
 import { formatDate } from "@/lib/format";
 
-const controlOptions = ["pause", "resume", "drain", "restart", "stop"] as const;
+const controlOptions = ["start", "pause", "resume", "drain", "restart", "stop", "upgrade", "reconfigure"] as const;
 const controlLabels: Record<(typeof controlOptions)[number], string> = {
+  start: "Start",
   pause: "Disable",
   resume: "Enable",
   drain: "Drain",
   restart: "Restart",
   stop: "Stop",
+  upgrade: "Upgrade",
+  reconfigure: "Reconfigure",
 };
 
 export default function ProcessingAdminPage() {
@@ -47,8 +50,12 @@ export default function ProcessingAdminPage() {
     refetchInterval: 10_000,
   });
   const controlMutation = useMutation({
-    mutationFn: ({ node, command }: { node: ProcessingNode; command: (typeof controlOptions)[number] }) =>
-      controlProcessingNode(node.id, { command, reason: "Admin dashboard request" }),
+    mutationFn: ({ node, command }: { node: ProcessingNode; command: (typeof controlOptions)[number] }) => {
+      const parameters = command === "upgrade" || command === "reconfigure"
+        ? { profile: window.prompt(`Approved profile for ${command}`, engineProfile(node)) || engineProfile(node) }
+        : undefined;
+      return controlProcessingNode(node.id, { command, reason: "Admin dashboard request", parameters });
+    },
     onSuccess: refreshNodes,
   });
   const offlineMutation = useMutation({
@@ -203,6 +210,10 @@ function NodeAdminCard({
               <div className="mt-2 text-xs text-muted-foreground">No active control request.</div>
             )}
               <div className="mt-3 grid grid-cols-2 gap-2">
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("start")}>
+                  <Play className="h-3.5 w-3.5" />
+                  {controlLabels.start}
+                </Button>
                 <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("pause")}>
                   <Pause className="h-3.5 w-3.5" />
                   {controlLabels.pause}
@@ -222,6 +233,14 @@ function NodeAdminCard({
                 <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("stop")}>
                   <Power className="h-3.5 w-3.5" />
                   {controlLabels.stop}
+                </Button>
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("upgrade")}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  {controlLabels.upgrade}
+                </Button>
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("reconfigure")}>
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  {controlLabels.reconfigure}
                 </Button>
               <Button size="sm" variant="ghost" disabled={busy} onClick={onOffline}>
                 Offline

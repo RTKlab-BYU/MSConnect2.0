@@ -90,10 +90,22 @@ export const router = createBrowserRouter(
         {
           path: "qc",
           element: (
+            <Navigate to="/qc/hye" replace />
+          ),
+        },
+        {
+          path: "qc/hye",
+          element: (
             <RoleGuard allow={["admin", "pi"]}>
-              <Suspense fallback={<RouteFallback label="Loading QC workspace" />}>
-                <QcPage />
-              </Suspense>
+              <Suspense fallback={<RouteFallback label="Loading HYE QC workspace" />}><QcPage /></Suspense>
+            </RoleGuard>
+          ),
+        },
+        {
+          path: "qc/prtc",
+          element: (
+            <RoleGuard allow={["admin", "pi"]}>
+              <Suspense fallback={<RouteFallback label="Loading PRTC QC workspace" />}><QcPage /></Suspense>
             </RoleGuard>
           ),
         },
@@ -159,7 +171,7 @@ export const router = createBrowserRouter(
           path: "uploads",
           element: (
             <RoleGuard allow={["admin", "pi"]}>
-              <Suspense fallback={<RouteFallback label="Loading upload redirect" />}>
+              <Suspense fallback={<RouteFallback label="Loading uploads" />}>
                 <UploadsPage />
               </Suspense>
             </RoleGuard>

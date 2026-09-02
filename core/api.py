@@ -4,6 +4,7 @@ import math
 import re
 import shutil
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path, PurePath
 from statistics import mean, median, pstdev
 
@@ -14,7 +15,7 @@ from django.core.mail import send_mail
 from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.core.validators import validate_email
 from django.db import transaction
-from django.db.models import Count, Prefetch, Sum
+from django.db.models import Count, F, Prefetch, Q, Sum
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import filters, pagination, permissions, serializers, status, viewsets
@@ -45,20 +46,26 @@ from msconnect.health import _database_check, _path_check
 from .agent_auth import AgentTokenAuthentication
 from .models import (
     AcquisitionWorklist,
+    AnalysisPreset,
     DeploymentSetting,
     DerivativeStatus,
     DirectUploadSession,
     DirectUploadStatus,
     Experiment,
     Facility,
+    FileMatchException,
     Instrument,
     InstrumentConfiguration,
+    IntakeRecordStatus,
     IntakeRequestStatus,
     Lab,
     LabMembership,
+    MatchExceptionStatus,
     Peptide,
     PeptideIdentification,
     PeptideQuant,
+    PipelineEvent,
+    PipelineEventType,
     ProcessingArtifactType,
     ProcessingJob,
     ProcessingJobArtifact,
@@ -82,6 +89,8 @@ from .models import (
     RunFileRole,
     RunStatus,
     Sample,
+    SampleManifest,
+    SampleManifestRow,
     University,
     UserProfile,
     UserRole,
@@ -146,6 +155,33 @@ class InstrumentConfigurationSerializer(BaseSerializer):
 class ProjectSerializer(BaseSerializer):
     class Meta(BaseSerializer.Meta):
         model = Project
+
+
+class AnalysisPresetSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = AnalysisPreset
+
+
+class SampleManifestRowSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = SampleManifestRow
+
+
+class SampleManifestSerializer(BaseSerializer):
+    analysis_preset_name = serializers.CharField(source="analysis_preset.name", read_only=True)
+    row_count = serializers.IntegerField(source="rows.count", read_only=True)
+
+    class Meta(BaseSerializer.Meta):
+        model = SampleManifest
+
+
+class FileMatchExceptionSerializer(BaseSerializer):
+    filename = serializers.CharField(source="raw_file.filename", read_only=True)
+    project_code = serializers.CharField(source="project.code", read_only=True)
+    resolved_run_name = serializers.CharField(source="resolved_run.run_name", read_only=True)
+
+    class Meta(BaseSerializer.Meta):
+        model = FileMatchException
 
 
 class ProjectPreAcquisitionSetupSerializer(serializers.Serializer):
@@ -497,6 +533,16 @@ class WorklistEntrySerializer(BaseSerializer):
 class ProcessingPipelineSerializer(BaseSerializer):
     class Meta(BaseSerializer.Meta):
         model = ProcessingPipeline
+
+
+class PipelineEventSerializer(BaseSerializer):
+    project_code = serializers.CharField(source="project.code", read_only=True)
+    experiment_name = serializers.CharField(source="experiment.name", read_only=True)
+    actor_username = serializers.CharField(source="actor.username", read_only=True)
+
+    class Meta(BaseSerializer.Meta):
+        model = PipelineEvent
+        fields = "__all__"
 
 
 class DeploymentSettingsSerializer(serializers.ModelSerializer):
@@ -1472,6 +1518,17 @@ def _hye_pair_score(organism_rows: list[dict]) -> tuple[float | None, float | No
     return score, worst
 
 
+def _hye_health(score: float | None, pair_complete: bool, trend_deviation: float | None = None) -> tuple[float | None, str]:
+    if score is None:
+        return None, "incomplete"
+    ratio_component = max(0.0, 100.0 * (1.0 - min(score, 1.0)))
+    completeness_component = 100.0 if pair_complete else 0.0
+    trend_component = max(0.0, 100.0 * (1.0 - min(trend_deviation or 0.0, 1.0)))
+    health = round((ratio_component * 0.50) + (completeness_component * 0.25) + (trend_component * 0.25), 1)
+    status = "pass" if health >= 85 else "warning" if health >= 70 else "failed"
+    return health, status
+
+
 def _prtc_skyline_pipeline_for_raw_file(raw_file: RawFile) -> ProcessingPipeline | None:
     qc_program = getattr(raw_file.run, "qc_program", "") if raw_file.run_id else ""
     if raw_file.file_role != RunFileRole.PRTC and qc_program != QcProgram.PRTC:
@@ -1519,6 +1576,31 @@ def _deployment_setting() -> DeploymentSetting:
         scope="site"
     )
     return deployment_setting
+
+
+def _record_file_match_exception(raw_file: RawFile, *, reason: str, project=None, experiment=None, metadata=None):
+    exception, created = FileMatchException.objects.get_or_create(
+        raw_file=raw_file,
+        defaults={
+            "project": project,
+            "experiment": experiment,
+            "reason": reason,
+            "candidate_metadata": metadata or {},
+        },
+    )
+    if not created:
+        exception.reason = reason
+        exception.candidate_metadata = metadata or exception.candidate_metadata
+        exception.save(update_fields=["reason", "candidate_metadata", "updated_at"])
+    record_pipeline_event(
+        event_type=PipelineEventType.MATCH_EXCEPTION_CREATED,
+        project=project,
+        experiment=experiment,
+        raw_file=raw_file,
+        message=reason,
+        payload={"exception_id": exception.id, **(metadata or {})},
+    )
+    return exception
 
 
 def _required_engine_for_pipeline(pipeline: ProcessingPipeline | None) -> str:
@@ -1627,6 +1709,10 @@ def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
     return {
         "id": job.id,
         "status": job.status,
+        "lease_token": job.lease_token,
+        "lease_expires_at": job.lease_expires_at,
+        "attempt_count": job.attempt_count,
+        "max_attempts": job.max_attempts,
         "created_at": job.created_at,
         "metadata": {
             **(job.metadata or {}),
@@ -1829,8 +1915,16 @@ class AgentRawFileImportView(AgentApiView):
                     "match_run_by_name": _boolish(request.data.get("match_run_by_name")),
                 },
             )
-            processing_job = _queue_processing_job_for_raw_file(raw_file)
-            _queue_spectra_conversion_job_for_raw_file(raw_file, processing_job=processing_job)
+            if run:
+                processing_job = _queue_processing_job_for_raw_file(raw_file)
+                _queue_spectra_conversion_job_for_raw_file(raw_file, processing_job=processing_job)
+            else:
+                _record_file_match_exception(
+                    raw_file,
+                    reason="Raw file was stored but could not be matched to a planned run.",
+                    metadata=metadata,
+                )
+                processing_job = None
         return Response(
             {
                 "created": True,
@@ -1874,6 +1968,7 @@ class ProcessingJobClaimView(AgentApiView):
 
     def post(self, request):
         node = self._resolve_node(request)
+        self._reclaim_expired_jobs()
 
         for candidate_status in (ProcessingStatus.QUEUED, ProcessingStatus.RETRYING):
             candidate_ids = list(
@@ -1895,6 +1990,9 @@ class ProcessingJobClaimView(AgentApiView):
                     updated = ProcessingJob.objects.filter(id=candidate_id, status=candidate_status).update(
                         status=ProcessingStatus.ASSIGNED,
                         node_id=node.id,
+                        lease_token=uuid.uuid4().hex,
+                        lease_expires_at=timezone.now() + timedelta(seconds=settings.MSCONNECT_PROCESSING_LEASE_SECONDS),
+                        attempt_count=F("attempt_count") + 1,
                         started_at=None,
                         error_message="",
                         finished_at=None,
@@ -1922,6 +2020,29 @@ class ProcessingJobClaimView(AgentApiView):
         node.last_heartbeat_at = timezone.now()
         node.save(update_fields=["status", "last_heartbeat_at", "updated_at"])
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def _reclaim_expired_jobs(self):
+        cutoff = timezone.now() - timedelta(seconds=settings.MSCONNECT_PROCESSING_RECOVERY_GRACE_SECONDS)
+        expired = ProcessingJob.objects.filter(
+            status__in=(ProcessingStatus.ASSIGNED, ProcessingStatus.RUNNING),
+            lease_expires_at__lt=cutoff,
+        )
+        for job in expired.only("id", "node_id", "attempt_count", "max_attempts"):
+            next_status = ProcessingStatus.RETRYING if job.attempt_count < job.max_attempts else ProcessingStatus.FAILED
+            ProcessingJob.objects.filter(pk=job.pk).update(
+                status=next_status,
+                node=None,
+                lease_token="",
+                lease_expires_at=None,
+                finished_at=timezone.now() if next_status == ProcessingStatus.FAILED else None,
+                error_message="Lease expired while the processor was unavailable.",
+                updated_at=timezone.now(),
+            )
+            if job.node_id:
+                ProcessingNode.objects.filter(pk=job.node_id).update(
+                    status=ProcessingNodeStatus.OFFLINE,
+                    updated_at=timezone.now(),
+                )
 
     def _resolve_node(self, request):
         node_name = str(request.data.get("node_name") or settings.MSCONNECT_AGENT_NAME or "").strip()
@@ -1953,7 +2074,8 @@ class ProcessingJobStartView(AgentApiView):
         job.started_at = timezone.now()
         job.finished_at = None
         job.error_message = ""
-        job.save(update_fields=["status", "started_at", "finished_at", "error_message", "updated_at"])
+        job.lease_expires_at = timezone.now() + timedelta(seconds=settings.MSCONNECT_PROCESSING_LEASE_SECONDS)
+        job.save(update_fields=["status", "started_at", "finished_at", "error_message", "lease_expires_at", "updated_at"])
 
         node.status = ProcessingNodeStatus.BUSY
         node.last_heartbeat_at = timezone.now()
@@ -1969,7 +2091,25 @@ class ProcessingJobStartView(AgentApiView):
             raise ValidationError({"node_name": "node_name is required."})
         if not job.node_id or job.node.name != node_name:
             raise PermissionDenied("This job is not assigned to the provided processor node.")
+        lease_token = str(request.data.get("lease_token") or "").strip()
+        if job.lease_token and lease_token != job.lease_token:
+            raise PermissionDenied("This processing lease is not valid for the provided job.")
+        if job.lease_token and job.lease_expires_at and job.lease_expires_at < timezone.now():
+            raise ValidationError({"lease_token": "This processing lease has expired."})
         return job.node
+
+
+class ProcessingJobRenewView(ProcessingJobStartView):
+    def post(self, request, pk):
+        job = self._get_job(pk)
+        node = self._resolve_assigned_node(request, job)
+        if job.status not in {ProcessingStatus.ASSIGNED, ProcessingStatus.RUNNING}:
+            raise ValidationError({"status": "Only assigned or running jobs can renew a lease."})
+        job.lease_expires_at = timezone.now() + timedelta(seconds=settings.MSCONNECT_PROCESSING_LEASE_SECONDS)
+        job.save(update_fields=["lease_expires_at", "updated_at"])
+        node.last_heartbeat_at = timezone.now()
+        node.save(update_fields=["last_heartbeat_at", "updated_at"])
+        return Response(ProcessingJobSerializer(job).data, status=status.HTTP_200_OK)
 
 
 class ProcessingJobCompleteView(ProcessingJobStartView):
@@ -2108,6 +2248,8 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
         job.finished_at = timezone.now()
         job.log_path = str(log_path) if log_path else job.log_path
         job.error_message = ""
+        job.lease_token = ""
+        job.lease_expires_at = None
         job.stats = stats_payload
         job.metadata = metadata
         job.save(
@@ -2118,6 +2260,8 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
                 "error_message",
                 "stats",
                 "metadata",
+                "lease_token",
+                "lease_expires_at",
                 "updated_at",
             ]
         )
@@ -2165,12 +2309,14 @@ class ProcessingJobFailView(ProcessingJobStartView):
         stats_payload = _ensure_dict(request.data.get("stats"), field_name="stats")
         job.status = ProcessingStatus.FAILED
         job.finished_at = timezone.now()
+        job.lease_token = ""
+        job.lease_expires_at = None
         job.error_message = error_message
         if stats_payload:
             job.stats = {**(job.stats or {}), **stats_payload}
         if log_path:
             job.log_path = str(log_path)
-        job.save(update_fields=["status", "finished_at", "error_message", "log_path", "stats", "updated_at"])
+        job.save(update_fields=["status", "finished_at", "error_message", "log_path", "stats", "lease_token", "lease_expires_at", "updated_at"])
 
         node.status = (
             ProcessingNodeStatus.ERROR if _boolish(request.data.get("node_error")) else ProcessingNodeStatus.IDLE
@@ -2269,6 +2415,185 @@ class AuthenticatedModelViewSet(viewsets.ModelViewSet):
         return None
 
 
+class AnalysisPresetViewSet(AuthenticatedModelViewSet):
+    queryset = AnalysisPreset.objects.all()
+    serializer_class = AnalysisPresetSerializer
+    write_requires_admin = True
+    search_fields = ("code", "name", "analysis_type", "description")
+    ordering_fields = ("name", "code", "analysis_type", "created_at", "updated_at")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        active = self.request.query_params.get("active")
+        if active in {"1", "true", "True"}:
+            queryset = queryset.filter(active=True)
+        return queryset
+
+
+class SampleManifestViewSet(AuthenticatedModelViewSet):
+    queryset = SampleManifest.objects.select_related("experiment", "experiment__project", "analysis_preset", "uploaded_by")
+    serializer_class = SampleManifestSerializer
+    scope_lab_lookup = "experiment__project__lab_id"
+    write_scope_lab_path = "experiment.project.lab"
+    search_fields = ("name", "source_filename", "experiment__name", "experiment__project__code")
+    ordering_fields = ("name", "status", "created_at", "updated_at")
+
+    def create(self, request, *args, **kwargs):
+        experiment_id = request.data.get("experiment")
+        rows = request.data.get("rows") or []
+        if not experiment_id:
+            raise ValidationError({"experiment": "Experiment is required."})
+        if not isinstance(rows, list) or not rows:
+            raise ValidationError({"rows": "At least one manifest row is required."})
+        experiment = get_object_or_404(Experiment.objects.select_related("project__lab"), pk=experiment_id)
+        if not is_admin(request.user) and experiment.project.lab_id not in set(active_lab_ids(request.user)):
+            raise PermissionDenied("This manifest targets a project outside your lab scope.")
+        preset = None
+        preset_id = request.data.get("analysis_preset")
+        if preset_id:
+            preset = get_object_or_404(AnalysisPreset, pk=preset_id, active=True)
+        seen_filenames = set()
+        with transaction.atomic():
+            manifest = SampleManifest.objects.create(
+                experiment=experiment,
+                analysis_preset=preset,
+                uploaded_by=request.user,
+                name=str(request.data.get("name") or "Sample manifest"),
+                source_filename=str(request.data.get("source_filename") or ""),
+                status=IntakeRecordStatus.READY,
+                metadata=_ensure_dict(request.data.get("metadata"), field_name="metadata"),
+            )
+            worklist = AcquisitionWorklist.objects.create(
+                experiment=experiment,
+                name=f"Manifest: {manifest.name}",
+                status=WorklistStatus.READY,
+                generated_by=request.user,
+                metadata={"manifest_id": manifest.id, "analysis_preset": preset.code if preset else ""},
+            )
+            for row_number, row in enumerate(rows, start=1):
+                if not isinstance(row, dict):
+                    raise ValidationError({"rows": f"Row {row_number} must be an object."})
+                sample_name = str(row.get("sample_name") or row.get("sample") or "").strip()
+                expected_filename = PurePath(str(row.get("expected_filename") or row.get("filename") or "")).name
+                if not sample_name or not expected_filename:
+                    raise ValidationError({"rows": f"Row {row_number} requires sample_name and expected_filename."})
+                if expected_filename.lower() in seen_filenames:
+                    raise ValidationError({"rows": f"Duplicate expected_filename at row {row_number}."})
+                seen_filenames.add(expected_filename.lower())
+                sample, _created = Sample.objects.get_or_create(
+                    experiment=experiment,
+                    name=sample_name,
+                    defaults={
+                        "external_id": str(row.get("external_id") or ""),
+                        "submitted_by": request.user,
+                        "metadata": {"condition": str(row.get("condition") or ""), "batch": str(row.get("batch") or "")},
+                    },
+                )
+                run_name = str(row.get("run_name") or PurePath(expected_filename).stem)
+                run, _created = Run.objects.get_or_create(
+                    sample=sample,
+                    run_name=run_name,
+                    defaults={"expected_filename": expected_filename, "file_role": RunFileRole.SAMPLE},
+                )
+                run.expected_filename = expected_filename
+                run.metadata = {**(run.metadata or {}), "manifest_id": manifest.id, "condition": str(row.get("condition") or ""), "batch": str(row.get("batch") or "")}
+                run.save(update_fields=["expected_filename", "metadata", "updated_at"])
+                WorklistEntry.objects.create(
+                    worklist=worklist,
+                    run=run,
+                    position=row_number,
+                    expected_filename=expected_filename,
+                    metadata={"manifest_id": manifest.id, "external_id": str(row.get("external_id") or "")},
+                )
+                SampleManifestRow.objects.create(
+                    manifest=manifest,
+                    row_number=row_number,
+                    sample_name=sample_name,
+                    external_id=str(row.get("external_id") or ""),
+                    expected_filename=expected_filename,
+                    condition=str(row.get("condition") or ""),
+                    replicate=str(row.get("replicate") or ""),
+                    batch=str(row.get("batch") or ""),
+                    method_version=str(row.get("method_version") or ""),
+                    metadata=_ensure_dict(row.get("metadata"), field_name=f"rows[{row_number}].metadata"),
+                    matched_run=run,
+                )
+            manifest.metadata = {**(manifest.metadata or {}), "worklist_id": worklist.id, "row_count": len(rows)}
+            manifest.save(update_fields=["metadata", "updated_at"])
+            record_pipeline_event(
+                event_type=PipelineEventType.SETTINGS_UPDATED,
+                project=experiment.project,
+                experiment=experiment,
+                actor=request.user,
+                message="Sample manifest created and runs planned.",
+                payload={"manifest_id": manifest.id, "worklist_id": worklist.id, "row_count": len(rows)},
+            )
+        return Response(self.get_serializer(manifest).data, status=status.HTTP_201_CREATED)
+
+
+class FileMatchExceptionViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = (permissions.IsAuthenticated,)
+    queryset = FileMatchException.objects.select_related(
+        "raw_file", "project", "experiment", "resolved_run", "resolved_by"
+    )
+    serializer_class = FileMatchExceptionSerializer
+    pagination_class = OptionalPageNumberPagination
+    filter_backends = (filters.SearchFilter, filters.OrderingFilter)
+    search_fields = ("raw_file__filename", "raw_file__source_path", "reason", "project__code")
+    ordering_fields = ("status", "created_at", "updated_at")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if not is_admin(self.request.user):
+            lab_ids = active_lab_ids(self.request.user)
+            queryset = queryset.filter(
+                Q(project__lab_id__in=lab_ids)
+                | Q(raw_file__run__sample__experiment__project__lab_id__in=lab_ids)
+            ).distinct()
+        project = self.request.query_params.get("project")
+        status_filter = self.request.query_params.get("status")
+        if project:
+            queryset = queryset.filter(project_id=project)
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        return queryset
+
+    @action(detail=True, methods=["post"])
+    def resolve(self, request, pk=None):
+        exception = self.get_object()
+        run = get_object_or_404(Run.objects.select_related("sample__experiment__project"), pk=request.data.get("run"))
+        if not is_admin(request.user) and run.sample.experiment.project.lab_id not in set(active_lab_ids(request.user)):
+            raise PermissionDenied("This run is outside your lab scope.")
+        diann_validation_errors = _validate_diann_pipeline_for_run(run)
+        if diann_validation_errors:
+            raise ValidationError({"diann_settings": diann_validation_errors})
+        raw_file = exception.raw_file
+        raw_file.run = run
+        raw_file.match_confidence = 1.0
+        raw_file.metadata = {**(raw_file.metadata or {}), "matched_run_id": run.id, "match_source": "exception_resolution"}
+        raw_file.save(update_fields=["run", "match_confidence", "metadata", "updated_at"])
+        exception.project = run.sample.experiment.project
+        exception.experiment = run.sample.experiment
+        exception.resolved_run = run
+        exception.resolved_by = request.user
+        exception.resolution_note = str(request.data.get("resolution_note") or "")
+        exception.status = MatchExceptionStatus.RESOLVED
+        exception.save(update_fields=["project", "experiment", "resolved_run", "resolved_by", "resolution_note", "status", "updated_at"])
+        record_pipeline_event(
+            event_type=PipelineEventType.FILE_MATCHED,
+            project=run.sample.experiment.project,
+            experiment=run.sample.experiment,
+            run=run,
+            raw_file=raw_file,
+            actor=request.user,
+            message="Raw file matched from the exception queue.",
+            payload={"exception_id": exception.id},
+        )
+        processing_job = _queue_processing_job_for_raw_file(raw_file)
+        _queue_spectra_conversion_job_for_raw_file(raw_file, processing_job=processing_job)
+        return Response(self.get_serializer(exception).data)
+
+
 class QcApiMixin:
     qc_programs = {"hye", "prtc"}
     hye_ideal = {
@@ -2309,6 +2634,46 @@ class QcApiMixin:
             raise ValidationError({"program": f"Unsupported QC program '{program}'."})
         return program
 
+    def qc_date_bounds(self):
+        start = self.request.query_params.get("start") or self.request.query_params.get("date_from")
+        end = self.request.query_params.get("end") or self.request.query_params.get("date_to")
+
+        def parse(value, end_of_day=False):
+            if not value:
+                return None
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = timezone.make_aware(parsed)
+                return parsed
+            except ValueError:
+                raise ValidationError({"date": "Use ISO-8601 dates or datetimes for start and end."}) from None
+
+        start_value = parse(start)
+        end_value = parse(end, end_of_day=True)
+        if end_value and len(str(end)) == 10:
+            end_value = end_value.replace(hour=23, minute=59, second=59, microsecond=999999)
+        if start_value and end_value and start_value > end_value:
+            raise ValidationError({"date": "The start date must be before the end date."})
+        return start_value, end_value
+
+    def qc_matches_filters(self, *, machine_key=None, project_id=None, run_ids=(), completed_at=None):
+        machine_filter = self.request.query_params.get("machine") or self.request.query_params.get("instrument")
+        project_filter = self.request.query_params.get("project")
+        run_filter = self.request.query_params.get("run")
+        start, end = self.qc_date_bounds()
+        if machine_filter and machine_key != machine_filter:
+            return False
+        if project_filter and str(project_id) != str(project_filter):
+            return False
+        if run_filter and str(run_filter) not in {str(value) for value in run_ids}:
+            return False
+        if start and (not completed_at or completed_at < start):
+            return False
+        if end and (not completed_at or completed_at > end):
+            return False
+        return True
+
     def build_response(self):
         program = self.requested_program()
         if program == "prtc":
@@ -2340,6 +2705,14 @@ class QcApiMixin:
         runs = []
         status_counts = {}
         for job in jobs:
+            machine = _machine_identity_for_run(job.run)
+            if not self.qc_matches_filters(
+                machine_key=machine["machine_key"],
+                project_id=job.run.sample.experiment.project_id,
+                run_ids=(job.run_id,),
+                completed_at=job.finished_at,
+            ):
+                continue
             stats = job.stats or {}
             status_value = str(stats.get("status") or stats.get("skyline_prtc", {}).get("status") or "unknown")
             status_counts[status_value] = status_counts.get(status_value, 0) + 1
@@ -2360,6 +2733,10 @@ class QcApiMixin:
                     "missing_peptides": stats.get("missing_peptides") or [],
                     "out_of_tolerance_peptides": stats.get("out_of_tolerance_peptides") or [],
                     "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+                    "machine_key": machine["machine_key"],
+                    "machine_label": machine["machine_label"],
+                    "project_id": job.run.sample.experiment.project_id,
+                    "project_code": job.run.sample.experiment.project.code,
                 }
             )
         missing_raw_count = max(0, len(entries) - len({job.run_id for job in jobs}))
@@ -2536,14 +2913,22 @@ class QcApiMixin:
                         }
                     )
 
+                project = worklist.experiment.project
                 score, worst_relative_error = _hye_pair_score(organism_rows)
+                health_score, health_status = _hye_health(score, pair_complete)
+                if not self.qc_matches_filters(
+                    machine_key=machine_key,
+                    project_id=project.id,
+                    run_ids=(a_entry.run_id if a_entry else None, b_entry.run_id if b_entry else None),
+                    completed_at=completed_at,
+                ):
+                    continue
                 if pair_complete:
                     complete_pair_count += 1
                 if pair_state != "pass":
                     out_of_spec_pair_count += 1
                 status_counts[pair_state] = status_counts.get(pair_state, 0) + 1
 
-                project = worklist.experiment.project
                 a_raw_file = raw_files_by_run.get(a_entry.run_id) if a_entry else None
                 b_raw_file = raw_files_by_run.get(b_entry.run_id) if b_entry else None
                 pairs.append(
@@ -2570,6 +2955,8 @@ class QcApiMixin:
                         "b_filename": b_job.raw_file.filename if b_job else (b_raw_file.filename if b_raw_file else ""),
                         "score": score,
                         "worst_relative_error": worst_relative_error,
+                        "health_score": health_score,
+                        "health_status": health_status,
                         "organisms": organism_rows,
                     }
                 )
@@ -2605,6 +2992,11 @@ class QcApiMixin:
                         "pair_label": label,
                         "completed_at": completed_at.isoformat() if completed_at else None,
                         "score": score,
+                        "health_score": health_score,
+                        "health_status": health_status,
+                        "ratio_homo_sapiens": next((row["observed_ratio"] for row in organism_rows if row["organism"] == "Homo sapiens"), None),
+                        "ratio_saccharomyces_cerevisiae": next((row["observed_ratio"] for row in organism_rows if row["organism"] == "Saccharomyces cerevisiae"), None),
+                        "ratio_escherichia_coli": next((row["observed_ratio"] for row in organism_rows if row["organism"] == "Escherichia coli"), None),
                         "status": pair_state,
                         "pair_count": machine_entry["pair_count"],
                     }
@@ -3430,6 +3822,63 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             raise ValidationError({"experiment": "Experiment does not belong to this project."})
         return Response(self._build_diann_preflight(project, experiment=experiment))
 
+    @action(detail=True, methods=["patch"], url_path="diann-settings")
+    def diann_settings(self, request, pk=None):
+        project = self.get_object()
+        experiment = _resolve_experiment_for_project(
+            project_id=project.id,
+            experiment_id=_int_or_none(request.query_params.get("experiment") or request.data.get("experiment")),
+        )
+        if experiment is None:
+            raise ValidationError({"experiment": "An experiment with a processing worklist is required."})
+        worklist = (
+            AcquisitionWorklist.objects.filter(experiment=experiment)
+            .order_by("-updated_at", "-created_at")
+            .first()
+        )
+        pipeline_id = (worklist.metadata or {}).get("processing_pipeline_id") if worklist else None
+        pipeline = ProcessingPipeline.objects.filter(pk=pipeline_id).first() if pipeline_id else None
+        if not pipeline:
+            raise ValidationError({"settings": "This experiment does not have a project processing pipeline yet."})
+
+        incoming = request.data.get("settings", request.data.get("experimental_tags", {}))
+        if not isinstance(incoming, dict):
+            raise ValidationError({"settings": "Settings must be a JSON object."})
+        current = normalize_diann_settings(pipeline.parameters or {})
+        proposed = normalize_diann_settings(incoming)
+        merged = {
+            **{key: value for key, value in current.items() if key != "tags"},
+            **{key: value for key, value in proposed.items() if key != "tags"},
+            "tags": {
+                "experimental": {
+                    **(current.get("tags", {}).get("experimental") or {}),
+                    **(proposed.get("tags", {}).get("experimental") or {}),
+                },
+                "performance": site_performance_tags(),
+            },
+        }
+        merged["tags"]["performance"].setdefault("threads", 1)
+        validation_errors = validate_diann_pipeline_settings(merged, allow_performance_tags=True)
+        if validation_errors:
+            raise ValidationError({"settings": validation_errors})
+        pipeline.parameters = {
+            **(pipeline.parameters or {}),
+            **{key: value for key, value in merged.items() if key not in {"tags", "settings", "options"}},
+            "settings": merged,
+            "tags": merged["tags"],
+            "options": _diann_command_options(merged),
+        }
+        pipeline.save(update_fields=["parameters", "updated_at"])
+        record_pipeline_event(
+            event_type=PipelineEventType.SETTINGS_UPDATED,
+            project=project,
+            experiment=experiment,
+            actor=request.user,
+            message="Project DIA-NN settings updated.",
+            payload={"pipeline_id": pipeline.id, "experimental_tags": merged["tags"]["experimental"]},
+        )
+        return Response(self._build_diann_preflight(project, experiment=experiment))
+
     @action(detail=True, methods=["post"], url_path="import-worklist")
     def import_worklist(self, request, pk=None):
         project = self.get_object()
@@ -3661,7 +4110,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
 
     @action(detail=False, methods=["post"], url_path="pre-acquisition-setup")
     def pre_acquisition_setup(self, request):
-        serializer = ProjectPreAcquisitionSetupSerializer(data=request.data)
+        serializer = ProjectPreAcquisitionSetupSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
@@ -3744,7 +4193,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
 
     @action(detail=False, methods=["post"], url_path="pre-acquisition-preflight")
     def pre_acquisition_preflight(self, request):
-        serializer = ProjectPreAcquisitionSetupSerializer(data=request.data)
+        serializer = ProjectPreAcquisitionSetupSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
@@ -3828,8 +4277,8 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         }
         performance_tags = {
             **(preset_settings.get("tags", {}).get("performance") or {}),
-            **site_performance_tags(),
             **(user_settings.get("tags", {}).get("performance") or {}),
+            **site_performance_tags(),
         }
         performance_tags.setdefault("threads", 1)
         experimental_tags = {
@@ -4835,8 +5284,17 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
             },
         )
         with transaction.atomic():
-            processing_job = _queue_processing_job_for_raw_file(raw_file)
-            _queue_spectra_conversion_job_for_raw_file(raw_file, processing_job=processing_job)
+            if run:
+                processing_job = _queue_processing_job_for_raw_file(raw_file)
+                _queue_spectra_conversion_job_for_raw_file(raw_file, processing_job=processing_job)
+            else:
+                _record_file_match_exception(
+                    raw_file,
+                    reason="Upload was stored but could not be matched to a planned run.",
+                    project=session.project,
+                    metadata=session.match_metadata,
+                )
+                processing_job = None
         session.checksum_sha256 = checksum
         session.completed_raw_file = raw_file
         session.status = DirectUploadStatus.COMPLETE
@@ -4971,6 +5429,31 @@ class WorklistEntryViewSet(AuthenticatedModelViewSet):
         return queryset
 
 
+class PipelineEventViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = (permissions.IsAuthenticated,)
+    queryset = PipelineEvent.objects.select_related("project", "experiment", "actor")
+    serializer_class = PipelineEventSerializer
+    pagination_class = OptionalPageNumberPagination
+    filter_backends = (filters.OrderingFilter,)
+    ordering_fields = ("created_at", "event_type")
+    ordering = ("-created_at", "-id")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if not is_admin(self.request.user):
+            queryset = queryset.filter(project__lab_id__in=active_lab_ids(self.request.user))
+        project = self.request.query_params.get("project")
+        experiment = self.request.query_params.get("experiment")
+        event_type = self.request.query_params.get("event_type")
+        if project:
+            queryset = queryset.filter(project_id=project)
+        if experiment:
+            queryset = queryset.filter(experiment_id=experiment)
+        if event_type:
+            queryset = queryset.filter(event_type=event_type)
+        return queryset
+
+
 class ProcessingPipelineViewSet(AuthenticatedModelViewSet):
     queryset = ProcessingPipeline.objects.all()
     serializer_class = ProcessingPipelineSerializer
@@ -5002,8 +5485,14 @@ class ProcessingNodeViewSet(AuthenticatedModelViewSet):
             raise PermissionDenied("Only admins can control processing nodes.")
         node = self.get_object()
         command = str(request.data.get("command") or "").strip()
-        if command not in {"pause", "resume", "drain", "restart", "stop"}:
-            raise ValidationError({"command": "Command must be pause, resume, drain, restart, or stop."})
+        valid_commands = {"start", "pause", "resume", "drain", "restart", "stop", "upgrade", "reconfigure"}
+        if command not in valid_commands:
+            raise ValidationError({"command": "Unsupported processing-node command."})
+        parameters = request.data.get("parameters") or {}
+        if not isinstance(parameters, dict):
+            raise ValidationError({"parameters": "Command parameters must be an object."})
+        if command in {"upgrade", "reconfigure"} and not parameters.get("profile"):
+            raise ValidationError({"parameters": "An approved profile is required for upgrade or reconfigure."})
         reason = str(request.data.get("reason") or "").strip()
         control = {
             "id": str(uuid.uuid4()),
@@ -5012,6 +5501,7 @@ class ProcessingNodeViewSet(AuthenticatedModelViewSet):
             "requested_by": request.user.username,
             "requested_at": timezone.now().isoformat(),
             "reason": reason,
+            "parameters": parameters,
         }
         node.metadata = {**(node.metadata or {}), "control": control}
         node.save(update_fields=["metadata", "updated_at"])

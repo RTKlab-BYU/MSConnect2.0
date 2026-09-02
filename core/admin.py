@@ -2,10 +2,12 @@ from django.contrib import admin
 
 from .models import (
     AcquisitionWorklist,
+    AnalysisPreset,
     DeploymentSetting,
     DirectUploadSession,
     Experiment,
     Facility,
+    FileMatchException,
     IngestionFailure,
     Instrument,
     InstrumentConfiguration,
@@ -14,6 +16,7 @@ from .models import (
     Peptide,
     PeptideIdentification,
     PeptideQuant,
+    PipelineEvent,
     ProcessingJob,
     ProcessingJobArtifact,
     ProcessingNode,
@@ -29,6 +32,8 @@ from .models import (
     RawFileDerivative,
     Run,
     Sample,
+    SampleManifest,
+    SampleManifestRow,
     University,
     UserProfile,
     WorklistEntry,
@@ -91,6 +96,13 @@ class ProjectAdmin(admin.ModelAdmin):
     list_filter = ("status", "lab")
 
 
+@admin.register(AnalysisPreset)
+class AnalysisPresetAdmin(admin.ModelAdmin):
+    list_display = ("code", "name", "analysis_type", "active", "updated_at")
+    search_fields = ("code", "name", "description")
+    list_filter = ("analysis_type", "active")
+
+
 @admin.register(ProjectIntakeRequest)
 class ProjectIntakeRequestAdmin(admin.ModelAdmin):
     list_display = ("id", "requested_title", "lab", "status", "submitted_by", "reviewed_by", "promoted_project")
@@ -103,6 +115,20 @@ class ExperimentAdmin(admin.ModelAdmin):
     list_display = ("name", "project", "started_on", "ended_on")
     search_fields = ("name", "project__code", "project__title")
     list_filter = ("project__lab",)
+
+
+@admin.register(SampleManifest)
+class SampleManifestAdmin(admin.ModelAdmin):
+    list_display = ("name", "experiment", "analysis_preset", "status", "uploaded_by", "created_at")
+    search_fields = ("name", "source_filename", "experiment__name", "experiment__project__code")
+    list_filter = ("status", "analysis_preset", "experiment__project__lab")
+
+
+@admin.register(SampleManifestRow)
+class SampleManifestRowAdmin(admin.ModelAdmin):
+    list_display = ("manifest", "row_number", "sample_name", "expected_filename", "matched_run")
+    search_fields = ("sample_name", "external_id", "expected_filename", "manifest__name")
+    list_filter = ("manifest__experiment__project__lab",)
 
 
 @admin.register(Sample)
@@ -125,6 +151,17 @@ class RawFileAdmin(admin.ModelAdmin):
     search_fields = ("filename", "checksum_sha256", "source_path", "storage_path")
     list_filter = ("status", "file_role", "run__sample__experiment__project__lab")
     readonly_fields = ("checksum_sha256", "size_bytes", "imported_at")
+
+
+@admin.register(FileMatchException)
+class FileMatchExceptionAdmin(admin.ModelAdmin):
+    list_display = ("filename", "status", "project", "resolved_run", "resolved_by", "updated_at")
+    search_fields = ("raw_file__filename", "raw_file__source_path", "reason", "project__code")
+    list_filter = ("status", "project__lab")
+
+    @admin.display(description="Filename")
+    def filename(self, obj):
+        return obj.raw_file.filename
 
 
 @admin.register(RawFileDerivative)
@@ -236,3 +273,4 @@ admin.site.register(ProteinIdentification)
 admin.site.register(PeptideIdentification)
 admin.site.register(ProteinQuant)
 admin.site.register(PeptideQuant)
+admin.site.register(PipelineEvent)

@@ -203,7 +203,7 @@ export default function SampleReportPage() {
           <CardDescription>All injections, raw files, jobs, and result counts tied to this sample.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="overflow-x-auto rounded-lg border">
+          <div className="table-scroll rounded-lg border">
             <table className="w-full min-w-[980px] text-sm">
               <thead className="bg-secondary/65 text-left text-xs uppercase tracking-[0.08em] text-muted-foreground">
                 <tr>
@@ -225,7 +225,7 @@ export default function SampleReportPage() {
                     <td className="px-3 py-3 font-mono">{row.run.worklist_position ?? "-"}</td>
                     <td className="px-3 py-3">
                       <div className="font-semibold">{row.run.run_name}</div>
-                      <div className="max-w-[240px] truncate text-xs text-muted-foreground">{row.run.expected_filename || "No expected filename"}</div>
+                      <div className="break-words text-xs text-muted-foreground">{row.run.expected_filename || "No expected filename"}</div>
                     </td>
                     <td className="px-3 py-3"><StatusBadge status={row.run.file_role} /></td>
                     <td className="px-3 py-3">
@@ -359,7 +359,7 @@ export default function SampleReportPage() {
           <CardDescription>All sample-level artifacts collected from the latest run summaries.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="overflow-x-auto rounded-lg border">
+          <div className="table-scroll rounded-lg border">
             <table className="w-full min-w-[900px] text-sm">
               <thead className="bg-secondary/65 text-left text-xs uppercase tracking-[0.08em] text-muted-foreground">
                 <tr>

@@ -595,7 +595,7 @@ export default function ProjectWorkspacePage() {
             queuePending={queueSelectedMutation.isPending}
             isOperator={isOperator}
           />
-          <div className="overflow-x-auto rounded-lg border">
+          <div className="table-scroll rounded-lg border">
             <table className="w-full min-w-[1120px] text-sm">
               <thead className="bg-secondary/65 text-left text-xs uppercase tracking-[0.08em] text-muted-foreground">
                 <tr>
@@ -645,7 +645,7 @@ export default function ProjectWorkspacePage() {
                     <td className="px-3 py-3 font-mono">{row.run.worklist_position ?? "-"}</td>
                     <td className="px-3 py-3">
                       <div className="font-semibold">{row.run.run_name}</div>
-                      <div className="max-w-[220px] truncate text-xs text-muted-foreground">{row.run.expected_filename || "No expected filename"}</div>
+                      <div className="break-words text-xs text-muted-foreground">{row.run.expected_filename || "No expected filename"}</div>
                     </td>
                     <td className="px-3 py-3">
                       <Link className="font-semibold" to={`/projects/${projectId}/samples/${row.sample.id}`} onClick={(event) => event.stopPropagation()}>
@@ -972,7 +972,7 @@ function WorklistPreview({ rows }: { rows: WorklistImportRow[] }) {
     return <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No rows parsed yet. Expected columns include sample, run, filename, role, condition, well, and position.</div>;
   }
   return (
-    <div className="max-h-72 overflow-auto rounded-lg border">
+    <div className="table-scroll max-h-72 rounded-lg border">
       <table className="w-full min-w-[760px] text-sm">
         <thead className="bg-secondary/65 text-left text-xs uppercase text-muted-foreground">
           <tr>

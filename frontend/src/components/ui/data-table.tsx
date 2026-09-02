@@ -6,10 +6,8 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
-import type { CSSProperties } from "react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -25,12 +23,10 @@ export type DataTableProps<TData, TValue> = {
 export function DataTable<TData, TValue>({
   columns,
   data,
-  estimateSize = 44,
   emptyLabel = "No records found.",
   className,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useState<SortingState>([]);
-  const parentRef = useRef<HTMLDivElement>(null);
   const table = useReactTable({
     data,
     columns,
@@ -40,18 +36,13 @@ export function DataTable<TData, TValue>({
     getSortedRowModel: getSortedRowModel(),
   });
   const rows = table.getRowModel().rows;
-  const virtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => estimateSize,
-    overscan: 12,
-  });
 
   return (
-    <div className={cn("overflow-hidden rounded-2xl border bg-card/95 shadow-[0_18px_50px_rgb(15_23_42/0.06)]", className)}>
-      <div className="overflow-x-auto">
+    <div className={cn("min-w-0 overflow-hidden rounded-2xl border bg-card/95 shadow-[0_18px_50px_rgb(15_23_42/0.06)]", className)}>
+      <div className="table-scroll">
+        <div className="max-h-[560px] overflow-auto">
         <table className="w-full min-w-[960px] border-collapse text-sm">
-          <thead className="bg-secondary/65 text-left text-xs uppercase tracking-[0.08em] text-muted-foreground">
+          <thead className="sticky top-0 z-10 bg-secondary/95 text-left text-xs uppercase tracking-[0.08em] text-muted-foreground">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => {
@@ -82,27 +73,13 @@ export function DataTable<TData, TValue>({
               </tr>
             ))}
           </thead>
-        </table>
-        <div ref={parentRef} className="max-h-[560px] overflow-auto">
-          <table className="w-full min-w-[960px] border-collapse text-sm">
-            <tbody style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}>
+            <tbody>
               {rows.length ? (
-                virtualizer.getVirtualItems().map((virtualRow) => {
-                  const row = rows[virtualRow.index];
+                rows.map((row) => {
                   return (
-                    <tr
-                      key={row.id}
-                      className="absolute left-0 grid w-full grid-cols-[repeat(var(--col-count),minmax(0,1fr))] border-b hover:bg-secondary/45"
-                      style={
-                        {
-                          "--col-count": row.getVisibleCells().length,
-                          height: `${virtualRow.size}px`,
-                          transform: `translateY(${virtualRow.start}px)`,
-                        } as CSSProperties
-                      }
-                    >
+                    <tr key={row.id} className="border-b hover:bg-secondary/45">
                       {row.getVisibleCells().map((cell) => (
-                        <td key={cell.id} className="truncate px-4 py-2.5 align-middle">
+                        <td key={cell.id} className="break-words px-4 py-2.5 align-top whitespace-normal">
                           {flexRender(cell.column.columnDef.cell, cell.getContext())}
                         </td>
                       ))}

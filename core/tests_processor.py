@@ -9,6 +9,8 @@ from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from core.agents.processor import prepare_job_execution
+from core.management.commands.run_processor_agent import _detect_engine_failure
+from core.management.commands.run_watcher_agent import _acquisition_fingerprint
 from core.models import (
     DerivativeStatus,
     Facility,
@@ -86,6 +88,42 @@ class ProcessingRoutingTests(TestCase):
         )
 
         self.assertFalse(should_queue_spectra_conversion_for_raw_file(raw_file))
+
+
+class ProcessorFailureDetectionTests(SimpleTestCase):
+    def test_diann_fatal_input_log_is_a_failure_even_when_process_exits_zero(self):
+        message = _detect_engine_failure(
+            {"adapter": "diann"},
+            "1 files will be processed\nThermo RAW file format not supported.\nFinished\n",
+        )
+
+        self.assertEqual(message, "DIA-NN reported a fatal input error: Thermo RAW file format not supported.")
+
+    def test_non_diann_logs_and_successful_diann_logs_are_not_rejected(self):
+        self.assertEqual(_detect_engine_failure({"adapter": "processor"}, "Thermo RAW file format not supported."), "")
+        self.assertEqual(_detect_engine_failure({"adapter": "diann"}, "Finished\n0 files will be processed\n"), "")
+
+
+class WatcherStabilityTests(SimpleTestCase):
+    def test_file_fingerprint_changes_when_acquisition_grows(self):
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.raw"
+            path.write_bytes(b"first")
+            first = _acquisition_fingerprint(path)
+            path.write_bytes(b"second-and-longer")
+            second = _acquisition_fingerprint(path)
+
+        self.assertNotEqual(first, second)
+
+    def test_directory_fingerprint_tracks_nested_vendor_files(self):
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.d"
+            path.mkdir()
+            first = _acquisition_fingerprint(path)
+            (path / "analysis.tdf").write_bytes(b"vendor-data")
+            second = _acquisition_fingerprint(path)
+
+        self.assertNotEqual(first, second)
 
 
 class ProcessorAdapterTests(SimpleTestCase):

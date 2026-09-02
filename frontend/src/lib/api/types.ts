@@ -21,6 +21,35 @@ export type Project = {
   updated_at: string;
 };
 
+export type AnalysisPreset = {
+  id: EntityId;
+  code: string;
+  name: string;
+  analysis_type: string;
+  description: string;
+  defaults: Record<string, unknown>;
+  required_metadata: string[];
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FileMatchException = {
+  id: EntityId;
+  raw_file: EntityId;
+  filename: string;
+  project: EntityId | null;
+  project_code?: string;
+  experiment: EntityId | null;
+  status: "open" | "resolved" | "ignored";
+  reason: string;
+  resolved_run: EntityId | null;
+  resolved_run_name?: string;
+  resolution_note: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Experiment = {
   id: EntityId;
   project: EntityId;
@@ -509,6 +538,23 @@ export type DiannPreflightResponse = {
   is_valid: boolean;
 };
 
+export type PipelineEvent = {
+  id: EntityId;
+  project: EntityId | null;
+  project_code?: string;
+  experiment: EntityId | null;
+  experiment_name?: string;
+  event_type: string;
+  from_status: string;
+  to_status: string;
+  actor: EntityId | null;
+  actor_username?: string;
+  message: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ProcessingJobOverview = {
   total: number;
   active: number;
@@ -834,6 +880,8 @@ export type QcPair = {
   b_filename: string;
   score: number | null;
   worst_relative_error: number | null;
+  health_score: number | null;
+  health_status: "pass" | "warning" | "failed" | "incomplete";
   organisms: QcPairOrganism[];
 };
 
@@ -859,6 +907,8 @@ export type QcMachineSeriesPoint = {
   pair_label: string;
   completed_at: string | null;
   score: number | null;
+  health_score: number | null;
+  health_status: string;
   mean_score: number | null;
   lower_band: number | null;
   upper_band: number | null;
@@ -896,4 +946,8 @@ export type QcPrtcRun = {
   missing_peptides: string[];
   out_of_tolerance_peptides: string[];
   finished_at: string | null;
+  machine_key?: string;
+  machine_label?: string;
+  project_id?: EntityId;
+  project_code?: string;
 };

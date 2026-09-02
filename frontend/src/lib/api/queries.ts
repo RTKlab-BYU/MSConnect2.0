@@ -1,6 +1,7 @@
 import { getResource, paginatedResource, patchResource, postResource, type ListParams } from "@/lib/api/client";
 import type {
   AcquisitionWorklist,
+  AnalysisPreset,
   ChromatogramsResponse,
   CurrentUser,
   DeploymentSettings,
@@ -8,8 +9,10 @@ import type {
   Experiment,
   FindingsWorkspaceResponse,
   DirectUploadSession,
+  FileMatchException,
   InstrumentConfiguration,
   Paginated,
+  PipelineEvent,
   IntakeMetrics,
   IntakeMetadata,
   ProjectIntakeRequest,
@@ -52,6 +55,9 @@ export const queryKeys = {
   projectSummary: (id: number) => ["project", id, "summary"] as const,
   projectResearcherStatus: (id: number, params?: ListParams) => ["project", id, "researcher-status", params] as const,
   projectDiannPreflight: (id: number, params?: ListParams) => ["project", id, "diann-preflight", params] as const,
+  analysisPresets: (params?: ListParams) => ["analysis-presets", params] as const,
+  fileMatchExceptions: (params?: ListParams) => ["file-match-exceptions", params] as const,
+  pipelineEvents: (params?: ListParams) => ["pipeline-events", params] as const,
   projectProcessingJobs: (id: number) => ["project", id, "processing-jobs"] as const,
   findingsWorkspace: (id: number) => ["project", id, "findings-workspace"] as const,
   currentUser: () => ["current-user"] as const,
@@ -98,6 +104,18 @@ export function fetchProjects(params?: ListParams): Promise<Paginated<Project>> 
   return paginatedResource<Project>("/projects/", { ordering: "-updated_at", ...params });
 }
 
+export function fetchAnalysisPresets(params?: ListParams): Promise<Paginated<AnalysisPreset>> {
+  return paginatedResource<AnalysisPreset>("/analysis-presets/", { active: true, ordering: "name", ...params });
+}
+
+export function fetchFileMatchExceptions(params?: ListParams): Promise<Paginated<FileMatchException>> {
+  return paginatedResource<FileMatchException>("/file-match-exceptions/", { ordering: "status,created_at", ...params });
+}
+
+export function resolveFileMatchException(id: number, run: number, resolution_note = "") {
+  return postResource<FileMatchException>(`/file-match-exceptions/${id}/resolve/`, { run, resolution_note });
+}
+
 export function fetchProject(id: number): Promise<Project> {
   return getResource<Project>(`/projects/${id}/`);
 }
@@ -132,6 +150,14 @@ export function fetchProjectDiannPreflight(id: number, params?: ListParams): Pro
     if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
   });
   return getResource<DiannPreflightResponse>(`/projects/${id}/diann-preflight/${query.toString() ? `?${query}` : ""}`);
+}
+
+export function updateProjectDiannSettings(id: number, experiment: number, settings: Record<string, unknown>) {
+  return patchResource<DiannPreflightResponse>(`/projects/${id}/diann-settings/?experiment=${experiment}`, { settings });
+}
+
+export function fetchPipelineEvents(params?: ListParams): Promise<Paginated<PipelineEvent>> {
+  return paginatedResource<PipelineEvent>("/pipeline-events/", { ordering: "-created_at", ...params });
 }
 
 export function fetchIntakeRequests(params?: ListParams): Promise<Paginated<ProjectIntakeRequest>> {
@@ -298,7 +324,10 @@ export function fetchSystemHealth(): Promise<SystemHealthSnapshot> {
   return getResource<SystemHealthSnapshot>("/system-health/");
 }
 
-export function controlProcessingNode(id: number, payload: { command: "pause" | "resume" | "drain" | "restart" | "stop"; reason?: string }): Promise<ProcessingNode> {
+export function controlProcessingNode(
+  id: number,
+  payload: { command: "start" | "pause" | "resume" | "drain" | "restart" | "stop" | "upgrade" | "reconfigure"; reason?: string; parameters?: Record<string, unknown> },
+): Promise<ProcessingNode> {
   return postResource<ProcessingNode>(`/processing-nodes/${id}/control/`, payload);
 }
 

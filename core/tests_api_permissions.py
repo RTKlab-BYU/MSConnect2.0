@@ -12,10 +12,12 @@ from rest_framework.test import APIClient
 
 from core.models import (
     AcquisitionWorklist,
+    AnalysisPreset,
     DeploymentSetting,
     DirectUploadSession,
     Experiment,
     Facility,
+    FileMatchException,
     InstrumentConfiguration,
     Lab,
     LabMembership,
@@ -32,6 +34,7 @@ from core.models import (
     Run,
     RunFileRole,
     Sample,
+    SampleManifest,
     University,
     UserProfile,
     UserRole,
@@ -624,6 +627,50 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(DeploymentSetting.objects.get(scope="site").prtc_skyline_pipeline_id, skyline_pipeline.id)
         self.assertEqual(DeploymentSetting.objects.get(scope="site").targeted_skyline_pipeline_id, targeted_pipeline.id)
 
+    def test_manifest_creates_planned_runs_and_analysis_preset_is_visible(self):
+        self.client.force_authenticate(user=self.researcher)
+        preset = AnalysisPreset.objects.get(code="dia-library")
+        response = self.client.post(
+            "/api/sample-manifests/",
+            data={
+                "experiment": Experiment.objects.create(project=self.project_a, name="Manifest experiment").id,
+                "analysis_preset": preset.id,
+                "name": "April batch",
+                "source_filename": "april.csv",
+                "rows": [
+                    {"sample_name": "Sample 01", "external_id": "EXT-01", "expected_filename": "sample01.raw", "condition": "control"},
+                    {"sample_name": "Sample 02", "external_id": "EXT-02", "expected_filename": "sample02.raw", "condition": "treated"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["row_count"], 2)
+        self.assertEqual(response.data["analysis_preset_name"], preset.name)
+        self.assertEqual(Run.objects.filter(sample__experiment__project=self.project_a).count(), 2)
+        self.assertEqual(SampleManifest.objects.get(pk=response.data["id"]).rows.count(), 2)
+
+    def test_unmatched_file_exception_can_be_resolved_into_a_run(self):
+        self.client.force_authenticate(user=self.researcher)
+        experiment = Experiment.objects.create(project=self.project_a, name="Exception experiment")
+        sample = Sample.objects.create(experiment=experiment, name="Exception sample")
+        run = Run.objects.create(sample=sample, run_name="Exception run", expected_filename="exception.raw")
+        raw_file = RawFile.objects.create(
+            source_path="/incoming/exception.raw",
+            storage_path="/raw/exception.raw",
+            filename="exception.raw",
+            checksum_sha256="a" * 64,
+            size_bytes=1,
+            status="imported",
+        )
+        exception = FileMatchException.objects.create(raw_file=raw_file, project=self.project_a, experiment=experiment, reason="No run match")
+        response = self.client.post(f"/api/file-match-exceptions/{exception.id}/resolve/", data={"run": run.id}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        raw_file.refresh_from_db()
+        exception.refresh_from_db()
+        self.assertEqual(raw_file.run_id, run.id)
+        self.assertEqual(exception.status, "resolved")
+
     def test_intake_submission_requires_complete_required_fields(self):
         self.client.force_authenticate(user=self.researcher)
 
@@ -808,6 +855,33 @@ class ApiPermissionTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("diann_settings", response.data)
+
+    def test_site_performance_tags_override_admin_project_values(self):
+        self.client.force_authenticate(user=self.admin)
+        DeploymentSetting.objects.update_or_create(
+            scope="site",
+            defaults={"metadata": {"diann": {"performance_tags": {"threads": 8, "temp": "/site/tmp"}}}},
+        )
+
+        response = self.client.post(
+            "/api/projects/pre-acquisition-preflight/",
+            data={
+                "title": "Site Tag Precedence",
+                "code": "SITE-TAGS",
+                "lab": self.lab_a.id,
+                "sample_count": 1,
+                "healthy_count": 1,
+                "diseased_count": 0,
+                "hye_interval": 0,
+                "processing_preset": "DIA-NN smoke test",
+                "diann_version": "2.0",
+                "diann_settings": {"tags": {"performance": {"threads": 32, "temp": "/user/tmp"}}},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["performance_tags"], {"threads": 8, "temp": "/site/tmp"})
 
     def test_pre_acquisition_preflight_returns_resolved_preview_without_creating_project(self):
         self.client.force_authenticate(user=self.researcher)
@@ -1406,6 +1480,73 @@ class AgentApiTests(TestCase):
         self.assertEqual(compatible.data["id"], job.id)
         self.assertEqual(compatible.data["metadata"]["required_engine"], "skyline")
 
+    def test_processor_claim_issues_and_renews_a_lease(self):
+        processor = self._processor_client()
+        ProcessingNode.objects.create(name="lease-node", node_type="processor", status="idle")
+        raw_file = RawFile.objects.create(
+            run=self.run,
+            source_path="/incoming/lease.raw",
+            storage_path="/data/raw/lease.raw",
+            filename="lease.raw",
+            checksum_sha256="e" * 64,
+            size_bytes=512,
+            status="imported",
+        )
+        pipeline = ProcessingPipeline.objects.create(name="Lease pipeline", version="1")
+        job = ProcessingJob.objects.create(run=self.run, pipeline=pipeline, raw_file=raw_file)
+
+        response = processor.post(
+            "/api/processing-jobs/claim-next/",
+            data={"node_name": "lease-node"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["lease_token"])
+        job.refresh_from_db()
+        original_expiry = job.lease_expires_at
+        renew = processor.post(
+            f"/api/processing-jobs/{job.id}/renew/",
+            data={"node_name": "lease-node", "lease_token": response.data["lease_token"]},
+            format="json",
+        )
+        self.assertEqual(renew.status_code, 200)
+        job.refresh_from_db()
+        self.assertGreater(job.lease_expires_at, original_expiry)
+
+    def test_processor_claim_marks_exhausted_expired_lease_failed(self):
+        processor = self._processor_client()
+        ProcessingNode.objects.create(name="expired-node", node_type="processor", status="idle")
+        raw_file = RawFile.objects.create(
+            run=self.run,
+            source_path="/incoming/expired.raw",
+            storage_path="/data/raw/expired.raw",
+            filename="expired.raw",
+            checksum_sha256="f" * 64,
+            size_bytes=512,
+            status="imported",
+        )
+        pipeline = ProcessingPipeline.objects.create(name="Expired pipeline", version="1")
+        job = ProcessingJob.objects.create(
+            run=self.run,
+            pipeline=pipeline,
+            raw_file=raw_file,
+            status=ProcessingStatus.RUNNING,
+            attempt_count=3,
+            max_attempts=3,
+            lease_token="expired-token",
+            lease_expires_at=timezone.now() - timedelta(hours=1),
+        )
+
+        response = processor.post(
+            "/api/processing-jobs/claim-next/",
+            data={"node_name": "expired-node"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 204)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingStatus.FAILED)
+        self.assertEqual(job.lease_token, "")
+
     def test_processor_claim_respects_required_engine_version(self):
         processor = self._processor_client()
         ProcessingNode.objects.create(
@@ -1814,7 +1955,7 @@ class AgentApiTests(TestCase):
 
         start_response = processor.post(
             f"/api/processing-jobs/{job.id}/start/",
-            data={"node_name": "proc-1"},
+            data={"node_name": "proc-1", "lease_token": claim_response.data["lease_token"]},
             format="json",
         )
         self.assertEqual(start_response.status_code, 200)
@@ -1832,6 +1973,7 @@ class AgentApiTests(TestCase):
                     f"/api/processing-jobs/{job.id}/complete/",
                     data={
                         "node_name": "proc-1",
+                        "lease_token": claim_response.data["lease_token"],
                         "protein_table_path": str(proteins),
                         "peptide_table_path": str(peptides),
                         "log_path": str(log_path),
@@ -1907,6 +2049,7 @@ class AgentApiTests(TestCase):
                     f"/api/processing-jobs/{job.id}/complete/",
                     data={
                         "node_name": "proc-2",
+                        "lease_token": claim_response.data["lease_token"],
                         "log_path": str(log_path),
                         "derivatives": [
                             {

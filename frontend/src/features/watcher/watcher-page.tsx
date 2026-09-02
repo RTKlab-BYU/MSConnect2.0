@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowRight,
@@ -22,6 +22,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
   fetchCurrentUser,
+  fetchAnalysisPresets,
+  fetchFileMatchExceptions,
   fetchDirectUploadSessions,
   fetchProcessingJobsOverview,
   fetchProjectResearcherStatus,
@@ -29,7 +31,9 @@ import {
   fetchProjects,
   fetchSystemHealth,
   queryKeys,
+  resolveFileMatchException,
 } from "@/lib/api/queries";
+import { queryClient } from "@/lib/api/query-client";
 import { csrfToken } from "@/lib/api/client";
 import { completeDirectUploadSession, createDirectUploadSession } from "@/lib/api/uploads";
 import { formatBytes, formatDate } from "@/lib/format";
@@ -85,6 +89,7 @@ export default function WatcherPage() {
   const [projectId, setProjectId] = useState(initialProjectId);
   const [selectedRunId, setSelectedRunId] = useState(initialRunId);
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>(initialDeliveryMode);
+  const [analysisPresetId, setAnalysisPresetId] = useState("");
   const files = useUploadStore((state) => state.files);
   const stageFiles = useUploadStore((state) => state.stageFiles);
   const prepareFile = useUploadStore((state) => state.prepareFile);
@@ -99,6 +104,10 @@ export default function WatcherPage() {
   const projectsQuery = useQuery({
     queryKey: queryKeys.projects({ page: 1, page_size: 100 }),
     queryFn: () => fetchProjects({ page: 1, page_size: 100 }),
+  });
+  const analysisPresetsQuery = useQuery({
+    queryKey: queryKeys.analysisPresets({ page: 1, page_size: 50 }),
+    queryFn: () => fetchAnalysisPresets({ page: 1, page_size: 50 }),
   });
   const selectedProjectId = Number(projectId);
   const selectedProject = projectsQuery.data?.results.find((project) => project.id === selectedProjectId);
@@ -122,6 +131,12 @@ export default function WatcherPage() {
     queryFn: () => fetchDirectUploadSessions({ project: selectedProjectId, page: 1, page_size: 8 }),
     enabled: Boolean(selectedProjectId),
   });
+  const exceptionsQuery = useQuery({
+    queryKey: queryKeys.fileMatchExceptions({ project: selectedProjectId, status: "open", page: 1, page_size: 20 }),
+    queryFn: () => fetchFileMatchExceptions({ project: selectedProjectId, status: "open", page: 1, page_size: 20 }),
+    enabled: Boolean(selectedProjectId),
+    refetchInterval: 15_000,
+  });
   const systemHealthQuery = useQuery({
     queryKey: queryKeys.systemHealth(),
     queryFn: fetchSystemHealth,
@@ -134,6 +149,17 @@ export default function WatcherPage() {
   const projectRuns = projectStatusQuery.data?.runs ?? [];
   const selectedRun = projectRuns.find((row) => String(row.run.id) === selectedRunId);
   const sessions = projectSessionsQuery.data?.results ?? [];
+  const exceptions = exceptionsQuery.data?.results ?? [];
+  const resolveMutation = useMutation({
+    mutationFn: ({ exceptionId, runId }: { exceptionId: number; runId: number }) => resolveFileMatchException(exceptionId, runId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.fileMatchExceptions({ project: selectedProjectId, status: "open", page: 1, page_size: 20 }) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.projectSummary(selectedProjectId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.projectResearcherStatus(selectedProjectId) }),
+      ]);
+    },
+  });
 
   async function startUpload(file: UploadFileRecord) {
     const project = Number(projectId);
@@ -161,6 +187,7 @@ export default function WatcherPage() {
         metadata: {
           intended_filename: selectedRun?.run.expected_filename || file.name,
           delivery_mode: deliveryMode,
+          analysis_preset_id: analysisPresetId ? Number(analysisPresetId) : null,
         },
       });
       attachDirectUploadSession(file.id, session.id, session.storage_key);
@@ -259,7 +286,7 @@ export default function WatcherPage() {
             }}
           />
 
-          <div className="grid gap-3 md:grid-cols-[minmax(240px,1fr)_minmax(240px,1fr)_minmax(220px,1fr)_auto]">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[repeat(4,minmax(0,1fr))_auto]">
             <Select
               value={projectId || "none"}
               onValueChange={(value) => {
@@ -301,6 +328,13 @@ export default function WatcherPage() {
               <SelectContent>
                 <SelectItem value="watcher">Watcher inbox</SelectItem>
                 <SelectItem value="direct">Managed raw</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={analysisPresetId || "none"} onValueChange={(value) => setAnalysisPresetId(value === "none" ? "" : value)}>
+              <SelectTrigger><SelectValue placeholder="Choose analysis" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Choose analysis</SelectItem>
+                {(analysisPresetsQuery.data?.results ?? []).map((preset) => <SelectItem key={preset.id} value={String(preset.id)}>{preset.name}</SelectItem>)}
               </SelectContent>
             </Select>
             <Button onClick={() => inputRef.current?.click()}>
@@ -493,6 +527,35 @@ export default function WatcherPage() {
                   "Project queue counts will appear once a project is selected."
                 )}
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Match exceptions</CardTitle>
+              <CardDescription>Files stored safely but waiting for a sample/run assignment.</CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-3">
+              {exceptions.map((exception) => (
+                <div key={exception.id} className="rounded-2xl border bg-background/60 p-4">
+                  <div className="font-semibold">{exception.filename}</div>
+                  <div className="mt-1 text-sm text-muted-foreground">{exception.reason}</div>
+                  <Select
+                    value="none"
+                    onValueChange={(value) => {
+                      if (value !== "none") resolveMutation.mutate({ exceptionId: exception.id, runId: Number(value) });
+                    }}
+                    disabled={resolveMutation.isPending || !projectRuns.length}
+                  >
+                    <SelectTrigger className="mt-3"><SelectValue placeholder="Assign to planned run" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Assign to planned run</SelectItem>
+                      {projectRuns.map((row) => <SelectItem key={row.run.id} value={String(row.run.id)}>{row.run.run_name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ))}
+              {!exceptions.length ? <div className="rounded-2xl border border-dashed p-6 text-sm text-muted-foreground">No open match exceptions for this project.</div> : null}
             </CardContent>
           </Card>
 

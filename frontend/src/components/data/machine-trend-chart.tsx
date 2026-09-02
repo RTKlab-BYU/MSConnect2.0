@@ -9,16 +9,21 @@ export type MachineTrendPoint = {
   mean_score: number | null;
   lower_band: number | null;
   upper_band: number | null;
+  [key: string]: string | number | null | undefined;
 };
 
 export function MachineTrendChart({
   title,
   description,
   data,
+  metric = "score",
+  metricLabel = "Health score",
 }: {
   title: string;
   description?: string;
   data: MachineTrendPoint[];
+  metric?: string;
+  metricLabel?: string;
 }) {
   return (
     <Card>
@@ -37,10 +42,12 @@ export function MachineTrendChart({
                 formatter={(value) => (typeof value === "number" ? value.toFixed(4) : String(value ?? "-"))}
                 labelFormatter={(label) => String(label)}
               />
-              <Line type="monotone" dataKey="score" stroke="hsl(var(--primary))" strokeWidth={2.5} dot={{ r: 3 }} />
-              <Line type="monotone" dataKey="mean_score" stroke="hsl(var(--info))" strokeWidth={1.8} dot={false} />
-              <Line type="monotone" dataKey="upper_band" stroke="hsl(var(--warning))" strokeWidth={1.2} dot={false} strokeDasharray="4 4" />
-              <Line type="monotone" dataKey="lower_band" stroke="hsl(var(--warning))" strokeWidth={1.2} dot={false} strokeDasharray="4 4" />
+              <Line name={metricLabel} type="monotone" dataKey={metric} stroke="hsl(var(--primary))" strokeWidth={2.5} dot={{ r: 3 }} />
+              {metric === "score" ? <>
+                <Line type="monotone" dataKey="mean_score" stroke="hsl(var(--info))" strokeWidth={1.8} dot={false} />
+                <Line type="monotone" dataKey="upper_band" stroke="hsl(var(--warning))" strokeWidth={1.2} dot={false} strokeDasharray="4 4" />
+                <Line type="monotone" dataKey="lower_band" stroke="hsl(var(--warning))" strokeWidth={1.2} dot={false} strokeDasharray="4 4" />
+              </> : null}
             </LineChart>
           </ResponsiveContainer>
         ) : (

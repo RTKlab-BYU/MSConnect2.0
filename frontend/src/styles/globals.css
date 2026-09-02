@@ -88,4 +88,26 @@
   a {
     @apply text-primary underline-offset-4 hover:underline;
   }
+
+  main {
+    min-width: 0;
+  }
+
+  .table-scroll {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
+  .table-scroll table {
+    max-width: none;
+  }
+
+  .table-scroll th,
+  .table-scroll td {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    vertical-align: top;
+  }
 }

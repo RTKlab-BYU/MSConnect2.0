@@ -105,6 +105,8 @@ For the first multi-host operational layout, see `docs/three-machine-deployment.
 
 `watcher` and `processor` wait for the `web` healthcheck before starting, and their API client retries transient connection and HTTP 5xx errors. This keeps local three-container simulations from failing during Django migration/startup races.
 
+Long-running services use Docker's `unless-stopped` restart policy. Processing claims are renewable leases: a processor renews its lease while an engine runs, and the API requeues or fails abandoned attempts after the configured recovery grace period. The watcher requires two stable acquisition observations by default before copying a file or vendor directory.
+
 Health and readiness endpoints:
 
 ```sh
@@ -147,6 +149,8 @@ Default host paths are:
 - `./incoming` for files from the MS computer or mounted network share
 - `./raw-storage` for immutable managed raw file storage
 - `./data` for SQLite
+
+Lease and acquisition-completeness settings can be tuned per deployment with `MSCONNECT_PROCESSING_LEASE_SECONDS`, `MSCONNECT_PROCESSING_RECOVERY_GRACE_SECONDS`, and `WATCHER_STABILITY_CHECKS`.
 
 Run one import pass manually:
 

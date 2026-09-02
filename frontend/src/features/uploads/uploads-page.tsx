@@ -1,5 +1,5 @@
-import { Navigate } from "react-router-dom";
+import WatcherPage from "@/features/watcher/watcher-page";
 
 export default function UploadsPage() {
-  return <Navigate to="/projects" replace />;
+  return <WatcherPage />;
 }

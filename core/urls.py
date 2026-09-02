@@ -12,6 +12,7 @@ router.register("lab-memberships", api.LabMembershipViewSet)
 router.register("instruments", api.InstrumentViewSet)
 router.register("instrument-configurations", api.InstrumentConfigurationViewSet)
 router.register("projects", api.ProjectViewSet)
+router.register("analysis-presets", api.AnalysisPresetViewSet)
 router.register("intake-requests", api.ProjectIntakeRequestViewSet, basename="intake-request")
 router.register("experiments", api.ExperimentViewSet)
 router.register("samples", api.SampleViewSet)
@@ -22,8 +23,11 @@ router.register("raw-file-archives", api.RawFileArchiveViewSet)
 router.register("raw-file-archive-copies", api.RawFileArchiveCopyViewSet)
 router.register("processing-job-artifacts", api.ProcessingJobArtifactViewSet)
 router.register("direct-uploads", api.DirectUploadSessionViewSet)
+router.register("sample-manifests", api.SampleManifestViewSet)
+router.register("file-match-exceptions", api.FileMatchExceptionViewSet)
 router.register("acquisition-worklists", api.AcquisitionWorklistViewSet)
 router.register("worklist-entries", api.WorklistEntryViewSet)
+router.register("pipeline-events", api.PipelineEventViewSet, basename="pipeline-event")
 router.register("processing-pipelines", api.ProcessingPipelineViewSet)
 router.register("processing-nodes", api.ProcessingNodeViewSet)
 router.register("processing-jobs", api.ProcessingJobViewSet)
@@ -46,6 +50,7 @@ urlpatterns = [
     path("agents/ingestion-failures/", api.AgentIngestionFailureView.as_view()),
     path("processing-jobs/claim-next/", api.ProcessingJobClaimView.as_view()),
     path("processing-jobs/<int:pk>/start/", api.ProcessingJobStartView.as_view()),
+    path("processing-jobs/<int:pk>/renew/", api.ProcessingJobRenewView.as_view()),
     path("processing-jobs/<int:pk>/complete/", api.ProcessingJobCompleteView.as_view()),
     path("processing-jobs/<int:pk>/fail/", api.ProcessingJobFailView.as_view()),
     path("qc/overview/", api.QcOverviewView.as_view()),

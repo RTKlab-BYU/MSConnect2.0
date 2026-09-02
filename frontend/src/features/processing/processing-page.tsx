@@ -115,34 +115,34 @@ export default function ProcessingPage() {
   ];
 
   const jobColumns: ColumnDef<ProcessingJob>[] = [
-    { accessorKey: "id", header: "Job" },
+    { accessorKey: "id", header: "Job", cell: ({ row }) => <span className="font-mono">{row.original.id}</span> },
     {
       accessorKey: "project_code",
       header: "Project",
-      cell: ({ row }) => <Link className="font-semibold" to={`/projects/${row.original.project_id}`}>{row.original.project_code}</Link>,
+      cell: ({ row }) => <Link className="block min-w-[150px] max-w-[220px] break-words font-semibold" to={`/projects/${row.original.project_id}`}>{row.original.project_code}</Link>,
     },
     {
       accessorKey: "status",
       header: "Status",
       cell: ({ row }) => <StatusBadge status={row.original.status} />,
     },
-    { accessorKey: "run_name", header: "Run" },
-    { accessorKey: "raw_file_filename", header: "Raw File" },
+    { accessorKey: "run_name", header: "Run", cell: ({ row }) => <div className="min-w-[220px] max-w-[320px] break-words">{row.original.run_name || "-"}</div> },
+    { accessorKey: "raw_file_filename", header: "Raw File", cell: ({ row }) => <div className="min-w-[240px] max-w-[340px] break-all font-mono text-xs">{row.original.raw_file_filename || "-"}</div> },
     {
       accessorKey: "pipeline_name",
       header: "Pipeline",
-      cell: ({ row }) => `${row.original.pipeline_name} ${row.original.pipeline_version}`,
+      cell: ({ row }) => <div className="min-w-[220px] max-w-[300px] break-words">{row.original.pipeline_name} {row.original.pipeline_version}</div>,
     },
-    { accessorKey: "node_name", header: "Node" },
+    { accessorKey: "node_name", header: "Node", cell: ({ row }) => <div className="min-w-[130px] max-w-[190px] break-words">{row.original.node_name || "Unassigned"}</div> },
     {
       accessorKey: "started_at",
       header: "Started",
-      cell: ({ row }) => formatDate(row.original.started_at),
+      cell: ({ row }) => <div className="min-w-[150px] whitespace-nowrap">{formatDate(row.original.started_at)}</div>,
     },
     {
       accessorKey: "error_message",
       header: "Error",
-      cell: ({ row }) => row.original.error_message || "-",
+      cell: ({ row }) => <div className="min-w-[220px] max-w-[360px] break-words">{row.original.error_message || "-"}</div>,
     },
   ];
 

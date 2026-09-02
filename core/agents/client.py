@@ -41,16 +41,21 @@ class AgentApiClient:
     def claim_next_job(self, *, node_name: str):
         return self._request("POST", "/processing-jobs/claim-next/", {"node_name": node_name}, allow_empty=True)
 
-    def start_job(self, job_id: int, *, node_name: str):
-        return self._request("POST", f"/processing-jobs/{job_id}/start/", {"node_name": node_name})
+    def start_job(self, job_id: int, *, node_name: str, lease_token: str = ""):
+        return self._request("POST", f"/processing-jobs/{job_id}/start/", {"node_name": node_name, "lease_token": lease_token})
+
+    def renew_job(self, job_id: int, *, node_name: str, lease_token: str):
+        return self._request("POST", f"/processing-jobs/{job_id}/renew/", {"node_name": node_name, "lease_token": lease_token})
 
     def complete_job(self, job_id: int, payload: dict):
         body = {"node_name": payload.pop("node_name")}
+        body["lease_token"] = payload.pop("lease_token", "")
         body.update(payload)
         return self._request("POST", f"/processing-jobs/{job_id}/complete/", body)
 
     def fail_job(self, job_id: int, payload: dict):
         body = {"node_name": payload.pop("node_name")}
+        body["lease_token"] = payload.pop("lease_token", "")
         body.update(payload)
         return self._request("POST", f"/processing-jobs/{job_id}/fail/", body)
 

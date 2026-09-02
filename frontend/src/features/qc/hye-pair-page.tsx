@@ -123,7 +123,7 @@ export default function HyePairPage() {
           <CardDescription>Observed A/B ratios and relative error for this pair.</CardDescription>
         </CardHeader>
         <CardContent>
-          <table className="w-full min-w-[840px] text-sm">
+          <div className="table-scroll"><table className="w-full min-w-[840px] text-sm">
             <thead className="text-left text-xs uppercase text-muted-foreground">
               <tr>
                 <th className="border-b px-2 py-2">Organism</th>
@@ -150,7 +150,7 @@ export default function HyePairPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         </CardContent>
       </Card>
     </div>

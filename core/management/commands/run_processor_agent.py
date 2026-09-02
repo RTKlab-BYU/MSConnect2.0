@@ -9,12 +9,27 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from core.agents.client import AgentApiClient
+from core.agents.client import AgentApiClient, AgentApiError
 from core.agents.diagnostics import write_heartbeat_marker
 from core.agents.discovery import resolve_api_base_url
 from core.agents.processor import prepare_job_execution
 from core.models import ProcessingNodeStatus
 from core.processing.postprocess import run_postprocess
+
+
+def _detect_engine_failure(parameters: dict, log_text: str) -> str:
+    """Catch engines that emit a fatal input error but still exit zero."""
+    adapter = str(parameters.get("adapter") or parameters.get("required_engine") or "").strip().lower()
+    if adapter in {"diann", "dia-nn"}:
+        markers = (
+            "Thermo RAW file format not supported.",
+            "ERROR: DIA-NN tried but failed to load the following files:",
+            "No MS2 spectra: aborting",
+        )
+        for marker in markers:
+            if marker in log_text:
+                return f"DIA-NN reported a fatal input error: {marker}"
+    return ""
 
 
 class Command(BaseCommand):
@@ -88,7 +103,7 @@ class Command(BaseCommand):
 
                 try:
                     execution = prepare_job_execution(job, results_root=results_root)
-                    client.start_job(job["id"], node_name=agent_name)
+                    client.start_job(job["id"], node_name=agent_name, lease_token=job.get("lease_token", ""))
                     self._run_job(job, execution, client, agent_name=agent_name)
                 except Exception as exc:
                     log_path = (results_root / "jobs" / str(job["id"]) / "process.log").resolve()
@@ -136,25 +151,57 @@ class Command(BaseCommand):
     def _run_job(self, job: dict, execution, client: AgentApiClient, *, agent_name: str):
         execution.log_path.parent.mkdir(parents=True, exist_ok=True)
         with execution.log_path.open("w", encoding="utf-8") as log_file:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 execution.command,
                 cwd=execution.working_dir,
                 env=execution.env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
-                check=False,
             )
+            renew_interval = max(15, int(getattr(settings, "MSCONNECT_PROCESSING_LEASE_SECONDS", 300) / 3))
+            next_renewal = time.monotonic() + renew_interval
+            while process.poll() is None:
+                time.sleep(min(5, max(0.5, next_renewal - time.monotonic())))
+                if process.poll() is not None:
+                    break
+                if time.monotonic() >= next_renewal:
+                    try:
+                        client.renew_job(
+                            job["id"],
+                            node_name=agent_name,
+                            lease_token=job.get("lease_token", ""),
+                        )
+                    except AgentApiError as exc:
+                        self.stderr.write(self.style.WARNING(f"lease renewal deferred for job {job['id']}: {exc}"))
+                    next_renewal = time.monotonic() + renew_interval
+            completed = type("Completed", (), {"returncode": process.wait()})()
 
         if completed.returncode != 0:
             client.fail_job(
                 job["id"],
                 {
                     "node_name": agent_name,
+                    "lease_token": job.get("lease_token", ""),
                     "error_message": f"Command exited with status {completed.returncode}.",
                     "log_path": str(execution.log_path.resolve()),
                 },
             )
+            return
+
+        log_text = execution.log_path.read_text(encoding="utf-8", errors="replace")
+        engine_failure = _detect_engine_failure(execution.parameters, log_text)
+        if engine_failure:
+            client.fail_job(
+                job["id"],
+                {
+                    "node_name": agent_name,
+                    "lease_token": job.get("lease_token", ""),
+                    "error_message": engine_failure,
+                    "log_path": str(execution.log_path.resolve()),
+                },
+            )
+            self.stderr.write(self.style.ERROR(f"job {job['id']} failed: {engine_failure}"))
             return
 
         postprocess_stats = {}
@@ -193,6 +240,7 @@ class Command(BaseCommand):
             job["id"],
             {
                 "node_name": agent_name,
+                "lease_token": job.get("lease_token", ""),
                 "log_path": str(execution.log_path.resolve()),
                 "protein_table_path": (
                     str(execution.protein_table_path.resolve()) if execution.protein_table_path else ""
@@ -276,13 +324,13 @@ class Command(BaseCommand):
             next_state = "paused"
         elif command == "drain":
             next_state = "draining"
-        elif command == "resume":
+        elif command in {"resume", "start"}:
             next_state = "active"
-        elif command == "stop":
-            next_state = "stopped"
-            should_exit = True
         elif command == "restart":
             next_state = "restarting"
+            should_exit = True
+        elif command in {"stop", "upgrade", "reconfigure"}:
+            next_state = "stopped"
             should_exit = True
         else:
             return control_id, control_state, False
