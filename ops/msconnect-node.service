@@ -1,0 +1,18 @@
+[Unit]
+Description=MSConnect %i node
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=%E/MSCONNECT_PROJECT_DIR
+ExecStart=/usr/bin/docker compose --env-file %E/MSCONNECT_ENV_FILE up -d --remove-orphans %E/MSCONNECT_COMPOSE_SERVICES
+ExecStop=/usr/bin/docker compose --env-file %E/MSCONNECT_ENV_FILE stop %E/MSCONNECT_COMPOSE_SERVICES
+ExecReload=/usr/bin/docker compose --env-file %E/MSCONNECT_ENV_FILE up -d --remove-orphans %E/MSCONNECT_COMPOSE_SERVICES
+TimeoutStartSec=0
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

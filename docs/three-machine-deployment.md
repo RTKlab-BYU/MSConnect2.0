@@ -4,6 +4,11 @@ This is the first operational topology for MSConnect: one web server, one upload
 
 Compose services use `restart: unless-stopped`. Processor jobs use renewable API leases so outages do not leave work permanently assigned, and watchers wait for stable file or vendor-directory fingerprints before importing an acquisition.
 
+For Linux hosts, `ops/install-msconnect-node.sh` installs a role-specific systemd
+unit. Systemd owns boot ordering and starts the selected Compose services; Compose
+owns container restart and health recovery. This keeps the server, watcher, and
+processor independently rebootable without giving any node direct database access.
+
 SQLite is the default database for the lightweight deployment. Use Postgres only if you need a multi-process or higher-concurrency upgrade.
 
 ## Roles
@@ -33,6 +38,13 @@ docker compose exec web python manage.py createsuperuser
 curl -f http://localhost/readyz/
 ```
 
+To make the server start automatically after a host reboot:
+
+```sh
+sudo ops/install-msconnect-node.sh --role server \
+  --project-dir /opt/msconnect2 --env-file /opt/msconnect2/.env
+```
+
 Only the server should run migrations. The watcher and processor use the API and shared storage; they do not need direct database access.
 
 ### Optional Postgres upgrade
@@ -46,6 +58,14 @@ On the uploader/watcher host, mount the incoming instrument share and managed ra
 ```sh
 python manage.py check_agent_runtime --role watcher --write-test
 python manage.py run_watcher_agent --match-run-by-name
+```
+
+On a Linux watcher host, install its boot service with the same script and use an
+env file containing the watcher paths and API token:
+
+```sh
+sudo ops/install-msconnect-node.sh --role watcher \
+  --project-dir /opt/msconnect2 --env-file /opt/msconnect2/.env
 ```
 
 Worklists are the queue source of truth. Upload/import the worklist before acquisition when possible so expected filenames exist before the watcher sees files. The watcher matches expected filename first through the API path and only falls back to run-name matching for compatibility.
@@ -88,6 +108,11 @@ From the processor host:
 python manage.py check_agent_runtime --role processor --engine processor --write-test
 python manage.py run_processor_agent --once --engine processor
 ```
+
+For a processor host, use `--role processor`; use `MSCONNECT_COMPOSE_SERVICES` in
+the env file when the node should run a specific engine service (for example
+`processor-diann`) instead of the default processor service. The archive worker
+can be installed independently with `--role archive`.
 
 Back on the server:
 
