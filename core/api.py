@@ -3388,6 +3388,16 @@ class DeploymentSettingsView(APIView):
         return Response(serializer.data)
 
 
+class DeploymentReleaseAuditView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can view release audit history.")
+        events = PipelineEvent.objects.filter(event_type=PipelineEventType.SETTINGS_UPDATED).order_by("-created_at", "-id")[:100]
+        return Response(PipelineEventSerializer(events, many=True).data)
+
+
 class CurrentUserView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
@@ -5498,6 +5508,11 @@ class DeploymentReleaseViewSet(AuthenticatedModelViewSet):
         DeploymentRelease.objects.filter(channel=release.channel, active=True).exclude(pk=release.pk).update(active=False)
         release.active = True
         release.save(update_fields=["active", "updated_at"])
+        record_pipeline_event(
+            event_type=PipelineEventType.SETTINGS_UPDATED, actor=request.user,
+            message=f"Promoted release {release.version}",
+            payload={"release_id": release.id, "action": "promote", "channel": release.channel},
+        )
         return Response(self.get_serializer(release).data)
 
     @action(detail=True, methods=["post"])
@@ -5539,6 +5554,11 @@ class DeploymentReleaseViewSet(AuthenticatedModelViewSet):
                 },
             }
             node.save(update_fields=["desired_release", "release_status", "release_error", "metadata", "updated_at"])
+        record_pipeline_event(
+            event_type=PipelineEventType.SETTINGS_UPDATED, actor=request.user,
+            message=f"Rolled out release {release.version}",
+            payload={"release_id": release.id, "action": "rollout", "node_ids": [node.id for node in nodes]},
+        )
         return Response(
             {
                 "release": self.get_serializer(release).data,
@@ -5609,6 +5629,11 @@ class DeploymentReleaseViewSet(AuthenticatedModelViewSet):
                 node.release_error = f"Release {release.version} failed verification."
                 node.save(update_fields=["release_status", "release_error", "updated_at"])
                 results.append({"node_id": node.id, "status": "failed", "release": release.version})
+        record_pipeline_event(
+            event_type=PipelineEventType.SETTINGS_UPDATED, actor=request.user,
+            message=f"Verified release {release.version}",
+            payload={"release_id": release.id, "action": "verify", "results": results},
+        )
         return Response({"release": release.version, "results": results, "rollback_release": previous.version if previous else None})
 
 

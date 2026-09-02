@@ -366,6 +366,9 @@ export function rolloutDeploymentRelease(id: number, node_ids?: number[]): Promi
 export function verifyDeploymentRelease(id: number, rollback = true): Promise<unknown> {
   return postResource(`/deployment-releases/${id}/verify/`, { rollback });
 }
+export function fetchDeploymentReleaseAudit(): Promise<Array<{ id: number; created_at: string; message: string; actor_username?: string; payload: Record<string, unknown> }>> {
+  return getResource("/deployment-releases/audit/");
+}
 
 export function fetchInstrumentConfigurations(params?: ListParams): Promise<Paginated<InstrumentConfiguration>> {
   return paginatedResource<InstrumentConfiguration>("/instrument-configurations/", { ordering: "name", ...params });
