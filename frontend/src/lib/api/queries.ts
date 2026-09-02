@@ -5,6 +5,7 @@ import type {
   ChromatogramsResponse,
   CurrentUser,
   DeploymentSettings,
+  DeploymentRelease,
   DiannPreflightResponse,
   Experiment,
   FindingsWorkspaceResponse,
@@ -73,6 +74,7 @@ export const queryKeys = {
   processingNodesOverview: (params?: ListParams) => ["processing-nodes", "overview", params] as const,
   processingPipelines: (params?: ListParams) => ["processing-pipelines", params] as const,
   deploymentSettings: () => ["deployment-settings"] as const,
+  deploymentReleases: (params?: ListParams) => ["deployment-releases", params] as const,
   instrumentConfigurations: (params?: ListParams) => ["instrument-configurations", params] as const,
   systemHealth: () => ["system-health"] as const,
   samples: (params: ListParams) => ["samples", params] as const,
@@ -347,6 +349,22 @@ export function updateDeploymentSettings(
   payload: Partial<Pick<DeploymentSettings, "prtc_skyline_pipeline" | "targeted_skyline_pipeline" | "metadata">>,
 ) {
   return patchResource<DeploymentSettings>("/deployment-settings/", payload);
+}
+
+export function fetchDeploymentReleases(params?: ListParams): Promise<Paginated<DeploymentRelease>> {
+  return paginatedResource<DeploymentRelease>("/deployment-releases/", { ordering: "-created_at", ...params });
+}
+export function createDeploymentRelease(payload: Partial<DeploymentRelease>): Promise<DeploymentRelease> {
+  return postResource<DeploymentRelease>("/deployment-releases/", payload);
+}
+export function promoteDeploymentRelease(id: number): Promise<DeploymentRelease> {
+  return postResource<DeploymentRelease>(`/deployment-releases/${id}/promote/`, {});
+}
+export function rolloutDeploymentRelease(id: number, node_ids?: number[]): Promise<unknown> {
+  return postResource(`/deployment-releases/${id}/rollout/`, node_ids?.length ? { node_ids } : {});
+}
+export function verifyDeploymentRelease(id: number, rollback = true): Promise<unknown> {
+  return postResource(`/deployment-releases/${id}/verify/`, { rollback });
 }
 
 export function fetchInstrumentConfigurations(params?: ListParams): Promise<Paginated<InstrumentConfiguration>> {

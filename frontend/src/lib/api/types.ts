@@ -495,6 +495,22 @@ export type ProcessingNode = {
   seconds_since_heartbeat: number | null;
   created_at: string;
   updated_at: string;
+  desired_release: { id: number; version: string; channel: string; image: string } | null;
+  reported_release: string;
+  release_status: string;
+  release_error: string;
+};
+
+export type DeploymentRelease = {
+  id: EntityId;
+  version: string;
+  channel: "staging" | "production";
+  image: string;
+  digest: string;
+  release_notes: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
 };
 
 export type ProcessingPipeline = {
