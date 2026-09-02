@@ -5548,6 +5548,69 @@ class DeploymentReleaseViewSet(AuthenticatedModelViewSet):
             status=status.HTTP_202_ACCEPTED,
         )
 
+    @action(detail=True, methods=["post"])
+    def verify(self, request, pk=None):
+        """Verify rollout health and optionally queue rollback for failed nodes."""
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can verify deployment releases.")
+        release = self.get_object()
+        node_ids = request.data.get("node_ids")
+        nodes = ProcessingNode.objects.filter(desired_release=release)
+        if node_ids is not None:
+            if not isinstance(node_ids, list) or not node_ids:
+                raise ValidationError({"node_ids": "Provide a non-empty list of node IDs."})
+            nodes = nodes.filter(id__in=node_ids)
+        stale_seconds = max(30, int(request.data.get("stale_seconds") or 180))
+        rollback = request.data.get("rollback", True) is not False
+        previous = (
+            DeploymentRelease.objects.filter(channel=release.channel)
+            .exclude(pk=release.pk)
+            .order_by("-created_at")
+            .first()
+        )
+        now = timezone.now()
+        results = []
+        for node in nodes:
+            healthy = (
+                node.reported_release == release.version
+                and node.release_status == "current"
+                and node.last_heartbeat_at
+                and (now - node.last_heartbeat_at).total_seconds() <= stale_seconds
+            )
+            if healthy:
+                results.append({"node_id": node.id, "status": "healthy", "release": release.version})
+                continue
+            if rollback and previous:
+                node.desired_release = previous
+                node.release_status = "rollback_pending"
+                node.release_error = f"Release {release.version} failed verification."
+                node.metadata = {
+                    **(node.metadata or {}),
+                    "control": {
+                        "id": str(uuid.uuid4()),
+                        "command": "upgrade",
+                        "status": "requested",
+                        "requested_by": request.user.username,
+                        "requested_at": now.isoformat(),
+                        "reason": "Automatic rollback after failed release verification.",
+                        "parameters": {
+                            "profile": previous.version,
+                            "release_version": previous.version,
+                            "image": previous.image,
+                            "digest": previous.digest,
+                            "channel": previous.channel,
+                        },
+                    },
+                }
+                node.save(update_fields=["desired_release", "release_status", "release_error", "metadata", "updated_at"])
+                results.append({"node_id": node.id, "status": "rollback_pending", "release": previous.version})
+            else:
+                node.release_status = "failed"
+                node.release_error = f"Release {release.version} failed verification."
+                node.save(update_fields=["release_status", "release_error", "updated_at"])
+                results.append({"node_id": node.id, "status": "failed", "release": release.version})
+        return Response({"release": release.version, "results": results, "rollback_release": previous.version if previous else None})
+
 
 class ProcessingNodeViewSet(AuthenticatedModelViewSet):
     queryset = ProcessingNode.objects.all()
