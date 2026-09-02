@@ -297,6 +297,7 @@ class Command(BaseCommand):
                 "python_version": sys.version.split()[0],
                 "platform": platform.platform(),
             },
+            release_version=settings.MSCONNECT_RELEASE_VERSION,
         )
         write_heartbeat_marker(agent_name=agent_name, role="processor", status=status, node_type=node_type)
         return response

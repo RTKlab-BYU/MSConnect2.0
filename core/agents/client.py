@@ -15,7 +15,7 @@ class AgentApiClient:
         self.retries = max(1, retries)
         self.retry_backoff = max(0.0, retry_backoff)
 
-    def heartbeat(self, *, name: str, node_type: str, status: str, container_image: str, metadata=None, settings=None):
+    def heartbeat(self, *, name: str, node_type: str, status: str, container_image: str, metadata=None, settings=None, release_version: str = ""):
         return self._request(
             "POST",
             "/agents/heartbeat/",
@@ -24,6 +24,7 @@ class AgentApiClient:
                 "node_type": node_type,
                 "status": status,
                 "container_image": container_image,
+                "release_version": release_version,
                 "metadata": metadata or {},
                 "settings": settings or {},
             },

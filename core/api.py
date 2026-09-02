@@ -1819,7 +1819,22 @@ class AgentHeartbeatView(AgentApiView):
                 "metadata": metadata,
             },
         )
-        return Response(ProcessingNodeSerializer(node).data, status=status.HTTP_200_OK)
+        reported_release = (request.data.get("release_version") or incoming_metadata.get("release_version") or "").strip()
+        desired = node.desired_release
+        node.reported_release = reported_release
+        if desired and reported_release == desired.version:
+            node.release_status, node.release_error = "current", ""
+        elif desired and reported_release:
+            node.release_status = "outdated"
+        elif not desired:
+            node.release_status = "unmanaged"
+        node.save(update_fields=["reported_release", "release_status", "release_error", "updated_at"])
+        payload = ProcessingNodeSerializer(node).data
+        payload["desired_release"] = (
+            {"id": desired.id, "version": desired.version, "channel": desired.channel, "image": desired.image}
+            if desired else None
+        )
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class AgentPingView(AgentApiView):

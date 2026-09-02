@@ -147,6 +147,7 @@ class Command(BaseCommand):
             container_image=settings.MSCONNECT_IMAGE,
             metadata={"mode": "watched-share", "control_state": control_state},
             settings={"source": settings.INCOMING_RAW_ROOT, "storage": settings.RAW_FILE_STORAGE_ROOT},
+            release_version=settings.MSCONNECT_RELEASE_VERSION,
         )
         write_heartbeat_marker(agent_name=agent_name, role="watcher", status=status, node_type="watcher")
         return response
