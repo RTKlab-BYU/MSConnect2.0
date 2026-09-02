@@ -3399,6 +3399,21 @@ class DeploymentReleaseAuditView(APIView):
         return Response(PipelineEventSerializer(events, many=True).data)
 
 
+class NotificationTestView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can send notification tests.")
+        sent = send_notification(
+            subject="MSConnect email test",
+            message=f"This is a test notification from MSConnect requested by {request.user.username}.",
+        )
+        if not sent:
+            return Response({"sent": 0, "detail": "No notification recipients are configured."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"sent": sent, "detail": "Test notification sent."})
+
+
 class CurrentUserView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 

@@ -369,6 +369,9 @@ export function verifyDeploymentRelease(id: number, rollback = true): Promise<un
 export function fetchDeploymentReleaseAudit(): Promise<Array<{ id: number; created_at: string; message: string; actor_username?: string; payload: Record<string, unknown> }>> {
   return getResource("/deployment-releases/audit/");
 }
+export function sendNotificationTest(): Promise<{ sent: number; detail: string }> {
+  return postResource("/notifications/test/", {});
+}
 
 export function fetchInstrumentConfigurations(params?: ListParams): Promise<Paginated<InstrumentConfiguration>> {
   return paginatedResource<InstrumentConfiguration>("/instrument-configurations/", { ordering: "name", ...params });
