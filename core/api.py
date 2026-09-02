@@ -5500,6 +5500,54 @@ class DeploymentReleaseViewSet(AuthenticatedModelViewSet):
         release.save(update_fields=["active", "updated_at"])
         return Response(self.get_serializer(release).data)
 
+    @action(detail=True, methods=["post"])
+    def rollout(self, request, pk=None):
+        """Set desired state and ask selected agents to perform an upgrade."""
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can roll out deployment releases.")
+        release = self.get_object()
+        node_ids = request.data.get("node_ids")
+        if node_ids is not None and (not isinstance(node_ids, list) or not node_ids):
+            raise ValidationError({"node_ids": "Provide a non-empty list of node IDs, or omit it for all nodes."})
+        nodes = ProcessingNode.objects.all()
+        if node_ids is not None:
+            nodes = nodes.filter(id__in=node_ids)
+            if nodes.count() != len(set(node_ids)):
+                raise ValidationError({"node_ids": "One or more processing nodes do not exist."})
+        control_parameters = {
+            "profile": release.version,
+            "release_version": release.version,
+            "image": release.image,
+            "digest": release.digest,
+            "channel": release.channel,
+        }
+        requested_at = timezone.now().isoformat()
+        for node in nodes:
+            node.desired_release = release
+            node.release_status = "pending"
+            node.release_error = ""
+            node.metadata = {
+                **(node.metadata or {}),
+                "control": {
+                    "id": str(uuid.uuid4()),
+                    "command": "upgrade",
+                    "status": "requested",
+                    "requested_by": request.user.username,
+                    "requested_at": requested_at,
+                    "reason": str(request.data.get("reason") or "").strip(),
+                    "parameters": control_parameters,
+                },
+            }
+            node.save(update_fields=["desired_release", "release_status", "release_error", "metadata", "updated_at"])
+        return Response(
+            {
+                "release": self.get_serializer(release).data,
+                "nodes": ProcessingNodeSerializer(nodes, many=True).data,
+                "requested_at": requested_at,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
 
 class ProcessingNodeViewSet(AuthenticatedModelViewSet):
     queryset = ProcessingNode.objects.all()

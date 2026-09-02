@@ -13,6 +13,7 @@ from rest_framework.test import APIClient
 from core.models import (
     AcquisitionWorklist,
     AnalysisPreset,
+    DeploymentRelease,
     DeploymentSetting,
     DirectUploadSession,
     Experiment,
@@ -1409,6 +1410,25 @@ class AgentApiTests(TestCase):
         self.assertEqual(watcher_response.data["agent_role"], "watcher")
         self.assertEqual(processor_response.status_code, 200)
         self.assertEqual(processor_response.data["agent_role"], "processor")
+
+    def test_admin_rollout_sets_desired_release_and_upgrade_control(self):
+        admin = User.objects.create_user(username="release-admin", password="password123")
+        UserProfile.objects.create(user=admin, global_role=UserRole.ADMIN)
+        node = ProcessingNode.objects.create(name="watcher-release", node_type="watcher", status="idle")
+        release = DeploymentRelease.objects.create(
+            version="2026.09.0", channel="staging", image="registry.example/msconnect:2026.09.0"
+        )
+        self.client.force_authenticate(user=admin)
+        response = self.client.post(
+            f"/api/deployment-releases/{release.id}/rollout/",
+            {"node_ids": [node.id], "reason": "staging validation"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 202)
+        node.refresh_from_db()
+        self.assertEqual(node.desired_release_id, release.id)
+        self.assertEqual(node.release_status, "pending")
+        self.assertEqual(node.metadata["control"]["command"], "upgrade")
 
     def test_processor_heartbeat_accepts_engine_type_and_acknowledges_control(self):
         processor = self._processor_client()
