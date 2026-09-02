@@ -47,6 +47,7 @@ from .agent_auth import AgentTokenAuthentication
 from .models import (
     AcquisitionWorklist,
     AnalysisPreset,
+    DeploymentRelease,
     DeploymentSetting,
     DerivativeStatus,
     DirectUploadSession,
@@ -533,6 +534,11 @@ class WorklistEntrySerializer(BaseSerializer):
 class ProcessingPipelineSerializer(BaseSerializer):
     class Meta(BaseSerializer.Meta):
         model = ProcessingPipeline
+
+
+class DeploymentReleaseSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = DeploymentRelease
 
 
 class PipelineEventSerializer(BaseSerializer):
@@ -5460,6 +5466,24 @@ class ProcessingPipelineViewSet(AuthenticatedModelViewSet):
     write_requires_admin = True
     search_fields = ("name", "version", "container_image")
     ordering_fields = ("name", "version", "created_at", "updated_at")
+
+
+class DeploymentReleaseViewSet(AuthenticatedModelViewSet):
+    queryset = DeploymentRelease.objects.all()
+    serializer_class = DeploymentReleaseSerializer
+    write_requires_admin = True
+    search_fields = ("version", "channel", "image", "digest", "release_notes")
+    ordering_fields = ("version", "channel", "active", "created_at", "updated_at")
+
+    @action(detail=True, methods=["post"])
+    def promote(self, request, pk=None):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can promote deployment releases.")
+        release = self.get_object()
+        DeploymentRelease.objects.filter(channel=release.channel, active=True).exclude(pk=release.pk).update(active=False)
+        release.active = True
+        release.save(update_fields=["active", "updated_at"])
+        return Response(self.get_serializer(release).data)
 
 
 class ProcessingNodeViewSet(AuthenticatedModelViewSet):

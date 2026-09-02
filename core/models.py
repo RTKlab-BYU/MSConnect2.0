@@ -198,6 +198,11 @@ class ProcessingNodeStatus(models.TextChoices):
     ERROR = "error", "Error"
 
 
+class ReleaseChannel(models.TextChoices):
+    STAGING = "staging", "Staging"
+    PRODUCTION = "production", "Production"
+
+
 class University(TimestampedModel):
     name = models.CharField(max_length=255, unique=True)
     abbreviation = models.CharField(max_length=64, blank=True)
@@ -915,6 +920,24 @@ class ProcessingPipeline(TimestampedModel):
         return f"{self.name} {self.version}"
 
 
+class DeploymentRelease(TimestampedModel):
+    version = models.CharField(max_length=128)
+    channel = models.CharField(max_length=32, choices=ReleaseChannel.choices, default=ReleaseChannel.STAGING)
+    image = models.CharField(max_length=255)
+    digest = models.CharField(max_length=128, blank=True)
+    release_notes = models.TextField(blank=True)
+    active = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ("-created_at",)
+        constraints = (
+            models.UniqueConstraint(fields=("version", "channel"), name="uniq_release_version_channel"),
+        )
+
+    def __str__(self) -> str:
+        return f"{self.version} ({self.channel})"
+
+
 class DeploymentSetting(TimestampedModel):
     scope = models.CharField(max_length=32, unique=True, default="site")
     prtc_skyline_pipeline = models.ForeignKey(
@@ -946,6 +969,16 @@ class ProcessingNode(TimestampedModel):
     status = models.CharField(max_length=32, choices=ProcessingNodeStatus.choices, default=ProcessingNodeStatus.OFFLINE)
     container_image = models.CharField(max_length=255, blank=True)
     endpoint_url = models.URLField(blank=True)
+    desired_release = models.ForeignKey(
+        DeploymentRelease,
+        on_delete=models.SET_NULL,
+        related_name="desired_nodes",
+        blank=True,
+        null=True,
+    )
+    reported_release = models.CharField(max_length=128, blank=True)
+    release_status = models.CharField(max_length=32, default="unknown")
+    release_error = models.TextField(blank=True)
     last_heartbeat_at = models.DateTimeField(blank=True, null=True)
     settings = models.JSONField(default=dict, blank=True)
     metadata = models.JSONField(default=dict, blank=True)

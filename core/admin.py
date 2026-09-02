@@ -3,6 +3,7 @@ from django.contrib import admin
 from .models import (
     AcquisitionWorklist,
     AnalysisPreset,
+    DeploymentRelease,
     DeploymentSetting,
     DirectUploadSession,
     Experiment,
@@ -219,6 +220,13 @@ class DeploymentSettingAdmin(admin.ModelAdmin):
         "targeted_skyline_pipeline__name",
         "targeted_skyline_pipeline__version",
     )
+
+
+@admin.register(DeploymentRelease)
+class DeploymentReleaseAdmin(admin.ModelAdmin):
+    list_display = ("version", "channel", "image", "active", "created_at")
+    search_fields = ("version", "channel", "image", "digest")
+    list_filter = ("channel", "active")
 
 
 @admin.register(ProcessingNode)
