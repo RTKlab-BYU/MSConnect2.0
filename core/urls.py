@@ -43,6 +43,7 @@ urlpatterns = [
     path("auth/me/", api.CurrentUserView.as_view()),
     path("auth/signup/", api.SignupView.as_view()),
     path("deployment-settings/", api.DeploymentSettingsView.as_view()),
+    path("deployment-releases/audit/", api.DeploymentReleaseAuditView.as_view()),
     path("intake-requests/metrics/", api.ProjectIntakeRequestViewSet.as_view({"get": "metrics"})),
     path("system-health/", api.SystemHealthView.as_view()),
     path("agents/ping/", api.AgentPingView.as_view()),
