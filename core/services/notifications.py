@@ -1,9 +1,17 @@
 from django.conf import settings
 from django.core.mail import send_mail
 
+from core.models import DeploymentSetting
+
 
 def notification_recipients() -> list[str]:
-    return [email for email in getattr(settings, "MSCONNECT_NOTIFICATION_EMAILS", []) if email]
+    configured = getattr(settings, "MSCONNECT_NOTIFICATION_EMAILS", [])
+    try:
+        metadata = (DeploymentSetting.objects.filter(scope="site").values_list("metadata", flat=True).first() or {})
+        configured = (metadata.get("notifications") or {}).get("recipients") or configured
+    except Exception:
+        pass
+    return [email.strip() for email in configured if str(email).strip()]
 
 
 def send_notification(*, subject: str, message: str) -> int:
