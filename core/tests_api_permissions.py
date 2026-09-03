@@ -1447,6 +1447,8 @@ class AgentApiTests(TestCase):
             status="idle",
             metadata={"control": {"id": "ctrl-1", "command": "pause", "status": "requested"}},
         )
+        node = ProcessingNode.objects.get(name="pd-win-01")
+        ProcessingNodeEvent.objects.create(node=node, event_type="control_requested", command="pause")
 
         response = processor.post(
             "/api/agents/heartbeat/",
@@ -1465,6 +1467,7 @@ class AgentApiTests(TestCase):
         self.assertEqual(response.data["ip_address"], "10.0.0.9")
         self.assertEqual(response.data["active_control"]["status"], "acknowledged")
         self.assertEqual(response.data["settings"]["processor_shared_storage_root"], r"\\nas\msconnect\results")
+        self.assertEqual(node.events.get(command="pause").status, "completed")
 
     def test_processor_claim_respects_required_engine(self):
         processor = self._processor_client()

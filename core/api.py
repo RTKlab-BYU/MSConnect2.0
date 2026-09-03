@@ -1842,6 +1842,16 @@ class AgentHeartbeatView(AgentApiView):
         elif not desired:
             node.release_status = "unmanaged"
         node.save(update_fields=["reported_release", "release_status", "release_error", "updated_at"])
+        if acknowledged_control_id and existing:
+            event = node.events.filter(status="requested", command=previous_control.get("command", "")).first()
+            if event:
+                diagnostics_result = incoming_metadata.get("diagnostics_result")
+                event.status = "completed" if not (isinstance(diagnostics_result, dict) and not diagnostics_result.get("ok", True)) else "failed"
+                event.acknowledged_at = timezone.now()
+                event.completed_at = timezone.now()
+                event.result = {**(event.result or {}), **({"diagnostics": diagnostics_result} if diagnostics_result else {})}
+                event.error_message = "Diagnostics reported one or more failed checks." if event.status == "failed" else ""
+                event.save(update_fields=["status", "acknowledged_at", "completed_at", "result", "error_message", "updated_at"])
         payload = ProcessingNodeSerializer(node).data
         payload["desired_release"] = (
             {"id": desired.id, "version": desired.version, "channel": desired.channel, "image": desired.image}
