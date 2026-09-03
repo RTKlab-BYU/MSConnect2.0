@@ -25,6 +25,7 @@ from core.models import (
     PeptideQuant,
     ProcessingJob,
     ProcessingNode,
+    ProcessingNodeEvent,
     ProcessingPipeline,
     ProcessingStatus,
     Project,
@@ -529,6 +530,14 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(control_response.data["active_control"]["status"], "requested")
         self.assertEqual(overview_response.status_code, 200)
         self.assertEqual(overview_response.data["stale"], 1)
+        self.assertEqual(ProcessingNodeEvent.objects.filter(node=node, event_type="control_requested").count(), 1)
+        events_response = self.client.get(f"/api/processing-nodes/{node.id}/events/")
+        self.assertEqual(events_response.status_code, 200)
+        self.assertEqual(events_response.data[0]["command"], "pause")
+        diagnostics_response = self.client.post(
+            f"/api/processing-nodes/{node.id}/diagnostics/", data={"checks": ["api", "storage"]}, format="json"
+        )
+        self.assertEqual(diagnostics_response.status_code, 202)
 
     def test_system_health_reports_warnings_for_connected_and_downed_nodes(self):
         with TemporaryDirectory() as temp_dir:

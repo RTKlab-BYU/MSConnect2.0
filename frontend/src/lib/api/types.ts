@@ -503,6 +503,23 @@ export type ProcessingNode = {
   release_error: string;
 };
 
+export type ProcessingNodeEvent = {
+  id: EntityId;
+  node: EntityId;
+  node_name: string;
+  event_type: string;
+  command: string;
+  status: string;
+  requested_by: EntityId | null;
+  requested_at: string;
+  acknowledged_at: string | null;
+  completed_at: string | null;
+  result: Record<string, unknown>;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type DeploymentRelease = {
   id: EntityId;
   version: string;

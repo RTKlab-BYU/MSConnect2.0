@@ -337,6 +337,14 @@ export function markProcessingNodeOffline(id: number, reason?: string): Promise<
   return postResource<ProcessingNode>(`/processing-nodes/${id}/mark-offline/`, { reason: reason ?? "" });
 }
 
+export function fetchProcessingNodeEvents(id: number): Promise<import("./types").ProcessingNodeEvent[]> {
+  return getResource(`/processing-nodes/${id}/events/`);
+}
+
+export function runProcessingNodeDiagnostics(id: number, checks?: string[]) {
+  return postResource(`/processing-nodes/${id}/diagnostics/`, { checks });
+}
+
 export function fetchProcessingPipelines(params?: ListParams): Promise<Paginated<ProcessingPipeline>> {
   return paginatedResource<ProcessingPipeline>("/processing-pipelines/", { ordering: "name", ...params });
 }

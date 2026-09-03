@@ -72,6 +72,7 @@ from .models import (
     ProcessingJob,
     ProcessingJobArtifact,
     ProcessingNode,
+    ProcessingNodeEvent,
     ProcessingNodeStatus,
     ProcessingPipeline,
     ProcessingStatus,
@@ -631,6 +632,13 @@ class ProcessingNodeSerializer(BaseSerializer):
         if not obj.last_heartbeat_at:
             return None
         return int((timezone.now() - obj.last_heartbeat_at).total_seconds())
+
+
+class ProcessingNodeEventSerializer(BaseSerializer):
+    node_name = serializers.CharField(source="node.name", read_only=True)
+
+    class Meta(BaseSerializer.Meta):
+        model = ProcessingNodeEvent
 
 
 class ProcessingJobSerializer(BaseSerializer):
@@ -5720,7 +5728,31 @@ class ProcessingNodeViewSet(AuthenticatedModelViewSet):
         }
         node.metadata = {**(node.metadata or {}), "control": control}
         node.save(update_fields=["metadata", "updated_at"])
+        ProcessingNodeEvent.objects.create(
+            node=node, event_type="control_requested", command=command,
+            requested_by=request.user, result={"parameters": parameters, "reason": reason},
+        )
         return Response(ProcessingNodeSerializer(node).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get"])
+    def events(self, request, pk=None):
+        node = self.get_object()
+        events = node.events.select_related("requested_by")[:100]
+        return Response(ProcessingNodeEventSerializer(events, many=True).data)
+
+    @action(detail=True, methods=["post"])
+    def diagnostics(self, request, pk=None):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can run node diagnostics.")
+        node = self.get_object()
+        checks = request.data.get("checks") or ["api", "storage", "engine"]
+        if not isinstance(checks, list) or not all(isinstance(check, str) for check in checks):
+            raise ValidationError({"checks": "Checks must be a list of names."})
+        event = ProcessingNodeEvent.objects.create(
+            node=node, event_type="diagnostic_requested", command="diagnostics",
+            requested_by=request.user, result={"checks": checks},
+        )
+        return Response(ProcessingNodeEventSerializer(event).data, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=["post"], url_path="mark-offline")
     def mark_offline(self, request, pk=None):

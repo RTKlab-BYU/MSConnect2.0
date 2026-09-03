@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Pause, Play, Power, RefreshCw, RotateCcw, Server, ShieldAlert } from "lucide-react";
+import { AlertTriangle, Pause, Play, Power, RefreshCw, RotateCcw, Server, ShieldAlert, Stethoscope } from "lucide-react";
 import { useState } from "react";
 
 import { MetricCard, PageHero } from "@/components/layout/page-section";
@@ -13,7 +13,9 @@ import {
   fetchProcessingJobsOverview,
   fetchProcessingNodes,
   fetchProcessingNodesOverview,
+  fetchProcessingNodeEvents,
   markProcessingNodeOffline,
+  runProcessingNodeDiagnostics,
   queryKeys,
 } from "@/lib/api/queries";
 import { queryClient } from "@/lib/api/query-client";
@@ -62,6 +64,10 @@ export default function ProcessingAdminPage() {
     mutationFn: (node: ProcessingNode) => markProcessingNodeOffline(node.id, "Admin dashboard mark-offline"),
     onSuccess: refreshNodes,
   });
+  const diagnosticsMutation = useMutation({
+    mutationFn: (node: ProcessingNode) => runProcessingNodeDiagnostics(node.id, ["api", "storage", "engine"]),
+    onSuccess: refreshNodes,
+  });
 
   const nodes = nodesQuery.data?.results ?? [];
   const visibleNodes = nodes.filter((node) => typeFilter === "all" || node.node_type === typeFilter);
@@ -75,8 +81,8 @@ export default function ProcessingAdminPage() {
 
       <PageHero
         eyebrow="Admin control"
-        title="Processor admin dashboard"
-        description="Live processor inventory, engine health, host identity, shared storage settings, and admin control requests for distributed Linux and Windows workers."
+        title="Node administration"
+        description="Live watcher and processor inventory, engine health, host identity, shared storage settings, diagnostics, and control requests."
         actions={
           <>
             <Button variant="secondary" onClick={refreshNodes}>
@@ -138,9 +144,10 @@ export default function ProcessingAdminPage() {
           <NodeAdminCard
             key={node.id}
             node={node}
-            busy={controlMutation.isPending || offlineMutation.isPending}
+            busy={controlMutation.isPending || offlineMutation.isPending || diagnosticsMutation.isPending}
             onControl={(command) => controlMutation.mutate({ node, command })}
             onOffline={() => offlineMutation.mutate(node)}
+            onDiagnostics={() => diagnosticsMutation.mutate(node)}
           />
         ))}
         {!visibleNodes.length ? (
@@ -158,12 +165,19 @@ function NodeAdminCard({
   busy,
   onControl,
   onOffline,
+  onDiagnostics,
 }: {
   node: ProcessingNode;
   busy: boolean;
   onControl: (command: (typeof controlOptions)[number]) => void;
   onOffline: () => void;
+  onDiagnostics: () => void;
 }) {
+  const eventsQuery = useQuery({
+    queryKey: ["processing-node-events", node.id],
+    queryFn: () => fetchProcessingNodeEvents(node.id),
+    refetchInterval: 15_000,
+  });
   const control = node.active_control ?? {};
   const controlCommand = typeof control.command === "string" ? control.command : "";
   const controlStatus = typeof control.status === "string" ? control.status : "";
@@ -209,7 +223,11 @@ function NodeAdminCard({
             ) : (
               <div className="mt-2 text-xs text-muted-foreground">No active control request.</div>
             )}
-              <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="mt-3 grid grid-cols-2 gap-2">
+                <Button size="sm" variant="secondary" disabled={busy} onClick={onDiagnostics}>
+                  <Stethoscope className="h-3.5 w-3.5" />
+                  Test connection
+                </Button>
                 <Button size="sm" variant="secondary" disabled={busy} onClick={() => onControl("start")}>
                   <Play className="h-3.5 w-3.5" />
                   {controlLabels.start}
@@ -251,6 +269,18 @@ function NodeAdminCard({
             <summary className="cursor-pointer text-sm font-black">Settings and metadata</summary>
             <pre className="mt-3 max-h-64 overflow-auto text-xs"><code>{JSON.stringify({ settings: node.settings, metadata: node.metadata }, null, 2)}</code></pre>
           </details>
+          <div className="rounded-lg border bg-background/50 p-3">
+            <div className="text-sm font-black">Recent activity</div>
+            <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+              {(eventsQuery.data ?? []).slice(0, 5).map((event) => (
+                <div key={event.id} className="flex justify-between gap-2">
+                  <span>{event.event_type}{event.command ? ` · ${event.command}` : ""}</span>
+                  <span>{event.status}</span>
+                </div>
+              ))}
+              {!eventsQuery.data?.length ? <span>No recorded node events.</span> : null}
+            </div>
+          </div>
         </div>
       </CardContent>
     </Card>

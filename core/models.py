@@ -991,6 +991,22 @@ class ProcessingNode(TimestampedModel):
         return self.name
 
 
+class ProcessingNodeEvent(TimestampedModel):
+    node = models.ForeignKey(ProcessingNode, on_delete=models.CASCADE, related_name="events")
+    event_type = models.CharField(max_length=64)
+    command = models.CharField(max_length=64, blank=True)
+    status = models.CharField(max_length=32, default="requested")
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    requested_at = models.DateTimeField(default=timezone.now)
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    result = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+
 class ProcessingJob(TimestampedModel):
     run = models.ForeignKey(Run, on_delete=models.PROTECT, related_name="processing_jobs")
     pipeline = models.ForeignKey(ProcessingPipeline, on_delete=models.PROTECT, related_name="jobs")
