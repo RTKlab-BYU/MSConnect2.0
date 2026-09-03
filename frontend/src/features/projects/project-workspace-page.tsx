@@ -596,10 +596,10 @@ export default function ProjectWorkspacePage() {
             isOperator={isOperator}
           />
           <div className="table-scroll rounded-lg border">
-            <table className="w-full min-w-[1120px] text-sm">
-              <thead className="bg-secondary/65 text-left text-xs uppercase tracking-[0.08em] text-muted-foreground">
+            <table className="w-full min-w-[1180px] text-xs">
+              <thead className="bg-secondary/65 text-left text-[11px] uppercase tracking-[0.06em] text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-3">
+                  <th className="whitespace-nowrap px-2 py-2">
                     <input
                       aria-label="Select all runs"
                       checked={allSelected}
@@ -608,28 +608,28 @@ export default function ProjectWorkspacePage() {
                       onChange={toggleAllSelected}
                     />
                   </th>
-                  <th className="px-3 py-3">Order</th>
-                  <th className="px-3 py-3">Run</th>
-                  <th className="px-3 py-3">Sample</th>
-                  <th className="px-3 py-3">Raw File</th>
-                  <th className="px-3 py-3">Run</th>
-                  <th className="px-3 py-3">Queue</th>
-                  <th className="px-3 py-3">Proteins</th>
-                  <th className="px-3 py-3">Peptides</th>
-                  <th className="px-3 py-3">MS1</th>
-                  <th className="px-3 py-3">MS2</th>
-                  <th className="px-3 py-3">Updated</th>
-                  <th className="px-3 py-3">Actions</th>
+                  <th className="whitespace-nowrap px-2 py-2">Order</th>
+                  <th className="whitespace-nowrap px-2 py-2">Run</th>
+                  <th className="whitespace-nowrap px-2 py-2">Sample</th>
+                  <th className="whitespace-nowrap px-2 py-2">Raw File</th>
+                  <th className="whitespace-nowrap px-2 py-2">Run</th>
+                  <th className="whitespace-nowrap px-2 py-2">Queue</th>
+                  <th className="whitespace-nowrap px-2 py-2">Proteins</th>
+                  <th className="whitespace-nowrap px-2 py-2">Peptides</th>
+                  <th className="whitespace-nowrap px-2 py-2">MS1</th>
+                  <th className="whitespace-nowrap px-2 py-2">MS2</th>
+                  <th className="whitespace-nowrap px-2 py-2">Updated</th>
+                  <th className="whitespace-nowrap px-2 py-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {runs.map((row) => (
+                {runs.map((row, index) => (
                   <tr
                     key={row.run.id}
                     className={`border-t hover:bg-secondary/35 ${selectedRun?.run.id === row.run.id ? "bg-secondary/45" : ""}`}
                     onClick={() => setSelectedRunId(row.run.id)}
                   >
-                    <td className="px-3 py-3">
+                    <td className="px-2 py-2">
                       <input
                         aria-label={`Select ${row.run.run_name}`}
                         checked={selectedRunIds.includes(row.run.id)}
@@ -642,25 +642,25 @@ export default function ProjectWorkspacePage() {
                         onClick={(event) => event.stopPropagation()}
                       />
                     </td>
-                    <td className="px-3 py-3 font-mono">{row.run.worklist_position ?? "-"}</td>
-                    <td className="px-3 py-3">
-                      <div className="font-semibold">{row.run.run_name}</div>
+                    <td className="whitespace-nowrap px-2 py-2 font-mono">{index + 1}</td>
+                    <td className="min-w-[220px] px-2 py-2">
+                      <div className="whitespace-nowrap text-sm font-semibold">{row.run.run_name}</div>
                       <div className="break-words text-xs text-muted-foreground">{row.run.expected_filename || "No expected filename"}</div>
                     </td>
-                    <td className="px-3 py-3">
-                      <Link className="font-semibold" to={`/projects/${projectId}/samples/${row.sample.id}`} onClick={(event) => event.stopPropagation()}>
+                    <td className="min-w-[100px] px-2 py-2">
+                      <Link className="whitespace-nowrap font-semibold" to={`/projects/${projectId}/samples/${row.sample.id}`} onClick={(event) => event.stopPropagation()}>
                         {row.sample.name}
                       </Link>
                     </td>
-                    <td className="px-3 py-3">{row.raw_file ? <StatusBadge status={row.raw_file.status} /> : <span className="text-muted-foreground">Missing</span>}</td>
-                    <td className="px-3 py-3"><StatusBadge status={row.run.status} /></td>
-                    <td className="px-3 py-3">{row.processing_job ? <StatusBadge status={row.processing_job.status} /> : <span className="text-muted-foreground">Not queued</span>}</td>
-                    <td className="px-3 py-3">{row.stats.reported_protein_count || row.stats.protein_quant_count || "-"}</td>
-                    <td className="px-3 py-3">{row.stats.reported_peptide_count || row.stats.peptide_quant_count || "-"}</td>
-                    <td className="px-3 py-3">{row.stats.ms1_feature_count || row.stats.indexed_ms1_spectra_count || "-"}</td>
-                    <td className="px-3 py-3">{row.stats.ms2_spectra_count || row.stats.indexed_ms2_spectra_count || "-"}</td>
-                    <td className="px-3 py-3">{formatDate(row.run.updated_at)}</td>
-                    <td className="px-3 py-3">
+                    <td className="whitespace-nowrap px-2 py-2">{row.raw_file ? <StatusBadge status={row.raw_file.status} /> : <span className="text-muted-foreground">Missing</span>}</td>
+                    <td className="whitespace-nowrap px-2 py-2"><StatusBadge status={row.run.status} /></td>
+                    <td className="whitespace-nowrap px-2 py-2">{row.processing_job ? <StatusBadge status={row.processing_job.status} /> : <span className="text-muted-foreground">Not queued</span>}</td>
+                    <td className="whitespace-nowrap px-2 py-2">{row.stats.reported_protein_count || row.stats.protein_quant_count || "-"}</td>
+                    <td className="whitespace-nowrap px-2 py-2">{row.stats.reported_peptide_count || row.stats.peptide_quant_count || "-"}</td>
+                    <td className="whitespace-nowrap px-2 py-2">{row.stats.ms1_feature_count || row.stats.indexed_ms1_spectra_count || "-"}</td>
+                    <td className="whitespace-nowrap px-2 py-2">{row.stats.ms2_spectra_count || row.stats.indexed_ms2_spectra_count || "-"}</td>
+                    <td className="whitespace-nowrap px-2 py-2">{formatDate(row.run.updated_at)}</td>
+                    <td className="whitespace-nowrap px-2 py-2">
                       <Button size="sm" variant="secondary" onClick={(event) => { event.stopPropagation(); startEdit(row); }}>
                         <Settings2 className="h-3.5 w-3.5" />
                         Edit
