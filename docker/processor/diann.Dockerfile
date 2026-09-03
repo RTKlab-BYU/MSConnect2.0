@@ -25,7 +25,7 @@ USER root
 RUN apt-get update \
     && dpkg --add-architecture i386 \
     && apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 libc6-i386 libstdc++6:i386 zlib1g:i386 \
+    && apt-get install -y --no-install-recommends libgomp1 libc6-i386 libstdc++6:i386 zlib1g:i386 libfreetype6 libfreetype6:i386 libgnutls30 libgnutls30:i386 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet \
     && ln -sfn /opt/wine-staging/lib/wine /usr/lib/wine \
@@ -33,7 +33,7 @@ RUN apt-get update \
     && chmod +x /usr/local/bin/msconvert \
     && if [ -n "$DIANN_LINUX_URL" ]; then \
       mkdir -p /opt/diann \
-      && python -c "import pathlib, urllib.request, zipfile; url='${DIANN_LINUX_URL}'; target=pathlib.Path('/tmp/diann.zip'); urllib.request.urlretrieve(url, target); zipfile.ZipFile(target).extractall('/opt/diann')" \
+      && python -c "import pathlib, urllib.request, zipfile, tarfile; url='${DIANN_LINUX_URL}'; target=pathlib.Path('/tmp/diann.download'); urllib.request.urlretrieve(url, target); (zipfile.ZipFile(target).extractall('/opt/diann') if zipfile.is_zipfile(target) else tarfile.open(target).extractall('/opt/diann'))" \
       && find /opt/diann -type f -name "diann*" -exec chmod +x {} \; \
       && DIANN_BIN="$(find /opt/diann -type f -name 'diann*' ! -name '*.dll' ! -name '*.json' | sort | head -n 1)" \
       && test -n "$DIANN_BIN" \
