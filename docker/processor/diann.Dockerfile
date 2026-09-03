@@ -25,11 +25,11 @@ USER root
 RUN apt-get update \
     && dpkg --add-architecture i386 \
     && apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 libc6-i386 libstdc++6:i386 zlib1g:i386 libfreetype6 libfreetype6:i386 libgnutls30 libgnutls30:i386 \
+    && apt-get install -y --no-install-recommends libgomp1 libc6-i386 libstdc++6:i386 zlib1g:i386 libfreetype6 libfreetype6:i386 libgnutls30 libgnutls30:i386 libfontconfig1 libfontconfig1:i386 xvfb \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet \
     && ln -sfn /opt/wine-staging/lib/wine /usr/lib/wine \
-    && printf '#!/bin/sh\nexec wine /wineprefix64/drive_c/pwiz/skyline/msconvert.exe "$@"\n' > /usr/local/bin/msconvert \
+    && printf '#!/bin/sh\nexport WINEPREFIX=/wineprefix64\nexport WINEDEBUG=-all\nexec xvfb-run -a -s "-screen 0 1280x1024x24" wine /wineprefix64/drive_c/pwiz/skyline/msconvert.exe "$@"\n' > /usr/local/bin/msconvert \
     && chmod +x /usr/local/bin/msconvert \
     && if [ -n "$DIANN_LINUX_URL" ]; then \
       mkdir -p /opt/diann \
