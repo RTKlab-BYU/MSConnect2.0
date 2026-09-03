@@ -10,7 +10,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from core.agents.client import AgentApiClient, AgentApiError
-from core.agents.diagnostics import write_heartbeat_marker
+from core.agents.diagnostics import run_agent_checks, write_heartbeat_marker
 from core.agents.discovery import resolve_api_base_url
 from core.agents.processor import prepare_job_execution
 from core.agents.upgrade import run_upgrade_hook
@@ -322,6 +322,13 @@ class Command(BaseCommand):
         command = str(control.get("command") or "")
         next_state = control_state
         should_exit = False
+        if command == "diagnostics":
+            result = run_agent_checks(role="processor", engine=node_type, write_test=True)
+            self._heartbeat(client, agent_name=agent_name, node_type=node_type, status=status,
+                            control_state=control_state,
+                            metadata={"ack_control_id": control_id, "diagnostics_result": result})
+            self.stdout.write(f"completed processor diagnostics: {'ok' if result['ok'] else 'failed'}")
+            return control_id, control_state, False
         if command == "pause":
             next_state = "paused"
         elif command == "drain":

@@ -5708,7 +5708,7 @@ class ProcessingNodeViewSet(AuthenticatedModelViewSet):
             raise PermissionDenied("Only admins can control processing nodes.")
         node = self.get_object()
         command = str(request.data.get("command") or "").strip()
-        valid_commands = {"start", "pause", "resume", "drain", "restart", "stop", "upgrade", "reconfigure"}
+        valid_commands = {"start", "pause", "resume", "drain", "restart", "stop", "upgrade", "reconfigure", "diagnostics"}
         if command not in valid_commands:
             raise ValidationError({"command": "Unsupported processing-node command."})
         parameters = request.data.get("parameters") or {}

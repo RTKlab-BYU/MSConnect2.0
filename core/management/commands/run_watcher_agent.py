@@ -6,7 +6,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from core.agents.client import AgentApiClient, AgentApiError
-from core.agents.diagnostics import write_heartbeat_marker
+from core.agents.diagnostics import run_agent_checks, write_heartbeat_marker
 from core.agents.discovery import resolve_api_base_url
 from core.agents.upgrade import run_upgrade_hook
 from ingest.services import (
@@ -159,6 +159,11 @@ class Command(BaseCommand):
         if not control_id or control_id == last_control_id:
             return last_control_id, control_state, False
         command = str(control.get("command") or "")
+        if command == "diagnostics":
+            result = run_agent_checks(role="watcher", write_test=True)
+            self._heartbeat(client, agent_name=agent_name, status="idle", control_state=control_state,
+                            metadata={"ack_control_id": control_id, "diagnostics_result": result})
+            return control_id, control_state, False
         if command in {"pause"}:
             next_state, should_exit = "paused", False
         elif command in {"resume", "start"}:
