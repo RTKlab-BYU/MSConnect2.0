@@ -351,6 +351,7 @@ class Project(TimestampedModel):
     status = models.CharField(max_length=32, choices=ProjectStatus.choices, default=ProjectStatus.ACTIVE)
     completed_at = models.DateTimeField(blank=True, null=True)
     description = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ("lab__name", "code")

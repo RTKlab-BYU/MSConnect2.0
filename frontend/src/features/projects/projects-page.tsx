@@ -111,6 +111,8 @@ export default function ProjectsPage() {
   const [speclibPath, setSpeclibPath] = useState("/data/shared/reference/human.speclib");
   const [fastaUploadName, setFastaUploadName] = useState("");
   const [speclibUploadName, setSpeclibUploadName] = useState("");
+  const [speclibScope, setSpeclibScope] = useState<"experiment" | "project">("experiment");
+  const [speclibBuildRuns, setSpeclibBuildRuns] = useState("3");
   const [diannVersion, setDiannVersion] = useState("2.0");
   const [diannSettingsText, setDiannSettingsText] = useState(() => JSON.stringify(settingsForPreset(DIANN_PRESET_SPECLIB_BUILD), null, 2));
   const [preflightPreview, setPreflightPreview] = useState<PreAcquisitionSetupPreflightResponse | null>(null);
@@ -166,6 +168,8 @@ export default function ProjectsPage() {
       speclib_path: speclibPath,
       fasta_upload_name: fastaUploadName,
       speclib_upload_name: speclibUploadName,
+      speclib_scope: speclibScope,
+      speclib_build_runs: Number(speclibBuildRuns),
       diann_version: diannVersion,
       diann_settings: diannSettings.value ?? {},
     }),
@@ -186,6 +190,8 @@ export default function ProjectsPage() {
       samples,
       speclibPath,
       speclibUploadName,
+      speclibScope,
+      speclibBuildRuns,
     ],
   );
   const setupMutation = useMutation({
@@ -448,6 +454,20 @@ export default function ProjectsPage() {
                             Build creates a new speclib from the shared FASTA. Reuse runs against the project speclib from an earlier pass. Smoke is a fast launcher check, not the production search path.
                           </p>
                         </label>
+                      </div>
+                      <div className="grid gap-3 rounded-2xl border bg-background/60 p-4 md:grid-cols-[1fr_180px]">
+                        <label className="grid gap-1 text-sm font-bold">
+                          Spectral-library scope
+                          <Select value={speclibScope} onValueChange={(value) => setSpeclibScope(value as "experiment" | "project")}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="experiment">This experiment only</SelectItem>
+                              <SelectItem value="project">Share across this project</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <span className="text-xs font-normal text-muted-foreground">Build once, then reuse the generated library for later runs.</span>
+                        </label>
+                        <TextField label="Runs used to build" type="number" min={1} value={speclibBuildRuns} onChange={setSpeclibBuildRuns} />
                       </div>
                       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-background/60 px-4 py-3">
                         <div className="grid gap-1">

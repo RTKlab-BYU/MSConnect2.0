@@ -209,6 +209,8 @@ class ProjectPreAcquisitionSetupSerializer(serializers.Serializer):
     processing_preset = serializers.CharField(max_length=128, default="DIA-NN speclib build")
     fasta_upload_name = serializers.CharField(max_length=255, allow_blank=True, required=False)
     speclib_upload_name = serializers.CharField(max_length=255, allow_blank=True, required=False)
+    speclib_scope = serializers.ChoiceField(choices=("experiment", "project"), default="experiment")
+    speclib_build_runs = serializers.IntegerField(min_value=1, max_value=20, default=3)
     diann_version = serializers.CharField(max_length=128, default="2.0")
     diann_settings = serializers.JSONField(required=False)
 
@@ -1734,6 +1736,8 @@ def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
             "experiment_id": experiment.id,
             "experiment_name": experiment.name,
             "experiment_metadata": experiment.metadata,
+            "project_metadata": experiment.project.metadata,
+            "worklist_position": worklist_entry.position if worklist_entry else None,
             "worklist_id": worklist_entry.worklist_id if worklist_entry else None,
             "worklist_metadata": worklist_entry.worklist.metadata if worklist_entry else {},
         },
@@ -2239,6 +2243,16 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
                 experiment_metadata["diann"] = diann_metadata
                 experiment.metadata = experiment_metadata
                 experiment.save(update_fields=["metadata", "updated_at"])
+                policy = (job.pipeline.parameters or {}).get("speclib_policy") or {}
+                if policy.get("scope") == "project":
+                    project = experiment.project
+                    project_metadata = dict(project.metadata or {})
+                    project_diann = dict(project_metadata.get("diann") or {})
+                    project_diann["preferred_speclib_path"] = preferred_path
+                    project_diann["last_generated_speclib_path"] = preferred_path
+                    project_metadata["diann"] = project_diann
+                    project.metadata = project_metadata
+                    project.save(update_fields=["metadata", "updated_at"])
 
         if result_summary or protein_table or peptide_table:
             record_pipeline_event(
@@ -4396,6 +4410,11 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 "enabled": True,
                 "mode": "combine_runs_after_run_level_processing",
                 "future_executor": "supercomputer",
+            },
+            "speclib_policy": {
+                "scope": str(data.get("speclib_scope") or "experiment"),
+                "build_runs": int(data.get("speclib_build_runs") or 3),
+                "reuse_after_build": True,
             },
         }
         if temp_value:

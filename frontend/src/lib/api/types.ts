@@ -187,6 +187,8 @@ export type PreAcquisitionSetupPayload = {
   speclib_path?: string;
   fasta_upload_name?: string;
   speclib_upload_name?: string;
+  speclib_scope?: "experiment" | "project";
+  speclib_build_runs?: number;
   diann_version: string;
   diann_settings: Record<string, unknown>;
 };

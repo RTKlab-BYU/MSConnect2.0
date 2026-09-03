@@ -34,11 +34,21 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
     run = job_payload.get("run") or {}
     parameters = pipeline.get("parameters") or {}
     experiment_metadata = run.get("experiment_metadata") or {}
+    project_metadata = run.get("project_metadata") or {}
     diann_metadata = experiment_metadata.get("diann") or {}
+    project_diann_metadata = project_metadata.get("diann") or {}
+    policy = parameters.get("speclib_policy") or {}
+    build_runs = int(policy.get("build_runs") or 0)
+    position = run.get("worklist_position")
+    if parameters.get("generate_speclib") and build_runs and position and int(position) > build_runs:
+        parameters = {**parameters, "generate_speclib": False, "fasta_search": False, "out_library": ""}
+        parameters = {**parameters, "library_source": "preferred_speclib_path"}
     if not parameters.get("library") and not parameters.get("generate_speclib"):
         library_source = str(parameters.get("library_source") or "").strip()
         if library_source == "preferred_speclib_path":
-            preferred_speclib_path = str(diann_metadata.get("preferred_speclib_path") or "").strip()
+            preferred_speclib_path = str(
+                diann_metadata.get("preferred_speclib_path") or project_diann_metadata.get("preferred_speclib_path") or ""
+            ).strip()
             if not preferred_speclib_path:
                 raise ValueError(
                     "DIA-NN pipeline requested preferred speclib reuse, but the experiment has no generated speclib yet."
