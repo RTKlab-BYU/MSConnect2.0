@@ -3,7 +3,7 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import OperationalError, transaction
 from django.utils import timezone
 
 from core.models import (
@@ -94,18 +94,21 @@ class Command(BaseCommand):
         archive_name = safe_archive_name(raw_file.filename, raw_file.checksum_sha256)
         archive_path = archive_root / "raw-archives" / raw_file.checksum_sha256[:2] / archive_name
 
-        with transaction.atomic():
-            archive, _created = RawFileArchive.objects.update_or_create(
-                raw_file=raw_file,
-                archive_path=str(archive_path),
-                defaults={
-                    "status": RawFileArchiveStatus.ARCHIVING,
-                    "original_storage_path": raw_file.storage_path,
-                    "compression": "zip",
-                    "error_message": "",
-                    "metadata": {"archive_root": str(archive_root), "source_size_bytes": raw_file.size_bytes},
-                },
-            )
+        def begin_archive():
+            with transaction.atomic():
+                return RawFileArchive.objects.update_or_create(
+                    raw_file=raw_file,
+                    archive_path=str(archive_path),
+                    defaults={
+                        "status": RawFileArchiveStatus.ARCHIVING,
+                        "original_storage_path": raw_file.storage_path,
+                        "compression": "zip",
+                        "error_message": "",
+                        "metadata": {"archive_root": str(archive_root), "source_size_bytes": raw_file.size_bytes},
+                    },
+                )
+
+        archive, _created = self._with_db_retry(begin_archive)
 
         try:
             if force or not archive_path.exists():
@@ -116,15 +119,17 @@ class Command(BaseCommand):
             archive.checksum_sha256 = checksum
             archive.archived_at = timezone.now()
             archive.error_message = ""
-            archive.save(
-                update_fields=[
-                    "status",
-                    "size_bytes",
-                    "checksum_sha256",
-                    "archived_at",
-                    "error_message",
-                    "updated_at",
-                ]
+            self._with_db_retry(
+                lambda: archive.save(
+                    update_fields=[
+                        "status",
+                        "size_bytes",
+                        "checksum_sha256",
+                        "archived_at",
+                        "error_message",
+                        "updated_at",
+                    ]
+                )
             )
             self._record_copy(
                 archive=archive,
@@ -152,22 +157,34 @@ class Command(BaseCommand):
         except Exception as exc:
             archive.status = RawFileArchiveStatus.FAILED
             archive.error_message = str(exc)
-            archive.save(update_fields=["status", "error_message", "updated_at"])
+            self._with_db_retry(lambda: archive.save(update_fields=["status", "error_message", "updated_at"]))
             raise
 
+    @staticmethod
+    def _with_db_retry(operation, *, attempts=5):
+        for attempt in range(attempts):
+            try:
+                return operation()
+            except OperationalError as exc:
+                if "locked" not in str(exc).lower() or attempt == attempts - 1:
+                    raise
+                time.sleep(0.5 * (attempt + 1))
+
     def _record_copy(self, *, archive, copy_role, root, path, checksum, size_bytes):
-        RawFileArchiveCopy.objects.update_or_create(
-            archive=archive,
-            path=str(Path(path).resolve()),
-            defaults={
-                "copy_role": copy_role,
-                "storage_root": str(Path(root).resolve()),
-                "status": RawFileArchiveCopyStatus.VERIFIED,
-                "size_bytes": size_bytes,
-                "checksum_sha256": checksum,
-                "verified_at": timezone.now(),
-                "error_message": "",
-            },
+        self._with_db_retry(
+            lambda: RawFileArchiveCopy.objects.update_or_create(
+                archive=archive,
+                path=str(Path(path).resolve()),
+                defaults={
+                    "copy_role": copy_role,
+                    "storage_root": str(Path(root).resolve()),
+                    "status": RawFileArchiveCopyStatus.VERIFIED,
+                    "size_bytes": size_bytes,
+                    "checksum_sha256": checksum,
+                    "verified_at": timezone.now(),
+                    "error_message": "",
+                },
+            )
         )
 
     def _has_required_verified_copies(self, *, raw_file, backup_roots):
