@@ -73,7 +73,7 @@ DJANGO_CSRF_TRUSTED_ORIGINS=https://msconnect-methodlab.example
 MSCONNECT_PRODUCTION=1
 # For method-lab validation, use the CI image for a reviewed main commit;
 # production should use the promoted immutable digest or version tag.
-MSCONNECT_IMAGE=docker.io/<registry-user>/msconnect:main-<full-git-sha>
+MSCONNECT_IMAGE=docker.io/rtklabgroup/msconnect:main-<full-git-sha>
 POSTGRES_DATA_HOST_PATH=/srv/msconnect-methodlab/postgres
 MSCONNECT_DATA_HOST_PATH=/srv/msconnect-methodlab/data
 MSCONNECT_MEDIA_HOST_PATH=/srv/msconnect-methodlab/media

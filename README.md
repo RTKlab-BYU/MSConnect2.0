@@ -479,13 +479,13 @@ promote a reviewed digest or version tag to facility production.
 Deploy a tagged release by setting:
 
 ```sh
-MSCONNECT_IMAGE=docker.io/<your-dockerhub-user>/msconnect:vX.Y.Z
+MSCONNECT_IMAGE=docker.io/rtklabgroup/msconnect:vX.Y.Z
 ```
 
 For the latest tested `main` commit, use:
 
 ```sh
-MSCONNECT_IMAGE=docker.io/<your-dockerhub-user>/msconnect:main-<full-git-sha>
+MSCONNECT_IMAGE=docker.io/rtklabgroup/msconnect:main-<full-git-sha>
 ```
 
 Then run:
