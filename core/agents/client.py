@@ -39,6 +39,20 @@ class AgentApiClient:
     def record_ingestion_failure(self, payload: dict):
         return self._request("POST", "/agents/ingestion-failures/", payload)
 
+    def create_direct_upload(self, payload: dict):
+        return self._request("POST", "/direct-uploads/", payload)
+
+    def upload_direct_chunk(self, session_id: int, part_number: int, payload: bytes, content_type: str = "application/octet-stream"):
+        return self._request_bytes(
+            "PUT",
+            f"/direct-uploads/{session_id}/chunks/{part_number}/",
+            payload,
+            content_type=content_type,
+        )
+
+    def complete_direct_upload(self, session_id: int, checksum_sha256: str):
+        return self._request("POST", f"/direct-uploads/{session_id}/complete/", {"checksum_sha256": checksum_sha256})
+
     def claim_next_job(self, *, node_name: str):
         return self._request("POST", "/processing-jobs/claim-next/", {"node_name": node_name}, allow_empty=True)
 
@@ -90,4 +104,25 @@ class AgentApiClient:
 
             time.sleep(self.retry_backoff * attempt)
 
+        raise last_error or AgentApiError(f"{method} {path} failed.")
+
+    def _request_bytes(self, method: str, path: str, payload: bytes, *, content_type: str):
+        headers = {"Authorization": f"Bearer {self.token}", "Content-Type": content_type}
+        last_error = None
+        for attempt in range(1, self.retries + 1):
+            http_request = request.Request(f"{self.base_url}{path}", data=payload, headers=headers, method=method)
+            try:
+                with request.urlopen(http_request, timeout=self.timeout) as response:
+                    raw = response.read().decode("utf-8")
+                    return json.loads(raw) if raw else None
+            except error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                last_error = AgentApiError(f"{method} {path} failed with HTTP {exc.code}: {body}")
+                if exc.code < 500 or attempt == self.retries:
+                    raise last_error from exc
+            except error.URLError as exc:
+                last_error = AgentApiError(f"{method} {path} failed: {exc.reason}")
+                if attempt == self.retries:
+                    raise last_error from exc
+            time.sleep(self.retry_backoff * attempt)
         raise last_error or AgentApiError(f"{method} {path} failed.")

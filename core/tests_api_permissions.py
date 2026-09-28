@@ -3,8 +3,10 @@ import json
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -24,6 +26,7 @@ from core.models import (
     LabMembership,
     PeptideQuant,
     ProcessingJob,
+    ProcessingJobArtifact,
     ProcessingNode,
     ProcessingNodeEvent,
     ProcessingPipeline,
@@ -33,6 +36,7 @@ from core.models import (
     QcProgram,
     RawFile,
     RawFileDerivative,
+    ReleaseChannel,
     Run,
     RunFileRole,
     Sample,
@@ -42,6 +46,7 @@ from core.models import (
     UserRole,
     WorklistEntry,
 )
+from core.services.worklist_generation import GeneratedWorklist
 
 User = get_user_model()
 
@@ -172,6 +177,68 @@ class ApiPermissionTests(TestCase):
         )
         self.assertEqual([item["id"] for item in response.data[:2]], [newer.id, older.id])
 
+    def test_researcher_downloads_managed_files_without_exposing_filesystem_urls(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_root = root / "raw"
+            results_root = root / "results"
+            media_root = root / "media"
+            raw_root.mkdir()
+            results_root.mkdir()
+            media_root.mkdir()
+
+            experiment = Experiment.objects.create(project=self.project_a, name="Download test")
+            sample = Sample.objects.create(experiment=experiment, name="Sample download")
+            run = Run.objects.create(sample=sample, run_name="Download run")
+            raw_path = raw_root / "download.raw"
+            derivative_path = results_root / "download.mzML"
+            artifact_path = results_root / "download-report.tsv"
+            raw_path.write_bytes(b"raw")
+            derivative_path.write_bytes(b"mzml")
+            artifact_path.write_bytes(b"report")
+            raw_file = RawFile.objects.create(
+                run=run,
+                source_path="/incoming/download.raw",
+                storage_path=str(raw_path),
+                filename="download.raw",
+                size_bytes=raw_path.stat().st_size,
+                status="imported",
+            )
+            pipeline = ProcessingPipeline.objects.create(name="Download pipeline", version="1")
+            job = ProcessingJob.objects.create(run=run, raw_file=raw_file, pipeline=pipeline, status=ProcessingStatus.COMPLETE)
+            derivative = RawFileDerivative.objects.create(
+                raw_file=raw_file,
+                derivative_type="mzml",
+                status="ready",
+                path=str(derivative_path),
+                size_bytes=derivative_path.stat().st_size,
+            )
+            artifact = ProcessingJobArtifact.objects.create(
+                job=job,
+                artifact_type="other",
+                path=str(artifact_path),
+                size_bytes=artifact_path.stat().st_size,
+            )
+
+            with override_settings(
+                RAW_FILE_STORAGE_ROOT=str(raw_root),
+                RESULTS_ROOT=str(results_root),
+                MEDIA_ROOT=str(media_root),
+            ):
+                self.client.force_authenticate(user=self.researcher)
+                for endpoint, expected in (
+                    (f"/api/raw-files/{raw_file.id}/download/", b"raw"),
+                    (f"/api/raw-file-derivatives/{derivative.id}/download/", b"mzml"),
+                    (f"/api/processing-job-artifacts/{artifact.id}/download/", b"report"),
+                ):
+                    response = self.client.get(endpoint)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(b"".join(response.streaming_content), expected)
+                    self.assertNotIn("file://", response.get("Content-Disposition", ""))
+
+                self.client.force_authenticate(user=self.external)
+                self.assertEqual(self.client.get(f"/api/raw-files/{raw_file.id}/download/").status_code, 404)
+
     def test_project_rerun_latest_diann_batch_requeues_raw_job_without_conversion(self):
         self.client.force_authenticate(user=self.pi_user)
         experiment = Experiment.objects.create(project=self.project_a, name="Batch rerun", created_by=self.pi_user)
@@ -293,6 +360,91 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(first_entry.expected_filename, "Run_001_REINJECT.raw")
         self.assertEqual(first_entry.run.expected_filename, "Run_001_REINJECT.raw")
         self.assertEqual(first_entry.metadata["well"], "A01")
+
+    def test_worklist_exports_canonical_ms_and_lc_csv(self):
+        self.client.force_authenticate(user=self.researcher)
+        quick_response = self.client.post(
+            "/api/projects/quick-start/",
+            data={"title": "Worklist Export Project", "code": "WL-EXPORT"},
+            format="json",
+        )
+        project_id = quick_response.data["project"]["id"]
+        response = self.client.post(
+            f"/api/projects/{project_id}/import-worklist/",
+            data={
+                "worklist_name": "Export worklist",
+                "rows": [
+                    {
+                        "position": 1,
+                        "sample_name": "Sample-001",
+                        "expected_filename": "Sample_001.raw",
+                        "file_role": "sample",
+                        "metadata": {"ms_method": "DIA", "lc_method": "Gradient", "sample_type": "Sample"},
+                    }
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        worklist_id = response.data["worklist"]["id"]
+
+        export = self.client.get(f"/api/acquisition-worklists/{worklist_id}/export/?export_format=ms")
+
+        self.assertEqual(export.status_code, 200)
+        self.assertEqual(export["Content-Type"], "text/csv; charset=utf-8")
+        self.assertIn("Sample_001.raw", export.content.decode())
+        self.assertIn("DIA", export.content.decode())
+        self.assertEqual(export["X-Worklist-Revision"], "1")
+
+    def test_generate_worklist_requires_an_excel_upload(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.post(
+            f"/api/projects/{self.project_a.id}/generate-worklist/",
+            data={},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("workbook", response.data)
+
+    @patch("core.api.generate_vendor_worklists")
+    def test_generate_worklist_imports_generated_runs(self, generate_mock):
+        self.client.force_authenticate(user=self.researcher)
+        with TemporaryDirectory() as temporary_directory, self.settings(MEDIA_ROOT=temporary_directory):
+            output_directory = Path(temporary_directory) / "generated-worklists" / str(self.project_a.id)
+            output_directory.mkdir(parents=True, exist_ok=True)
+            ms_path = output_directory / "plate_MS.csv"
+            lc_path = output_directory / "plate_LC.csv"
+            csv_content = "Bracket Type=4,,,,,\nSample Type,File Name,Path,Instrument Method,Position,Inj Vol\nSample,run_001.raw,/data,method,A1,2\n"
+            ms_path.write_text(csv_content, encoding="utf-8")
+            lc_path.write_text(csv_content, encoding="utf-8")
+            generate_mock.return_value = GeneratedWorklist(
+                input_path=output_directory / "method.xlsx",
+                output_directory=output_directory,
+                ms_path=ms_path,
+                lc_path=lc_path,
+                filenames=("run_001.raw",),
+                condition_names=("healthy",),
+                replicate_numbers=(1,),
+            )
+            response = self.client.post(
+                f"/api/projects/{self.project_a.id}/generate-worklist/",
+                data={
+                    "workbook": SimpleUploadedFile("method.xlsx", b"placeholder", content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                    "worklist_name": "Generated plate",
+                },
+                format="multipart",
+            )
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertEqual(response.data["generator"]["run_count"], 1)
+            self.assertTrue(WorklistEntry.objects.filter(worklist__name="Generated plate", expected_filename="run_001.raw").exists())
+            stored_worklist = AcquisitionWorklist.objects.get(pk=response.data["worklist"]["id"])
+            self.assertTrue((Path(temporary_directory) / "generated-worklists" / str(self.project_a.id) / "plate_LC.csv").is_file())
+            self.assertEqual(stored_worklist.metadata["generator_artifacts"]["directory"], f"generated-worklists/{self.project_a.id}")
+            generated_lc = self.client.get(
+                f"/api/acquisition-worklists/{response.data['worklist']['id']}/generated-csv/?export_format=lc"
+            )
+            self.assertEqual(generated_lc.status_code, 200)
+            self.assertIn("run_001.raw", b"".join(generated_lc.streaming_content).decode())
 
     def test_researcher_status_returns_single_page_run_rows(self):
         self.client.force_authenticate(user=self.researcher)
@@ -1438,6 +1590,38 @@ class AgentApiTests(TestCase):
         self.assertEqual(node.desired_release_id, release.id)
         self.assertEqual(node.release_status, "pending")
         self.assertEqual(node.metadata["control"]["command"], "upgrade")
+
+    def test_production_release_requires_immutable_digest(self):
+        admin = User.objects.create_user(username="release-policy-admin", password="password123")
+        UserProfile.objects.create(user=admin, global_role=UserRole.ADMIN)
+        self.client.force_authenticate(user=admin)
+
+        missing_digest = self.client.post(
+            "/api/deployment-releases/",
+            {"version": "2026.09.1", "channel": ReleaseChannel.PRODUCTION, "image": "registry.example/msconnect:2026.09.1"},
+            format="json",
+        )
+        self.assertEqual(missing_digest.status_code, 400)
+        self.assertIn("digest", missing_digest.data)
+
+        mutable_image = self.client.post(
+            "/api/deployment-releases/",
+            {"version": "2026.09.2", "channel": ReleaseChannel.STAGING, "image": "registry.example/msconnect:latest"},
+            format="json",
+        )
+        self.assertEqual(mutable_image.status_code, 400)
+
+        valid = self.client.post(
+            "/api/deployment-releases/",
+            {
+                "version": "2026.09.3",
+                "channel": ReleaseChannel.PRODUCTION,
+                "image": "registry.example/msconnect:2026.09.3",
+                "digest": "sha256:" + "a" * 64,
+            },
+            format="json",
+        )
+        self.assertEqual(valid.status_code, 201)
 
     def test_processor_heartbeat_accepts_engine_type_and_acknowledges_control(self):
         processor = self._processor_client()

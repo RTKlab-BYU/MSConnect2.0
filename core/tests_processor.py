@@ -71,6 +71,11 @@ class ProcessingRoutingTests(TestCase):
 
         self.assertFalse(should_queue_spectra_conversion_for_raw_file(raw_file))
 
+    def test_skips_bruker_tims_directory_inputs(self):
+        raw_file = self._build_raw_file(filename="sample.d")
+
+        self.assertFalse(should_queue_spectra_conversion_for_raw_file(raw_file))
+
     def test_skips_diann_jobs(self):
         raw_file = self._build_raw_file(filename="sample.raw")
         pipeline = ProcessingPipeline.objects.create(name="DIA-NN", version="1.0", parameters={"adapter": "diann"})
@@ -277,6 +282,27 @@ class ProcessorAdapterTests(SimpleTestCase):
         self.assertIn(str(manifest_path), plan.files_to_write)
         self.assertEqual(plan.command, ["Spectronaut.exe", "-i", "Z:/raw/sample.raw", "-o", str(results_dir.resolve())])
         self.assertEqual(plan.artifact_files[-1]["artifact_type"], "enterprise_export")
+
+    def test_windows_enterprise_adapter_uses_external_worker_contract(self):
+        with TemporaryDirectory() as temp_dir:
+            results_dir = Path(temp_dir)
+            plan = render_adapter_plan(
+                adapter="windows-enterprise",
+                parameters={
+                    "command": ["MSConnectEnterpriseWorker.exe", "--input", "{raw_file_path}", "--output", "{results_dir}"],
+                    "handoff_manifest": "windows-enterprise-handoff.json",
+                },
+                placeholders={
+                    "job_id": "11",
+                    "raw_file_path": r"Z:\\raw\\sample.raw",
+                    "results_dir": str(results_dir),
+                    "run_name": "Sample Run",
+                },
+                results_dir=results_dir,
+            )
+
+        self.assertEqual(plan.command[0], "MSConnectEnterpriseWorker.exe")
+        self.assertIn("windows-enterprise-handoff.json", next(iter(plan.files_to_write)))
 
     @override_settings(
         RAW_FILE_STORAGE_ROOT="/shared/raw",

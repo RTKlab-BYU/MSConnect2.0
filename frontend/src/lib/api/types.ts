@@ -272,6 +272,12 @@ export type WorklistImportResponse = {
   samples_imported: number;
   runs_imported: number;
   worklist_entries_imported: number;
+  generator?: {
+    source_workbook: string;
+    ms_csv: string;
+    lc_csv: string;
+    run_count: number;
+  };
 };
 
 export type InstrumentConfiguration = {
@@ -857,7 +863,10 @@ export type AcquisitionWorklist = {
   name: string;
   configuration: EntityId | null;
   status: "draft" | "ready" | "acquiring" | "complete";
+  revision: number;
   generated_by: EntityId | null;
+  frozen_at: string | null;
+  frozen_by: EntityId | null;
   notes: string;
   metadata: Record<string, unknown>;
   created_at: string;

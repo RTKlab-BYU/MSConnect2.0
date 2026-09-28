@@ -831,10 +831,19 @@ class AcquisitionWorklist(TimestampedModel):
         null=True,
     )
     status = models.CharField(max_length=32, choices=WorklistStatus.choices, default=WorklistStatus.DRAFT)
+    revision = models.PositiveIntegerField(default=1)
     generated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
         related_name="generated_worklists",
+        blank=True,
+        null=True,
+    )
+    frozen_at = models.DateTimeField(blank=True, null=True)
+    frozen_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="frozen_worklists",
         blank=True,
         null=True,
     )
@@ -858,6 +867,7 @@ class WorklistEntry(TimestampedModel):
     file_role = models.CharField(max_length=32, choices=RunFileRole.choices, default=RunFileRole.SAMPLE)
     qc_program = models.CharField(max_length=32, choices=QcProgram.choices, blank=True, default=QcProgram.NONE)
     expected_filename = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True, db_index=True)
     injection_volume_ul = models.FloatField(blank=True, null=True)
     hye_pair_label = models.CharField(max_length=64, blank=True)
     block_label = models.CharField(max_length=64, blank=True)
@@ -868,7 +878,11 @@ class WorklistEntry(TimestampedModel):
         ordering = ("worklist", "position")
         constraints = (
             models.UniqueConstraint(fields=("worklist", "position"), name="uniq_worklist_position"),
-            models.UniqueConstraint(fields=("worklist", "expected_filename"), name="uniq_worklist_expected_filename"),
+            models.UniqueConstraint(
+                fields=("worklist", "expected_filename"),
+                condition=models.Q(is_active=True),
+                name="uniq_active_worklist_expected_filename",
+            ),
         )
 
     def save(self, *args, **kwargs):
@@ -1093,6 +1107,8 @@ class ProteinIdentification(TimestampedModel):
     protein = models.ForeignKey(Protein, on_delete=models.PROTECT, related_name="identifications")
     score = models.FloatField(blank=True, null=True)
     q_value = models.FloatField(blank=True, null=True)
+    q_value_level = models.CharField(max_length=64, default="protein_group")
+    q_value_context = models.CharField(max_length=64, default="run")
     coverage_percent = models.FloatField(blank=True, null=True)
     peptide_count = models.PositiveIntegerField(default=0)
     metadata = models.JSONField(default=dict, blank=True)
@@ -1111,6 +1127,8 @@ class PeptideIdentification(TimestampedModel):
     peptide = models.ForeignKey(Peptide, on_delete=models.PROTECT, related_name="identifications")
     score = models.FloatField(blank=True, null=True)
     q_value = models.FloatField(blank=True, null=True)
+    q_value_level = models.CharField(max_length=64, default="precursor")
+    q_value_context = models.CharField(max_length=64, default="run")
     retention_time_seconds = models.FloatField(blank=True, null=True)
     mz = models.FloatField(blank=True, null=True)
     metadata = models.JSONField(default=dict, blank=True)

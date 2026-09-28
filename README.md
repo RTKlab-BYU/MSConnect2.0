@@ -472,11 +472,20 @@ Back up these paths together so database records and raw files stay consistent:
 ## Tagged Deployments
 
 Git tags matching `v*.*.*` publish the shared application image to Docker Hub.
+Every successful push to `main` also publishes an immutable `main-<commit>`
+image after the test job passes. Use that image for method-lab validation, then
+promote a reviewed digest or version tag to facility production.
 
 Deploy a tagged release by setting:
 
 ```sh
 MSCONNECT_IMAGE=docker.io/<your-dockerhub-user>/msconnect:vX.Y.Z
+```
+
+For the latest tested `main` commit, use:
+
+```sh
+MSCONNECT_IMAGE=docker.io/<your-dockerhub-user>/msconnect:main-<full-git-sha>
 ```
 
 Then run:

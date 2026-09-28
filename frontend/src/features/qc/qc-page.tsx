@@ -63,10 +63,12 @@ export default function QcPage() {
   const overviewQuery = useQuery({
     queryKey: queryKeys.qcOverview(qcParams),
     queryFn: () => fetchQcOverview(qcParams),
+    refetchInterval: 20_000,
   });
   const detailsQuery = useQuery({
     queryKey: queryKeys.qcDetails(qcParams),
     queryFn: () => fetchQcDetails(qcParams),
+    refetchInterval: 20_000,
   });
 
   const overview = overviewQuery.data;
@@ -307,7 +309,7 @@ export default function QcPage() {
                     <Card className="border-dashed">
                       <CardHeader className="pb-3">
                         <CardTitle className="text-base">Pair score</CardTitle>
-                        <CardDescription>Levy-Jennings input for the selected HYE pair.</CardDescription>
+                        <CardDescription>Levey-Jennings input for the selected HYE pair.</CardDescription>
                       </CardHeader>
                       <CardContent className="grid gap-2 text-sm">
                         <div className="flex items-center justify-between gap-3">

@@ -5,6 +5,29 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def extract_zip_safely(archive_path: Path, destination: Path) -> None:
+    """Extract a ZIP without allowing paths to escape the destination."""
+
+    destination = Path(destination).resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive_path) as archive:
+        members = archive.infolist()
+        for member in members:
+            member_path = Path(member.filename)
+            if member_path.is_absolute() or ".." in member_path.parts:
+                raise ValueError(f"unsafe ZIP member path: {member.filename}")
+            # UNIX mode bits identify symlinks in the upper 16 bits of
+            # external_attr. Do not create links during a restore test.
+            unix_mode = (member.external_attr >> 16) & 0o170000
+            if unix_mode == 0o120000:
+                raise ValueError(f"symlink ZIP member is not allowed: {member.filename}")
+            target = (destination / member_path).resolve()
+            if target != destination and destination not in target.parents:
+                raise ValueError(f"unsafe ZIP member path: {member.filename}")
+        for member in members:
+            archive.extract(member, destination)
+
+
 @dataclass(frozen=True)
 class StorageRootReport:
     root: Path

@@ -1,10 +1,14 @@
+import csv
 import hashlib
 import json
 import math
+import mimetypes
 import re
 import shutil
 import uuid
+import zipfile
 from datetime import datetime, timedelta
+from io import StringIO
 from pathlib import Path, PurePath
 from statistics import mean, median, pstdev
 
@@ -16,6 +20,7 @@ from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import Count, F, Prefetch, Q, Sum
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import filters, pagination, permissions, serializers, status, viewsets
@@ -37,10 +42,20 @@ from core.services.lifecycle import (
     record_processing_completion,
     record_raw_file_import,
     record_result_files_uploaded,
+    update_worklist_status_for_run,
 )
 from core.services.notifications import send_notification
-from core.services.processing_routing import should_queue_spectra_conversion_for_raw_file
-from ingest.result_import import ResultTableImportError, import_result_tables
+from core.services.processing_routing import (
+    is_spectra_conversion_job,
+    job_dependencies_satisfied,
+    should_queue_spectra_conversion_for_raw_file,
+)
+from core.services.worklist_generation import (
+    WorklistGenerationError,
+    generate_vendor_worklists,
+    generated_worklist_rows,
+)
+from ingest.result_import import ResultTableImportError, import_diann_report, import_result_tables
 from ingest.services import build_storage_path, find_run_for_path, parse_filename_metadata, record_ingestion_failure
 from msconnect.health import _database_check, _path_check
 
@@ -88,6 +103,7 @@ from .models import (
     RawFileDerivative,
     RawFileDerivativeType,
     RawFileStatus,
+    ReleaseChannel,
     Run,
     RunFileRole,
     RunStatus,
@@ -294,6 +310,38 @@ class WorklistImportSerializer(serializers.Serializer):
             row["file_role"] = _normalize_run_file_role(row.get("file_role"))
             row["qc_program"] = _normalize_qc_program(row.get("qc_program"), row["file_role"])
         return rows
+
+
+def _worklist_export_csv(worklist: AcquisitionWorklist, export_type: str) -> str:
+    """Render the canonical frozen worklist into an instrument-facing CSV."""
+    export_type = export_type.lower()
+    if export_type not in {"ms", "lc"}:
+        raise ValidationError({"format": "format must be 'ms' or 'lc'."})
+
+    output = StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(["Bracket Type=4", "", "", "", "", ""])
+    writer.writerow(["Sample Type", "File Name", "Path", "Instrument Method", "Position", "Inj Vol"])
+    entries = worklist.entries.filter(is_active=True).select_related("run", "run__sample").order_by("position")
+    for entry in entries:
+        metadata = entry.metadata or {}
+        method_key = "ms_method" if export_type == "ms" else "lc_method"
+        path_key = "ms_path" if export_type == "ms" else "lc_path"
+        sample_type = metadata.get("sample_type") or entry.file_role
+        filename = entry.expected_filename
+        path = metadata.get(path_key) or metadata.get("data_path") or ""
+        method = metadata.get(method_key) or metadata.get("instrument_method") or ""
+        writer.writerow(
+            [
+                sample_type,
+                filename,
+                path,
+                method,
+                entry.position,
+                entry.injection_volume_ul if entry.injection_volume_ul is not None else "",
+            ]
+        )
+    return output.getvalue()
 
 
 class QueueRunsSerializer(serializers.Serializer):
@@ -541,6 +589,22 @@ class ProcessingPipelineSerializer(BaseSerializer):
 
 
 class DeploymentReleaseSerializer(BaseSerializer):
+    def validate(self, attrs):
+        image = str(attrs.get("image", getattr(self.instance, "image", "")) or "").strip()
+        digest = str(attrs.get("digest", getattr(self.instance, "digest", "")) or "").strip()
+        channel = attrs.get("channel", getattr(self.instance, "channel", ReleaseChannel.STAGING))
+        if not image or any(character.isspace() for character in image):
+            raise serializers.ValidationError({"image": "A non-empty image reference without whitespace is required."})
+        if image in {"msconnect:site", "msconnect:local"} or image.endswith(":latest"):
+            raise serializers.ValidationError({"image": "Mutable local/latest image references are not allowed."})
+        if digest and not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+            raise serializers.ValidationError({"digest": "digest must be sha256:<64 hex characters>."})
+        if channel == ReleaseChannel.PRODUCTION and not digest:
+            raise serializers.ValidationError({"digest": "Production releases must include an immutable image digest."})
+        attrs["image"] = image
+        attrs["digest"] = digest
+        return attrs
+
     class Meta(BaseSerializer.Meta):
         model = DeploymentRelease
 
@@ -1102,6 +1166,17 @@ def _resolve_managed_read_path(path_value: str) -> Path:
     if not candidate.is_file():
         raise ValidationError({"path": f"Derivative path must point to a file: {candidate}"})
     return candidate
+
+
+def _managed_file_response(path_value: str, *, filename: str | None = None) -> FileResponse:
+    path = _resolve_managed_read_path(path_value)
+    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(
+        path.open("rb"),
+        as_attachment=True,
+        filename=filename or path.name,
+        content_type=content_type,
+    )
 
 
 def _load_spectrum_index(raw_file: RawFile) -> tuple[RawFileDerivative | None, dict]:
@@ -1962,6 +2037,7 @@ class AgentRawFileImportView(AgentApiView):
             if run:
                 processing_job = _queue_processing_job_for_raw_file(raw_file)
                 _queue_spectra_conversion_job_for_raw_file(raw_file, processing_job=processing_job)
+                update_worklist_status_for_run(run)
             else:
                 _record_file_match_exception(
                     raw_file,
@@ -2029,7 +2105,7 @@ class ProcessingJobClaimView(AgentApiView):
                         .filter(id=candidate_id, status=candidate_status)
                         .first()
                     )
-                    if not job or not _node_can_run_job(node, job):
+                    if not job or not _node_can_run_job(node, job) or not job_dependencies_satisfied(job):
                         continue
                     updated = ProcessingJob.objects.filter(id=candidate_id, status=candidate_status).update(
                         status=ProcessingStatus.ASSIGNED,
@@ -2233,6 +2309,22 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
             _auto_artifact_payloads(protein_table=protein_table, peptide_table=peptide_table, log_path=log_path)
             + explicit_artifacts,
         )
+        diann_reports = [
+            Path(artifact.path)
+            for artifact in artifact_records
+            if artifact.artifact_type == ProcessingArtifactType.DIANN_REPORT
+            and str(artifact.path).lower().endswith(".parquet")
+            and Path(artifact.path).exists()
+        ]
+        if diann_reports:
+            try:
+                diann_summary = import_diann_report(job=job, report_path=diann_reports[0])
+            except ResultTableImportError as exc:
+                raise ValidationError({"diann_report": str(exc)}) from exc
+            result_summary = {**(result_summary or {}), **diann_summary}
+            metadata["result_import"] = result_summary
+            for key in ("protein_quant_rows", "protein_ident_rows", "peptide_quant_rows", "peptide_ident_rows"):
+                stats_payload[key] = result_summary.get(key, 0)
         if artifact_records:
             metadata["artifacts"] = [
                 {
@@ -2320,10 +2412,20 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
             ]
         )
 
-        job.raw_file.status = RawFileStatus.PROCESSED
-        job.raw_file.save(update_fields=["status", "updated_at"])
-        job.run.status = "processed"
-        job.run.save(update_fields=["status", "updated_at"])
+        if is_spectra_conversion_job(job):
+            # Conversion is an intermediate derivative. It must not close the
+            # run or make an experiment appear complete before analysis.
+            if job.raw_file.status not in {RawFileStatus.FAILED, RawFileStatus.PROCESSED}:
+                job.raw_file.status = RawFileStatus.IMPORTED
+                job.raw_file.save(update_fields=["status", "updated_at"])
+            if job.run.status not in {RunStatus.FAILED, RunStatus.PROCESSED}:
+                job.run.status = RunStatus.IMPORTED
+                job.run.save(update_fields=["status", "updated_at"])
+        else:
+            job.raw_file.status = RawFileStatus.PROCESSED
+            job.raw_file.save(update_fields=["status", "updated_at"])
+            job.run.status = RunStatus.PROCESSED
+            job.run.save(update_fields=["status", "updated_at"])
 
         record_processing_completion(
             job,
@@ -2645,6 +2747,7 @@ class FileMatchExceptionViewSet(viewsets.ReadOnlyModelViewSet):
         )
         processing_job = _queue_processing_job_for_raw_file(raw_file)
         _queue_spectra_conversion_job_for_raw_file(raw_file, processing_job=processing_job)
+        update_worklist_status_for_run(run)
         return Response(self.get_serializer(exception).data)
 
 
@@ -3486,6 +3589,11 @@ class SignupView(APIView):
     permission_classes = (permissions.AllowAny,)
 
     def post(self, request):
+        if not settings.MSCONNECT_PUBLIC_SIGNUP_ENABLED:
+            return Response(
+                {"detail": "Public signup is disabled. Ask an administrator for an invitation."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         serializer = SignupSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -3715,6 +3823,60 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         if lab_filter:
             queryset = queryset.filter(lab_id=lab_filter)
         return queryset
+
+    @action(detail=True, methods=["post"], url_path="generate-worklist")
+    def generate_worklist(self, request, pk=None):
+        """Generate instrument CSVs and import their MS rows as run ground truth."""
+        project = self.get_object()
+        workbook = request.FILES.get("workbook")
+        if workbook is None:
+            raise ValidationError({"workbook": "Upload an Excel workbook in the 'workbook' field."})
+        if not str(workbook.name).lower().endswith((".xlsx", ".xlsm")):
+            raise ValidationError({"workbook": "The generator accepts .xlsx or .xlsm workbooks."})
+        safe_name = Path(workbook.name).name
+        output_directory = Path(settings.MEDIA_ROOT).resolve() / "generated-worklists" / str(project.id)
+        output_directory.mkdir(parents=True, exist_ok=True)
+        input_path = output_directory / safe_name
+        with input_path.open("wb") as destination:
+            for chunk in workbook.chunks():
+                destination.write(chunk)
+        try:
+            generated = generate_vendor_worklists(input_path, output_directory)
+            rows = generated_worklist_rows(generated)
+        except WorklistGenerationError as exc:
+            raise ValidationError({"workbook": str(exc)}) from exc
+
+        payload = {
+            "worklist_name": request.data.get("worklist_name") or generated.ms_path.stem,
+            "experiment_name": request.data.get("experiment_name") or "Generated acquisition",
+            "diann_version": request.data.get("diann_version") or "2.0",
+            "rows": rows,
+        }
+        # Reuse the established transactional import path so generated rows
+        # receive the same project/experiment/run/worklist linkage as CSV imports.
+        request._full_data = payload
+        response = self.import_worklist(request, pk=project.pk)
+        worklist = AcquisitionWorklist.objects.get(pk=response.data["worklist"]["id"])
+        worklist.metadata = {
+            **(worklist.metadata or {}),
+            "generator_artifacts": {
+                "directory": f"generated-worklists/{project.id}",
+                "ms_filename": generated.ms_path.name,
+                "lc_filename": generated.lc_path.name,
+                "source_workbook": safe_name,
+            },
+        }
+        worklist.save(update_fields=["metadata", "updated_at"])
+        response.data = {
+            **response.data,
+            "generator": {
+                "source_workbook": safe_name,
+                "ms_csv": generated.ms_path.name,
+                "lc_csv": generated.lc_path.name,
+                "run_count": len(rows),
+            },
+        }
+        return response
 
     @action(detail=False, methods=["post"], url_path="quick-start")
     def quick_start(self, request):
@@ -3997,6 +4159,10 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     },
                 },
             )
+            if not _created and (worklist.status in {WorklistStatus.ACQUIRING, WorklistStatus.COMPLETE} or worklist.frozen_at):
+                raise ValidationError({"worklist": "This worklist is frozen or already acquiring; create a new revision."})
+            if not _created:
+                worklist.revision += 1
             worklist.status = WorklistStatus.READY
             worklist.generated_by = worklist.generated_by or request.user
             worklist.metadata = {
@@ -4006,11 +4172,12 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 "processing_plan": pipeline.parameters,
                 "watcher_matching": "expected_filename",
             }
-            worklist.save(update_fields=["status", "generated_by", "metadata", "updated_at"])
+            worklist.save(update_fields=["status", "revision", "generated_by", "metadata", "updated_at"])
 
             existing_by_position = {
                 entry.position: entry for entry in worklist.entries.select_related("run", "run__sample")
             }
+            incoming_positions = {row["position"] for row in data["rows"]}
             samples = []
             runs = []
             entries = []
@@ -4062,6 +4229,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     entry.expected_filename = row["expected_filename"]
                     entry.hye_pair_label = row.get("hye_pair_label", "")
                     entry.notes = row.get("notes", "")
+                    entry.is_active = True
                     entry.metadata = {
                         **(entry.metadata or {}),
                         **metadata,
@@ -4090,6 +4258,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                         qc_program=row.get("qc_program", ""),
                         expected_filename=row["expected_filename"],
                         hye_pair_label=row.get("hye_pair_label", ""),
+                        is_active=True,
                         block_label=f"Block {math.ceil(row['position'] / 24)}",
                         notes=row.get("notes", ""),
                         metadata={
@@ -4102,6 +4271,14 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 samples.append(sample)
                 runs.append(run)
                 entries.append(entry)
+
+            # A revised import is authoritative for this worklist. Retire
+            # omitted rows instead of leaving stale expected filenames active
+            # in the watcher and completion calculation.
+            for position, entry in existing_by_position.items():
+                if position not in incoming_positions and entry.is_active:
+                    entry.is_active = False
+                    entry.save(update_fields=["is_active", "updated_at"])
 
         return Response(
             {
@@ -5020,6 +5197,11 @@ class RawFileViewSet(AuthenticatedModelViewSet):
         )
 
     @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        raw_file = self.get_object()
+        return _managed_file_response(raw_file.storage_path, filename=raw_file.filename)
+
+    @action(detail=True, methods=["get"])
     def derivatives(self, request, pk=None):
         raw_file = self.get_object()
         queryset = raw_file.derivatives.order_by("derivative_type", "-updated_at")
@@ -5134,7 +5316,13 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
     serializer_class = DirectUploadSessionSerializer
     scope_lab_lookup = "project__lab_id"
     write_scope_lab_path = "project.lab"
+    allow_watcher_agent = True
     search_fields = ("filename", "storage_key", "checksum_sha256", "project__code", "run__run_name")
+
+    def get_queryset(self):
+        if getattr(self.request.user, "agent_role", None) == "watcher":
+            return self.queryset
+        return super().get_queryset()
     ordering_fields = ("filename", "status", "size_bytes", "created_at", "updated_at")
 
     def create(self, request, *args, **kwargs):
@@ -5142,12 +5330,20 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         if not project_id:
             raise ValidationError({"project": "Project is required for a direct upload session."})
 
+        if getattr(request.user, "agent_role", None) == "watcher":
+            if str(request.data.get("delivery_mode") or "direct").strip().lower() != "direct":
+                raise ValidationError({"delivery_mode": "Watcher direct-upload agents may only use direct delivery."})
+
         try:
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist as exc:
             raise ValidationError({"project": "Project does not exist."}) from exc
 
-        if not is_admin(request.user) and project.lab_id not in set(active_lab_ids(request.user)):
+        if (
+            not getattr(request.user, "agent_role", None)
+            and not is_admin(request.user)
+            and project.lab_id not in set(active_lab_ids(request.user))
+        ):
             raise PermissionDenied("This upload targets a project outside your lab scope.")
 
         filename = PurePath(str(request.data.get("filename", ""))).name
@@ -5212,7 +5408,11 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
                 "match_source": "expected_filename" if intended_filename else "run" if run_id else "project_only",
                 "delivery_mode": delivery_mode,
             },
-            metadata={**_ensure_dict(request.data.get("metadata"), field_name="metadata"), "delivery_mode": delivery_mode},
+            metadata={
+                **_ensure_dict(request.data.get("metadata"), field_name="metadata"),
+                "delivery_mode": delivery_mode,
+                "uploader_agent": getattr(request.user, "token_label", "") if getattr(request.user, "agent_role", None) else "",
+            },
         )
         serializer = self.get_serializer(session)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -5311,6 +5511,7 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
             raise ValidationError({"size_bytes": "Uploaded chunks do not match the expected file size."})
 
         delivery_mode = str((session.metadata or {}).get("delivery_mode") or "direct").strip().lower()
+        directory_bundle = bool((session.metadata or {}).get("directory_bundle"))
         if delivery_mode == "watcher":
             if destination.exists():
                 temp_destination.unlink(missing_ok=True)
@@ -5331,8 +5532,35 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
             if destination.exists():
                 temp_destination.unlink(missing_ok=True)
                 raise ValidationError({"storage_path": "A file already exists at the destination path."})
-            shutil.copy2(temp_destination, destination)
-            temp_destination.unlink(missing_ok=True)
+            if directory_bundle:
+                staging_directory = destination.parent / f".{destination.name}.{session.upload_id}.extracting"
+                shutil.rmtree(staging_directory, ignore_errors=True)
+                try:
+                    with zipfile.ZipFile(temp_destination) as archive:
+                        for member in archive.infolist():
+                            member_path = Path(member.filename)
+                            if member.is_dir():
+                                continue
+                            if member_path.is_absolute() or ".." in member_path.parts:
+                                raise ValidationError({"upload": "Directory bundle contains an unsafe path."})
+                            if (member.external_attr >> 16) & 0o170000 == 0o120000:
+                                raise ValidationError({"upload": "Directory bundle contains a symlink."})
+                        archive.extractall(staging_directory)
+                except zipfile.BadZipFile as exc:
+                    raise ValidationError({"upload": "Directory bundle is not a valid ZIP archive."}) from exc
+                extracted_root = staging_directory / str((session.metadata or {}).get("original_directory") or session.filename)
+                if not extracted_root.exists() or not extracted_root.is_dir():
+                    candidates = [child for child in staging_directory.iterdir() if child.is_dir()]
+                    if len(candidates) != 1:
+                        shutil.rmtree(staging_directory, ignore_errors=True)
+                        raise ValidationError({"upload": "Directory bundle must contain one acquisition directory."})
+                    extracted_root = candidates[0]
+                extracted_root.rename(destination)
+                shutil.rmtree(staging_directory, ignore_errors=True)
+                temp_destination.unlink(missing_ok=True)
+            else:
+                shutil.copy2(temp_destination, destination)
+                temp_destination.unlink(missing_ok=True)
             raw_file = RawFile.objects.create(
                 run=run,
                 source_path=f"direct-upload:{session.upload_id}",
@@ -5371,6 +5599,7 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
             if run:
                 processing_job = _queue_processing_job_for_raw_file(raw_file)
                 _queue_spectra_conversion_job_for_raw_file(raw_file, processing_job=processing_job)
+                update_worklist_status_for_run(run)
             else:
                 _record_file_match_exception(
                     raw_file,
@@ -5421,6 +5650,11 @@ class RawFileDerivativeViewSet(AuthenticatedModelViewSet):
             queryset = queryset.filter(status=status_filter)
         return queryset
 
+    @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        derivative = self.get_object()
+        return _managed_file_response(derivative.path)
+
 
 class ProcessingJobArtifactViewSet(AuthenticatedModelViewSet):
     queryset = ProcessingJobArtifact.objects.select_related(
@@ -5461,6 +5695,11 @@ class ProcessingJobArtifactViewSet(AuthenticatedModelViewSet):
             queryset = queryset.filter(retained=False)
         return queryset
 
+    @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        artifact = self.get_object()
+        return _managed_file_response(artifact.path)
+
 
 class AcquisitionWorklistViewSet(AuthenticatedModelViewSet):
     queryset = AcquisitionWorklist.objects.select_related("experiment", "configuration", "generated_by")
@@ -5482,6 +5721,50 @@ class AcquisitionWorklistViewSet(AuthenticatedModelViewSet):
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         return queryset
+
+    @action(detail=True, methods=["post"])
+    def freeze(self, request, pk=None):
+        worklist = self.get_object()
+        if worklist.status not in {WorklistStatus.DRAFT, WorklistStatus.READY} or worklist.frozen_at:
+            raise ValidationError({"status": "Only an unfrozen draft or ready worklist can be frozen."})
+        if not worklist.entries.filter(is_active=True).exists():
+            raise ValidationError({"entries": "A worklist must contain at least one active entry."})
+        worklist.status = WorklistStatus.READY
+        worklist.frozen_at = timezone.now()
+        worklist.frozen_by = request.user
+        worklist.save(update_fields=["status", "frozen_at", "frozen_by", "updated_at"])
+        return Response(self.get_serializer(worklist).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get"], url_path="export")
+    def export(self, request, pk=None):
+        worklist = self.get_object()
+        # ``format`` is reserved by DRF content negotiation and values such
+        # as ``ms`` are interpreted as an invalid renderer, producing a 404.
+        export_type = str(request.query_params.get("export_format") or "ms").strip().lower()
+        content = _worklist_export_csv(worklist, export_type)
+        filename = f"{worklist.name.replace(' ', '_')}_{export_type.upper()}.csv"
+        response = Response(content, content_type="text/csv; charset=utf-8", status=status.HTTP_200_OK)
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        response["X-Worklist-Revision"] = str(worklist.revision)
+        response["X-Worklist-Frozen"] = "true" if worklist.frozen_at else "false"
+        return response
+
+    @action(detail=True, methods=["get"], url_path="generated-csv")
+    def generated_csv(self, request, pk=None):
+        worklist = self.get_object()
+        export_type = str(request.query_params.get("export_format") or "ms").strip().lower()
+        if export_type not in {"ms", "lc"}:
+            raise ValidationError({"export_format": "export_format must be 'ms' or 'lc'."})
+        artifacts = (worklist.metadata or {}).get("generator_artifacts") or {}
+        filename = artifacts.get(f"{export_type}_filename")
+        relative_directory = artifacts.get("directory")
+        if not filename or not relative_directory:
+            raise ValidationError({"worklist": "This worklist has no generated instrument CSV artifacts."})
+        root = Path(settings.MEDIA_ROOT).resolve()
+        path = (root / relative_directory / Path(filename).name).resolve()
+        if root not in path.parents or not path.is_file():
+            raise ValidationError({"worklist": "The generated artifact is unavailable."})
+        return FileResponse(path.open("rb"), as_attachment=True, filename=path.name, content_type="text/csv")
 
 
 class WorklistEntryViewSet(AuthenticatedModelViewSet):

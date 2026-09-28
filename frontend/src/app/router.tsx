@@ -96,7 +96,7 @@ export const router = createBrowserRouter(
         {
           path: "qc/hye",
           element: (
-            <RoleGuard allow={["admin", "pi"]}>
+            <RoleGuard allow={["admin", "pi", "researcher", "collaborator"]}>
               <Suspense fallback={<RouteFallback label="Loading HYE QC workspace" />}><QcPage /></Suspense>
             </RoleGuard>
           ),
@@ -104,7 +104,7 @@ export const router = createBrowserRouter(
         {
           path: "qc/prtc",
           element: (
-            <RoleGuard allow={["admin", "pi"]}>
+            <RoleGuard allow={["admin", "pi", "researcher", "collaborator"]}>
               <Suspense fallback={<RouteFallback label="Loading PRTC QC workspace" />}><QcPage /></Suspense>
             </RoleGuard>
           ),
@@ -112,7 +112,7 @@ export const router = createBrowserRouter(
         {
           path: "qc/hye/:worklistId/:pairLabel",
           element: (
-            <RoleGuard allow={["admin", "pi"]}>
+            <RoleGuard allow={["admin", "pi", "researcher", "collaborator"]}>
               <Suspense fallback={<RouteFallback label="Loading HYE record" />}>
                 <HyePairPage />
               </Suspense>

@@ -1,3 +1,4 @@
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -8,6 +9,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import (
+    AcquisitionWorklist,
     Facility,
     Lab,
     Peptide,
@@ -34,6 +36,7 @@ from core.models import (
     University,
     WorklistEntry,
 )
+from core.storage_ops import extract_zip_safely
 
 
 class OperationalSmokeCommandTests(TestCase):
@@ -78,6 +81,57 @@ class OperationalSmokeCommandTests(TestCase):
 
             with self.assertRaises(CommandError):
                 call_command("verify_e2e_smoke_fixture", code="E2E-INCOMPLETE")
+
+    def test_verify_launch_acceptance_checks_real_run_evidence(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with override_settings(INCOMING_RAW_ROOT=str(root / "incoming")):
+                call_command("create_e2e_smoke_fixture", code="LAUNCH-UNIT")
+
+            project = Project.objects.get(code="LAUNCH-UNIT")
+            experiment = project.experiments.get()
+            worklist = AcquisitionWorklist.objects.get(experiment=experiment)
+            worklist.status = "ready"
+            worklist.frozen_at = timezone.now()
+            worklist.save(update_fields=["status", "frozen_at", "updated_at"])
+            run = experiment.samples.get().runs.get()
+            raw_file = RawFile.objects.create(
+                run=run,
+                source_path=str(root / "incoming" / run.expected_filename),
+                storage_path=str(root / "raw" / run.expected_filename),
+                filename=run.expected_filename,
+                checksum_sha256="f" * 64,
+                size_bytes=100,
+                imported_at=timezone.now(),
+                status=RawFileStatus.PROCESSED,
+            )
+            job = ProcessingJob.objects.create(
+                run=run,
+                raw_file=raw_file,
+                pipeline_id=worklist.metadata["processing_pipeline_id"],
+                status=ProcessingStatus.COMPLETE,
+                stats={"runtime_manifest_path": str(root / "results" / "runtime-manifest.json")},
+            )
+            ProcessingJobArtifact.objects.create(
+                job=job,
+                artifact_type=ProcessingArtifactType.LOG,
+                path=str(root / "results" / "process.log"),
+                format="log",
+            )
+            run.status = RunStatus.PROCESSED
+            run.save(update_fields=["status", "updated_at"])
+            now = timezone.now()
+            ProcessingNode.objects.create(name="launch-watcher", node_type="watcher", last_heartbeat_at=now)
+            ProcessingNode.objects.create(name="launch-processor", node_type="processor", last_heartbeat_at=now)
+
+            call_command(
+                "verify_launch_acceptance",
+                project_code=project.code,
+                experiment_id=experiment.id,
+                min_runs=1,
+                skip_qc=True,
+                skip_archive=True,
+            )
 
     def test_verify_e2e_smoke_fixture_passes_after_completed_job(self):
         with TemporaryDirectory() as temp_dir:
@@ -267,6 +321,19 @@ class OperationalSmokeCommandTests(TestCase):
                 ).count(),
                 2,
             )
+
+    def test_archive_restore_rejects_zip_path_traversal(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path = root / "malicious.zip"
+            destination = root / "restore"
+            outside = root / "escaped.txt"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("../../escaped.txt", "must not be written")
+
+            with self.assertRaises(ValueError):
+                extract_zip_safely(archive_path, destination)
+            self.assertFalse(outside.exists())
 
     def test_cleanup_processing_state_removes_transient_jobs_and_resets_nodes(self):
         with TemporaryDirectory() as temp_dir:

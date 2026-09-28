@@ -1,12 +1,11 @@
 import tempfile
-import zipfile
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from core.models import RawFileArchive, RawFileArchiveCopyStatus, RawFileArchiveStatus
-from core.storage_ops import sha256_file
+from core.storage_ops import extract_zip_safely, sha256_file
 from ingest.services import hash_path
 
 
@@ -83,8 +82,7 @@ class Command(BaseCommand):
             archive_path = Path(archive_copy.path) if archive_copy else archive_path
         with tempfile.TemporaryDirectory() as temp_dir:
             restore_root = Path(temp_dir)
-            with zipfile.ZipFile(archive_path) as zip_file:
-                zip_file.extractall(restore_root)
+            extract_zip_safely(archive_path, restore_root)
             restored_items = list(restore_root.iterdir())
             if len(restored_items) != 1:
                 raise CommandError("restore test expected exactly one top-level restored path")

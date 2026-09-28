@@ -41,18 +41,30 @@ esac
 command -v docker >/dev/null || { echo "Docker is required" >&2; exit 1; }
 docker compose version >/dev/null || { echo "Docker Compose v2 is required" >&2; exit 1; }
 
-# Read only the optional service list; the env file remains owned by the caller.
+# Read only the optional service list and production switch; the env file
+# remains owned by the caller. Always select the server topology explicitly so
+# a second compose file in the checkout cannot change the systemd deployment.
 compose_services="$(awk -F= '$1 == "MSCONNECT_COMPOSE_SERVICES" {print substr($0, index($0,"=")+1); exit}' "$env_file")"
 compose_services="${compose_services:-$default_services}"
 [[ "$compose_services" != *";"* && "$compose_services" != *"&&"* ]] || {
   echo "invalid MSCONNECT_COMPOSE_SERVICES" >&2; exit 2;
 }
+production="$(awk -F= '$1 == "MSCONNECT_PRODUCTION" {print substr($0, index($0,"=")+1); exit}' "$env_file")"
+compose_files="-f docker-compose.msconnect2.server.yml"
+if [[ "$production" == "1" || "$production" == "true" || "$production" == "yes" ]]; then
+  [[ -x "$project_dir/scripts/check-production-env.sh" ]] || {
+    echo "production preflight script is missing or not executable" >&2; exit 1;
+  }
+  (cd "$project_dir" && "$project_dir/scripts/check-production-env.sh" "$env_file")
+  compose_files+=" -f docker-compose.production.yml"
+fi
 
 unit="/etc/systemd/system/msconnect-${role}.service"
 sed \
   -e "s|%i|$role|g" \
   -e "s|%E/MSCONNECT_PROJECT_DIR|$project_dir|g" \
   -e "s|%E/MSCONNECT_ENV_FILE|$env_file|g" \
+  -e "s|%E/MSCONNECT_COMPOSE_FILES|$compose_files|g" \
   -e "s|%E/MSCONNECT_COMPOSE_SERVICES|$compose_services|g" \
   "$(dirname "$0")/msconnect-node.service" > "$unit"
 

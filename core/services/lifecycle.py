@@ -4,6 +4,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from core.models import (
+    AcquisitionWorklist,
     Experiment,
     ExperimentStatus,
     PipelineEvent,
@@ -13,7 +14,10 @@ from core.models import (
     ProjectStatus,
     RawFileStatus,
     Run,
+    WorklistEntry,
+    WorklistStatus,
 )
+from core.services.processing_routing import is_spectra_conversion_job
 
 
 def record_pipeline_event(
@@ -158,18 +162,40 @@ def recompute_experiment_and_project_status(experiment: Experiment, *, actor=Non
         return updates
 
 
-def _experiment_is_complete(experiment: Experiment) -> bool:
-    runs = list(
-        Run.objects.filter(sample__experiment=experiment)
-        .select_related("sample", "sample__experiment")
-        .prefetch_related("raw_files", "processing_jobs")
+def update_worklist_status_for_run(run: Run) -> None:
+    """Advance acquisition status without conflating it with analysis status."""
+    worklist = (
+        AcquisitionWorklist.objects.filter(entries__run=run)
+        .distinct()
+        .first()
     )
+    if not worklist or worklist.status not in {WorklistStatus.READY, WorklistStatus.ACQUIRING}:
+        return
+
+    if worklist.status == WorklistStatus.READY:
+        worklist.status = WorklistStatus.ACQUIRING
+
+    entries = list(worklist.entries.filter(is_active=True).select_related("run"))
+    if entries and all(entry.run.raw_files.exists() for entry in entries):
+        worklist.status = WorklistStatus.COMPLETE
+    worklist.save(update_fields=["status", "updated_at"])
+
+
+def _experiment_is_complete(experiment: Experiment) -> bool:
+    active_entries = WorklistEntry.objects.filter(worklist__experiment=experiment, is_active=True)
+    runs_query = (
+        Run.objects.filter(worklist_entry__in=active_entries)
+        if active_entries.exists()
+        else Run.objects.filter(sample__experiment=experiment, worklist_entry__isnull=True)
+    )
+    runs = list(runs_query.select_related("sample", "sample__experiment").prefetch_related("raw_files", "processing_jobs"))
     if not runs:
         return False
 
     for run in runs:
         latest_raw_file = run.raw_files.order_by("-imported_at", "-created_at", "filename").first()
-        latest_job = run.processing_jobs.order_by("-created_at", "-id").first()
+        analysis_jobs = [job for job in run.processing_jobs.all() if not is_spectra_conversion_job(job)]
+        latest_job = sorted(analysis_jobs, key=lambda job: (job.created_at, job.id), reverse=True)[0] if analysis_jobs else None
         if not latest_raw_file or latest_raw_file.status != RawFileStatus.PROCESSED:
             return False
         if not latest_job or latest_job.status != ProcessingStatus.COMPLETE:

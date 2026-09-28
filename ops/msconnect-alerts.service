@@ -6,4 +6,4 @@ After=msconnect-server.service
 [Service]
 Type=oneshot
 WorkingDirectory=%E/MSCONNECT_PROJECT_DIR
-ExecStart=/usr/bin/docker compose --env-file %E/MSCONNECT_ENV_FILE exec -T web python manage.py notify_stale_nodes
+ExecStart=/usr/bin/docker compose --env-file %E/MSCONNECT_ENV_FILE %E/MSCONNECT_COMPOSE_FILES exec -T web python manage.py notify_stale_nodes

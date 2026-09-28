@@ -21,6 +21,15 @@ def env_csv(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def env_key_values(name: str) -> dict[str, str]:
+    values = {}
+    for item in env_csv(name):
+        key, separator, value = item.partition("=")
+        if separator and key.strip() and value.strip():
+            values[key.strip()] = value.strip()
+    return values
+
+
 def discover_capability_apps() -> list[str]:
     if not env_bool("MSCONNECT_AUTO_DISCOVER_CAPABILITIES", True):
         return []
@@ -155,6 +164,7 @@ MSCONNECT_STORAGE_BLOCK_PERCENT = int(os.environ.get("MSCONNECT_STORAGE_BLOCK_PE
 MSCONNECT_DEFAULT_FACILITY_SLUG = os.environ.get("MSCONNECT_DEFAULT_FACILITY_SLUG", "")
 
 MSCONNECT_WATCHER_TOKEN = os.environ.get("MSCONNECT_WATCHER_TOKEN", "")
+MSCONNECT_WATCHER_TOKENS = env_key_values("MSCONNECT_WATCHER_TOKENS")
 MSCONNECT_PROCESSOR_TOKEN = os.environ.get("MSCONNECT_PROCESSOR_TOKEN", "")
 MSCONNECT_API_BASE_URL = os.environ.get("MSCONNECT_API_BASE_URL", "http://web:8000/api")
 MSCONNECT_AGENT_NAME = os.environ.get("MSCONNECT_AGENT_NAME", "")
@@ -168,6 +178,9 @@ MSCONNECT_API_DISCOVERY_BASE_URLS = env_csv("MSCONNECT_API_DISCOVERY_BASE_URLS")
 MSCONNECT_API_DISCOVERY_HOSTS = env_csv("MSCONNECT_API_DISCOVERY_HOSTS", "web,server,msconnect-web,django,msconnect")
 WATCHER_INTERVAL_SECONDS = int(os.environ.get("WATCHER_INTERVAL_SECONDS", "60"))
 WATCHER_STABILITY_CHECKS = int(os.environ.get("WATCHER_STABILITY_CHECKS", "2"))
+MSCONNECT_UPLOAD_PROJECT_ID = os.environ.get("MSCONNECT_UPLOAD_PROJECT_ID", "")
+MSCONNECT_UPLOAD_SOURCE_ROOT = os.environ.get("MSCONNECT_UPLOAD_SOURCE_ROOT", INCOMING_RAW_ROOT)
+MSCONNECT_UPLOAD_CHUNK_SIZE_BYTES = int(os.environ.get("MSCONNECT_UPLOAD_CHUNK_SIZE_BYTES", str(8 * 1024 * 1024)))
 PROCESSOR_POLL_INTERVAL_SECONDS = int(os.environ.get("PROCESSOR_POLL_INTERVAL_SECONDS", "15"))
 MSCONNECT_PROCESSING_LEASE_SECONDS = int(os.environ.get("MSCONNECT_PROCESSING_LEASE_SECONDS", "300"))
 MSCONNECT_PROCESSING_RECOVERY_GRACE_SECONDS = int(
@@ -188,6 +201,7 @@ EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL", False)
 EMAIL_TIMEOUT = int(os.environ.get("EMAIL_TIMEOUT", "10"))
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "msconnect@localhost")
 MSCONNECT_AUTO_QUEUE_SPECTRA_CONVERSION = env_bool("MSCONNECT_AUTO_QUEUE_SPECTRA_CONVERSION", False)
+MSCONNECT_PUBLIC_SIGNUP_ENABLED = env_bool("MSCONNECT_PUBLIC_SIGNUP_ENABLED", False)
 MSCONNECT_MSCONVERT_EXECUTABLE = os.environ.get("MSCONNECT_MSCONVERT_EXECUTABLE", "msconvert")
 MSCONNECT_MSCONVERT_OUTPUT_FORMAT = os.environ.get("MSCONNECT_MSCONVERT_OUTPUT_FORMAT", "mzML")
 MSCONNECT_PWIZ_VERSION = os.environ.get("MSCONNECT_PWIZ_VERSION", "site-configured")

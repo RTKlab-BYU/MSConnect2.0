@@ -1,4 +1,4 @@
-import { getResource, paginatedResource, patchResource, postResource, type ListParams } from "@/lib/api/client";
+import { downloadResource, getResource, paginatedResource, patchResource, postResource, type ListParams, uploadResource } from "@/lib/api/client";
 import type {
   AcquisitionWorklist,
   AnalysisPreset,
@@ -231,6 +231,22 @@ export function previewPreAcquisitionSetup(payload: PreAcquisitionSetupPayload):
 
 export function importProjectWorklist(projectId: number, payload: WorklistImportPayload): Promise<WorklistImportResponse> {
   return postResource<WorklistImportResponse>(`/projects/${projectId}/import-worklist/`, payload);
+}
+
+export function generateProjectWorklist(projectId: number, workbook: File, options: { worklistName: string; experimentName?: string }): Promise<WorklistImportResponse> {
+  const formData = new FormData();
+  formData.append("workbook", workbook);
+  formData.append("worklist_name", options.worklistName);
+  if (options.experimentName) formData.append("experiment_name", options.experimentName);
+  return uploadResource<WorklistImportResponse>(`/projects/${projectId}/generate-worklist/`, formData);
+}
+
+export function downloadWorklist(worklistId: number, exportFormat: "ms" | "lc"): Promise<Blob> {
+  return downloadResource(`/acquisition-worklists/${worklistId}/export/?export_format=${exportFormat}`);
+}
+
+export function downloadGeneratedWorklist(worklistId: number, exportFormat: "ms" | "lc"): Promise<Blob> {
+  return downloadResource(`/acquisition-worklists/${worklistId}/generated-csv/?export_format=${exportFormat}`);
 }
 
 export function queueProjectReadyRuns(projectId: number, experimentId?: number): Promise<{ queued: number; jobs: ProcessingJob[] }> {

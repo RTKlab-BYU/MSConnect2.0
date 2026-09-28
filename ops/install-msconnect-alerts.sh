@@ -8,8 +8,19 @@ env_file="${2:-$project_dir/.env}"
 command -v docker >/dev/null || { echo "Docker is required" >&2; exit 1; }
 docker compose version >/dev/null || { echo "Docker Compose v2 is required" >&2; exit 1; }
 
+production="$(awk -F= '$1 == "MSCONNECT_PRODUCTION" {print substr($0, index($0,"=")+1); exit}' "$env_file")"
+compose_files="-f docker-compose.msconnect2.server.yml"
+if [[ "$production" == "1" || "$production" == "true" || "$production" == "yes" ]]; then
+  [[ -x "$project_dir/scripts/check-production-env.sh" ]] || {
+    echo "production preflight script is missing or not executable" >&2; exit 1;
+  }
+  (cd "$project_dir" && "$project_dir/scripts/check-production-env.sh" "$env_file")
+  compose_files+=" -f docker-compose.production.yml"
+fi
+
 for template in msconnect-alerts.service msconnect-alerts.timer; do
   sed -e "s|%E/MSCONNECT_PROJECT_DIR|$project_dir|g" -e "s|%E/MSCONNECT_ENV_FILE|$env_file|g" \
+    -e "s|%E/MSCONNECT_COMPOSE_FILES|$compose_files|g" \
     "$(dirname "$0")/$template" > "/etc/systemd/system/$template"
 done
 systemctl daemon-reload

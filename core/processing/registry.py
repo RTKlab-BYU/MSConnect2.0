@@ -10,7 +10,15 @@ from django.core.management.base import CommandError
 from core.processing.diann import validation_errors
 
 REFERENCE_KINDS = {"fasta", "speclib", "skyline_document", "fragpipe_workflow"}
-ENGINE_NAMES = {"diann", "fragpipe", "msconvert", "proteome-discoverer", "skyline", "spectronaut"}
+ENGINE_NAMES = {
+    "diann",
+    "fragpipe",
+    "msconvert",
+    "proteome-discoverer",
+    "skyline",
+    "spectronaut",
+    "windows-enterprise",
+}
 IMAGE_ENGINE_NAMES = {"diann", "fragpipe", "skyline"}
 
 
@@ -221,6 +229,10 @@ def resolve_pipeline_parameters(parameters: dict, *, engine: str | None = None) 
             kind="skyline_document",
         )
         _append_input_files(resolved, ["document"])
+    elif normalized_engine == "windows-enterprise":
+        # The enterprise worker is provisioned outside Linux Compose. Keep its
+        # job contract in the same registry and require a site command array.
+        resolved["adapter"] = resolved.get("adapter") or "enterprise-handoff"
 
     return resolved
 
@@ -421,6 +433,7 @@ def _default_executable(engine: str) -> str:
         "proteome-discoverer": "ProteomeDiscoverer.exe",
         "skyline": "SkylineCmd",
         "spectronaut": "Spectronaut.exe",
+        "windows-enterprise": "MSConnectEnterpriseWorker.exe",
     }.get(engine, engine)
 
 
@@ -431,6 +444,7 @@ def _engine_label(engine: str) -> str:
         "proteome-discoverer": "Proteome Discoverer",
         "skyline": "Skyline",
         "spectronaut": "Spectronaut",
+        "windows-enterprise": "Windows enterprise worker",
     }.get(engine, engine)
 
 

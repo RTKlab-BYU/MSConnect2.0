@@ -13,6 +13,7 @@ import { fetchCurrentUser, fetchProjectResearcherStatus, fetchRunSummary, queryK
 import type { ProjectResearcherRun, RunSummary } from "@/lib/api/types";
 import { formatBytes, formatDate } from "@/lib/format";
 import { isOperatorRole } from "@/lib/ui-surface";
+import { ChromatogramPanel } from "@/features/visualization/chromatogram-panel";
 
 const numberFormat = new Intl.NumberFormat();
 
@@ -128,6 +129,8 @@ export default function SampleReportPage() {
         <MetricCard label="Proteins" value={metric(totals.reported_protein_count || totals.protein_quant_count)} detail="reported or quantified" />
         <MetricCard label="Peptides" value={metric(totals.reported_peptide_count || totals.peptide_quant_count)} detail="reported or quantified" />
       </section>
+
+      {allRawFiles[0] ? <ChromatogramPanel rawFile={allRawFiles[0]} /> : null}
 
       <Card>
         <CardHeader>
@@ -276,10 +279,10 @@ export default function SampleReportPage() {
                 ) : (
                   <div className="mt-3 grid gap-3">
                     <div className="grid gap-2 text-sm">
-                      <ResultLine label="Report" value={fileLink(artifactPath(item.summary, "diann_report") ?? "-")} />
-                      <ResultLine label="Speclib" value={fileLink(artifactPath(item.summary, "other", "diann_speclib") ?? "-")} />
-                      <ResultLine label="Log" value={fileLink(artifactPath(item.summary, "log") ?? item.row.processing_job?.log_path ?? "-")} />
-                      <ResultLine label="Runtime manifest" value={fileLink(artifactPath(item.summary, "other", "runtime_manifest") ?? "-")} />
+                  <ResultLine label="Report" value={artifactLink(item.summary, "diann_report")} />
+                  <ResultLine label="Speclib" value={artifactLink(item.summary, "other", "diann_speclib")} />
+                  <ResultLine label="Log" value={artifactLink(item.summary, "log", undefined, item.row.processing_job?.log_path)} />
+                  <ResultLine label="Runtime manifest" value={artifactLink(item.summary, "other", "runtime_manifest")} />
                     </div>
                     <div>
                       <div className="mb-2 text-xs font-black uppercase tracking-[0.16em] text-muted-foreground">Artifacts</div>
@@ -291,7 +294,7 @@ export default function SampleReportPage() {
                               {artifact.format ? <Badge variant="info">{artifact.format}</Badge> : null}
                               {artifact.retained ? <Badge variant="success">Retained</Badge> : <Badge variant="warning">Dropped</Badge>}
                             </div>
-                            <div className="mt-1">{fileLink(artifact.path, "break-all font-mono text-[11px] text-muted-foreground")}</div>
+                            <div className="mt-1">{fileLink(artifact.path, "break-all font-mono text-[11px] text-muted-foreground", `/processing-job-artifacts/${artifact.id}/download/`)}</div>
                           </div>
                         ))}
                         {!item.summary?.artifacts?.length ? (
@@ -323,7 +326,7 @@ export default function SampleReportPage() {
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       <div>{formatBytes(rawFile.size_bytes)}</div>
-                      {fileLink(rawFile.storage_path, "break-all")}
+                      {fileLink(rawFile.storage_path, "break-all", `/raw-files/${rawFile.id}/download/`)}
                     </div>
                   </div>
                 ))}
@@ -341,7 +344,7 @@ export default function SampleReportPage() {
                       <StatusBadge status={derivative.status} />
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      {fileLink(derivative.path, "break-all")}
+                      {fileLink(derivative.path, "break-all", `/raw-file-derivatives/${derivative.id}/download/`)}
                       <div>{derivative.format || "Unknown format"}</div>
                     </div>
                   </div>
@@ -380,7 +383,7 @@ export default function SampleReportPage() {
                       </div>
                     </td>
                     <td className="px-3 py-3">{artifact.format || "-"}</td>
-                    <td className="px-3 py-3">{fileLink(artifact.path, "break-all font-mono text-xs")}</td>
+                    <td className="px-3 py-3">{fileLink(artifact.path, "break-all font-mono text-xs", `/processing-job-artifacts/${artifact.id}/download/`)}</td>
                   </tr>
                 ))}
                 {!allArtifacts.length ? (
@@ -414,7 +417,7 @@ export default function SampleReportPage() {
               <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
                 <span>Expected: {row.run.expected_filename || "-"}</span>
                 <span>Raw file: {row.raw_file?.filename ?? "missing"}</span>
-                <span className="break-all">Storage: {fileLink(row.raw_file?.storage_path ?? "-")}</span>
+                <span className="break-all">Storage: {fileLink(row.raw_file?.storage_path ?? "-", "", row.raw_file ? `/raw-files/${row.raw_file.id}/download/` : undefined)}</span>
               </div>
               {row.raw_file ? (
                 <Button asChild className="mt-3" size="sm" variant="secondary">
@@ -450,8 +453,8 @@ function ResultLine({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function fileLink(value: string, className = "") {
-  const href = fileHref(value);
+function fileLink(value: string, className = "", downloadHref?: string) {
+  const href = downloadHref || fileHref(value);
   if (!href) {
     return <span className={`break-all ${className}`.trim()}>{value}</span>;
   }
@@ -470,11 +473,18 @@ function fileLink(value: string, className = "") {
   );
 }
 
+function artifactLink(summary: RunSummary | undefined, artifactType: string, role?: string, fallback?: string) {
+  const artifact = (summary?.artifacts ?? []).find((item) => {
+    if (item.artifact_type !== artifactType) return false;
+    if (!role) return true;
+    return item.metadata && typeof item.metadata === "object" && (item.metadata as Record<string, unknown>).role === role;
+  });
+  return artifact ? fileLink(artifact.path, "", `/processing-job-artifacts/${artifact.id}/download/`) : fileLink(fallback ?? "-");
+}
+
 function fileHref(value: string) {
   if (!value || value === "-") return null;
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) return value;
-  if (/^[a-zA-Z]:[\\/]/.test(value)) return `file:///${value.replace(/\\/g, "/")}`;
-  if (value.startsWith("/")) return `file://${value}`;
   return null;
 }
 

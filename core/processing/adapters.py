@@ -29,7 +29,13 @@ def render_adapter_plan(
         return _fragpipe_plan(parameters=parameters, placeholders=placeholders, results_dir=results_dir)
     if adapter in {"skyline", "skylinecmd"}:
         return _skyline_plan(parameters=parameters, placeholders=placeholders, results_dir=results_dir)
-    if adapter in {"proteome-discoverer", "proteome_discoverer", "spectronaut", "enterprise-handoff"}:
+    if adapter in {
+        "proteome-discoverer",
+        "proteome_discoverer",
+        "spectronaut",
+        "windows-enterprise",
+        "enterprise-handoff",
+    }:
         return _enterprise_handoff_plan(
             adapter=adapter,
             parameters=parameters,

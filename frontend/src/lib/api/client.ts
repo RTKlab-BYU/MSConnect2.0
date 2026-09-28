@@ -62,6 +62,44 @@ export async function getResource<T>(path: string) {
   return apiFetch<T>(path);
 }
 
+export async function downloadResource(path: string): Promise<Blob> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    credentials: "same-origin",
+    headers: {
+      Accept: "text/csv, application/octet-stream",
+      "X-CSRFToken": csrfToken(),
+    },
+  });
+  if (response.status === 401 || response.status === 403) {
+    window.location.assign(`/accounts/login/?next=${encodeURIComponent(window.location.pathname)}`);
+    throw new Error("Authentication required");
+  }
+  if (!response.ok) {
+    throw new Error((await response.text()) || `Download failed with status ${response.status}`);
+  }
+  return response.blob();
+}
+
+export async function uploadResource<T>(path: string, formData: FormData): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    body: formData,
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "X-CSRFToken": csrfToken(),
+    },
+  });
+  if (response.status === 401 || response.status === 403) {
+    window.location.assign(`/accounts/login/?next=${encodeURIComponent(window.location.pathname)}`);
+    throw new Error("Authentication required");
+  }
+  if (!response.ok) {
+    throw new Error((await response.text()) || `Upload failed with status ${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
 export async function postResource<T>(path: string, body: unknown) {
   return apiFetch<T>(path, {
     method: "POST",

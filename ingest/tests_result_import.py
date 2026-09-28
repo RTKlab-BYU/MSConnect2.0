@@ -1,5 +1,7 @@
+import importlib.util
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import skipUnless
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -19,7 +21,7 @@ from core.models import (
     Sample,
     University,
 )
-from ingest.result_import import import_result_tables
+from ingest.result_import import import_diann_report, import_result_tables
 
 User = get_user_model()
 
@@ -77,6 +79,45 @@ class ResultTableImportTests(TestCase):
         self.assertEqual(PeptideQuant.objects.count(), 1)
         self.assertEqual(PeptideIdentification.objects.count(), 1)
 
+    @skipUnless(importlib.util.find_spec("pyarrow"), "pyarrow is required for DIA-NN parquet import")
+    def test_imports_diann_parquet_with_run_and_global_q_values(self):
+        import pyarrow as pa
+        import pyarrow.parquet as parquet
+
+        with TemporaryDirectory() as tmp_dir:
+            report = Path(tmp_dir) / "report.parquet"
+            parquet.write_table(
+                pa.table(
+                    {
+                        "File.Name": ["source.raw", "other.raw"],
+                        "Protein.Group": ["P12345", "P99999"],
+                        "PG.Quantity": [1234.5, 99.0],
+                        "PG.Q.Value": [0.01, 0.02],
+                        "Global.PG.Q.Value": [0.015, 0.025],
+                        "Stripped.Sequence": ["PEPTIDE", "OTHER"],
+                        "Modified.Sequence": ["PEPTIDE", "OTHER"],
+                        "Precursor.Id": ["PEPTIDE2", "OTHER2"],
+                        "Precursor.Quantity": [321.5, 50.0],
+                        "Q.Value": [0.005, 0.01],
+                        "Global.Q.Value": [0.006, 0.011],
+                        "RT": [120.0, 130.0],
+                        "Precursor.Charge": [2, 2],
+                        "Precursor.Mz": [550.2, 600.1],
+                    }
+                ),
+                report,
+            )
+            summary = import_diann_report(job=self.job, report_path=report)
+
+        self.assertEqual(summary["diann_report_rows"], 1)
+        self.assertEqual(summary["protein_quant_rows"], 1)
+        self.assertEqual(summary["peptide_ident_rows"], 1)
+        protein_ident = ProteinIdentification.objects.get()
+        peptide_ident = PeptideIdentification.objects.get()
+        self.assertEqual(protein_ident.q_value_context, "run")
+        self.assertEqual(protein_ident.metadata["global_pg_q_value"], 0.015)
+        self.assertEqual(peptide_ident.metadata["global_q_value_context"], "experiment")
+
     def test_reimport_updates_existing_quant_and_ident_rows(self):
         with TemporaryDirectory() as tmp_dir:
             protein_file = Path(tmp_dir) / "proteins.csv"
@@ -106,4 +147,3 @@ class ResultTableImportTests(TestCase):
         self.assertEqual(quant.value, 222.0)
         self.assertEqual(ident.score, 99.0)
         self.assertEqual(ident.q_value, 0.001)
-

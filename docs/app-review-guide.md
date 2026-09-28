@@ -32,7 +32,9 @@ For a host-side Django review, build the React app into Django static files:
 
 ```sh
 cd frontend
-npm install
+# Use Node 22, matching the production Dockerfile (frontend/.nvmrc).
+nvm use
+npm ci
 npm run build
 cd ..
 ```

@@ -1,7 +1,7 @@
 # MSConnect deployment-readiness report
 
-**Review date:** 2026-09-03  
-**Repository:** `main` at `4b96ffd`
+**Review date:** 2026-09-17
+**Repository:** current launch worktree (uncommitted staged implementation)
 
 ## Executive assessment
 
@@ -16,7 +16,7 @@ MSConnect is a functional MVP/scaffold for a lightweight proteomics LIMS/SDMS. T
 - API-authenticated watcher and processor agents with heartbeats, preflight checks, renewable processing leases, recovery of abandoned jobs, pause/drain/stop controls and restart policies.
 - Generic processor execution with logs, result-table import, artifacts, derivatives and reproducibility `runtime-manifest.json` files.
 - Shared storage roots for incoming, immutable raw, results, archive, backup and processor references/libraries.
-- Archive/backup records, verification and restore-test commands; storage capacity reporting and stale-node email notification commands.
+- Archive/backup records, verification and restore-test commands with safe ZIP extraction; storage capacity reporting and stale-node email notification commands.
 - DIA-NN engine profile/pipeline configuration, pinned Linux archive support for 1.8.1/1.9.2/2.0, FASTA/spectral-library metadata and build/reuse policy scaffolding.
 - Headless ProteoWizard/Wine conversion image based on the approved vendor container, including Xvfb/X11 runtime support.
 - Email backend/settings and notification plumbing are present; production SMTP values remain deployment-specific.
@@ -24,7 +24,7 @@ MSConnect is a functional MVP/scaffold for a lightweight proteomics LIMS/SDMS. T
 
 ## Tested and validated
 
-- Pre-push validation on commit `4b96ffd`: Ruff passed, frontend ESLint passed, Django checks passed, migration check passed, and **115 tests passed with 1 skipped**.
+- Containerized backend validation on 2026-09-17: Django checks passed, archive restore security regression passed, and **127 tests passed with 1 skipped**.
 - Tests cover watcher ingestion, worklist matching, processing claims/leasing/recovery, archive behavior, storage reports, engine registry, settings, QC fixtures, tagged operations and complete/incomplete end-to-end fixtures.
 - Compose configuration renders successfully.
 - DIA-NN image launch/version checks passed for 1.8.1, 1.9.2 and 2.0.
@@ -38,8 +38,8 @@ MSConnect is a functional MVP/scaffold for a lightweight proteomics LIMS/SDMS. T
 ### Deployment and infrastructure
 
 - Choose and provision the production shared filesystem/NAS mount, with capacity, quotas, permissions, snapshots and tested restore procedures.
-- Deploy the server with durable Postgres for multi-host concurrency; SQLite is suitable only for the lightweight single-server mode.
-- Build and push approved immutable images to a private registry: web, DIA-NN versions, ProteoWizard, and any FragPipe/Skyline/enterprise workers.
+- Deploy each server instance with durable Postgres using `docker-compose.production.yml`; SQLite is suitable only for local development and single-process demonstrations.
+- Build and push approved immutable images to a private registry: web, DIA-NN versions, ProteoWizard, FragPipe, and any Skyline/enterprise workers. Local release validation now covers DIA-NN 2.0, ProteoWizard, Skyline 26.1, and FragPipe 24.0; registry promotion still requires site policy and real-data acceptance.
 - Configure real secrets: Django secret key, agent tokens, SMTP credentials, database credentials, allowed hosts and CSRF origins. Do not use example/default tokens.
 - Install the server, watcher and processor supervisors (systemd/Compose on Linux; Scheduled Task or service on Windows) and verify boot/reboot recovery.
 - Configure TLS/reverse proxy, DNS, firewall rules, identity provider or SSO, least-privilege service accounts and audit-log retention.

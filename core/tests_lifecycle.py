@@ -32,6 +32,42 @@ from core.services.lifecycle import recompute_experiment_and_project_status
 
 
 class LifecycleStatusTests(TestCase):
+    def test_conversion_completion_does_not_complete_experiment(self):
+        user = get_user_model().objects.create_user(username="conversion-pi", password="pw")
+        university = University.objects.create(name="Conversion University")
+        facility = Facility.objects.create(university=university, name="Conversion Facility", slug="conversion")
+        lab = Lab.objects.create(facility=facility, name="Conversion Lab", slug="conversion-lab", pi=user)
+        project = Project.objects.create(lab=lab, code="CONV-1", title="Conversion Project", pi=user)
+        experiment = Experiment.objects.create(project=project, name="Conversion Experiment")
+        sample = Sample.objects.create(experiment=experiment, name="Sample 1")
+        run = Run.objects.create(sample=sample, run_name="Run 1")
+        raw_file = RawFile.objects.create(
+            run=run,
+            source_path="/tmp/sample.raw",
+            storage_path="/tmp/storage/sample.raw",
+            filename="sample.raw",
+            checksum_sha256="c" * 64,
+            size_bytes=128,
+            imported_at=timezone.now(),
+            status=RawFileStatus.IMPORTED,
+        )
+        pipeline = ProcessingPipeline.objects.create(name="ProteoWizard", version="3")
+        ProcessingJob.objects.create(
+            run=run,
+            raw_file=raw_file,
+            pipeline=pipeline,
+            status=ProcessingStatus.COMPLETE,
+            finished_at=timezone.now(),
+            metadata={"purpose": "spectra_conversion", "required_engine": "msconvert"},
+        )
+
+        recompute_experiment_and_project_status(experiment)
+
+        experiment.refresh_from_db()
+        project.refresh_from_db()
+        self.assertEqual(experiment.status, ExperimentStatus.ACTIVE)
+        self.assertEqual(project.status, ProjectStatus.ACTIVE)
+
     def test_recompute_marks_complete_and_records_events(self):
         user = get_user_model().objects.create_user(username="pi", password="pw")
         university = University.objects.create(name="Lifecycle University")

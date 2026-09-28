@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory = $true)] [string]$ProjectDir,
     [Parameter(Mandatory = $true)] [string]$EnvFile,
     [string]$PythonExe = "python",
-    [string]$LogDir = "C:\ProgramData\MSConnect\logs"
+    [string]$LogDir = "C:\ProgramData\MSConnect\logs",
+    [ValidateSet("watcher", "direct-upload")]
+    [string]$Mode = "watcher"
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,6 +32,8 @@ Set-Location -LiteralPath $ProjectDir
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $logPath = Join-Path $LogDir "watcher-$stamp.log"
 
-& $PythonExe manage.py run_watcher_agent --match-run-by-name *>&1 |
+$command = if ($Mode -eq "direct-upload") { "run_direct_upload_agent" } else { "run_watcher_agent" }
+$arguments = if ($Mode -eq "direct-upload") { @($command) } else { @($command, "--match-run-by-name") }
+& $PythonExe manage.py @arguments *>&1 |
     Tee-Object -FilePath $logPath -Append
 exit $LASTEXITCODE

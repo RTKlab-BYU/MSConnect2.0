@@ -41,12 +41,14 @@ class AgentTokenAuthentication(BaseAuthentication):
         if not token:
             raise AuthenticationFailed("Missing agent bearer token.")
 
-        configured_tokens = {
-            "watcher": settings.MSCONNECT_WATCHER_TOKEN,
-            "processor": settings.MSCONNECT_PROCESSOR_TOKEN,
-        }
-        for role, configured_token in configured_tokens.items():
+        configured_tokens = [("watcher", "service", settings.MSCONNECT_WATCHER_TOKEN)]
+        configured_tokens.extend(
+            ("watcher", label, configured_token)
+            for label, configured_token in settings.MSCONNECT_WATCHER_TOKENS.items()
+        )
+        configured_tokens.append(("processor", "service", settings.MSCONNECT_PROCESSOR_TOKEN))
+        for role, token_label, configured_token in configured_tokens:
             if configured_token and token == configured_token:
-                return AgentIdentity(agent_role=role, token_label="service"), token
+                return AgentIdentity(agent_role=role, token_label=token_label), token
 
         raise AuthenticationFailed("Invalid agent bearer token.")

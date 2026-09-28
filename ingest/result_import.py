@@ -1,5 +1,5 @@
 import csv
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from django.db import transaction
 
@@ -16,6 +16,142 @@ from core.models import (
 
 class ResultTableImportError(Exception):
     pass
+
+
+def import_diann_report(*, job: ProcessingJob, report_path: Path) -> dict:
+    """Import one DIA-NN parquet report while preserving FDR provenance.
+
+    DIA-NN reports contain both run-level and experiment/global q-values. The
+    run values are used for this job's immediate result status; global values
+    remain attached to each identification for later experiment-level matrix
+    filtering and are never silently substituted for the run-level value.
+    """
+    report_path = Path(report_path)
+    if not report_path.exists():
+        raise ResultTableImportError(f"DIA-NN report file not found: {report_path}")
+    try:
+        import pyarrow.parquet as parquet
+    except ImportError as exc:
+        raise ResultTableImportError("DIA-NN parquet import requires the pyarrow package.") from exc
+
+    parquet_file = parquet.ParquetFile(report_path)
+    available = set(parquet_file.schema_arrow.names)
+    columns = [
+        name
+        for name in (
+            "File.Name",
+            "Protein.Group",
+            "PG.MaxLFQ",
+            "PG.Quantity",
+            "PG.Q.Value",
+            "Global.PG.Q.Value",
+            "Stripped.Sequence",
+            "Modified.Sequence",
+            "Precursor.Id",
+            "Precursor.Quantity",
+            "Q.Value",
+            "Global.Q.Value",
+            "RT",
+            "Precursor.Charge",
+            "Precursor.Mz",
+        )
+        if name in available
+    ]
+    if not columns:
+        raise ResultTableImportError(f"DIA-NN report has no recognized identification columns: {report_path}")
+
+    summary = {
+        "diann_report_rows": 0,
+        "protein_quant_rows": 0,
+        "protein_ident_rows": 0,
+        "peptide_quant_rows": 0,
+        "peptide_ident_rows": 0,
+        "q_value_levels": {"protein_group": "PG.Q.Value", "precursor": "Q.Value"},
+        "q_value_context": "run",
+    }
+    seen_proteins = set()
+    raw_stem = _sample_key(getattr(job.raw_file, "filename", ""))
+
+    with transaction.atomic():
+        for batch in parquet_file.iter_batches(columns=columns, batch_size=10_000):
+            for row in batch.to_pylist():
+                if not _diann_row_matches_raw(row, raw_stem):
+                    continue
+                summary["diann_report_rows"] += 1
+                protein_group = str(row.get("Protein.Group") or "").split(";")[0].strip()
+                protein_value = _first_float(row, "PG.MaxLFQ", "PG.Quantity")
+                protein_q = _first_float(row, "PG.Q.Value")
+                global_protein_q = _first_float(row, "Global.PG.Q.Value")
+                if protein_group and protein_value is not None and protein_group not in seen_proteins:
+                    seen_proteins.add(protein_group)
+                    protein, _ = Protein.objects.get_or_create(accession=protein_group[:128], organism="")
+                    ProteinQuant.objects.update_or_create(
+                        job=job,
+                        protein=protein,
+                        label="abundance",
+                        defaults={"value": protein_value, "unit": "area", "metadata": {"source_file": report_path.name}},
+                    )
+                    summary["protein_quant_rows"] += 1
+                if protein_group and protein_q is not None:
+                    protein, _ = Protein.objects.get_or_create(accession=protein_group[:128], organism="")
+                    ProteinIdentification.objects.update_or_create(
+                        job=job,
+                        protein=protein,
+                        defaults={
+                            "q_value": protein_q,
+                            "q_value_level": "protein_group",
+                            "q_value_context": "run",
+                            "metadata": {
+                                "source_file": report_path.name,
+                                "global_pg_q_value": global_protein_q,
+                                "global_q_value_context": "experiment",
+                            },
+                        },
+                    )
+                    summary["protein_ident_rows"] += 1
+
+                sequence = str(row.get("Stripped.Sequence") or "").strip()
+                peptide_value = _first_float(row, "Precursor.Quantity")
+                peptide_q = _first_float(row, "Q.Value")
+                global_peptide_q = _first_float(row, "Global.Q.Value")
+                if sequence and peptide_value is not None:
+                    peptide, _ = Peptide.objects.get_or_create(
+                        sequence=sequence[:1024],
+                        modified_sequence=str(row.get("Modified.Sequence") or sequence)[:2048],
+                        charge=_first_int(row, "Precursor.Charge"),
+                    )
+                    PeptideQuant.objects.update_or_create(
+                        job=job,
+                        peptide=peptide,
+                        label="abundance",
+                        defaults={"value": peptide_value, "unit": "area", "metadata": {"source_file": report_path.name}},
+                    )
+                    summary["peptide_quant_rows"] += 1
+                if sequence and peptide_q is not None:
+                    peptide, _ = Peptide.objects.get_or_create(
+                        sequence=sequence[:1024],
+                        modified_sequence=str(row.get("Modified.Sequence") or sequence)[:2048],
+                        charge=_first_int(row, "Precursor.Charge"),
+                    )
+                    PeptideIdentification.objects.update_or_create(
+                        job=job,
+                        peptide=peptide,
+                        defaults={
+                            "q_value": peptide_q,
+                            "q_value_level": "precursor",
+                            "q_value_context": "run",
+                            "retention_time_seconds": _first_float(row, "RT"),
+                            "mz": _first_float(row, "Precursor.Mz"),
+                            "metadata": {
+                                "source_file": report_path.name,
+                                "precursor_id": row.get("Precursor.Id"),
+                                "global_q_value": global_peptide_q,
+                                "global_q_value_context": "experiment",
+                            },
+                        },
+                    )
+                    summary["peptide_ident_rows"] += 1
+    return summary
 
 
 def import_result_tables(
@@ -174,6 +310,38 @@ def _iter_rows(table_path: Path, *, delimiter: str | None):
                 yield normalized_row
 
 
+def _sample_key(value: str) -> str:
+    name = PureWindowsPath(str(value)).name or Path(str(value)).name
+    lowered = name.lower()
+    for suffix in (".mzml", ".mzxml", ".raw", ".wiff", ".d"):
+        if lowered.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name.lower()
+
+
+def _diann_row_matches_raw(row: dict, raw_stem: str) -> bool:
+    file_name = row.get("File.Name")
+    return not file_name or _sample_key(str(file_name)) == raw_stem
+
+
+def _first_float(row: dict, *aliases: str) -> float | None:
+    for alias in aliases:
+        value = row.get(alias)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _first_int(row: dict, *aliases: str) -> int | None:
+    value = _first_float(row, *aliases)
+    return int(value) if value is not None else None
+
+
 def _required_value(row, *aliases):
     value = _optional_value(row, *aliases)
     if value is None:
@@ -215,4 +383,3 @@ def _optional_int(row, *aliases):
         return int(value)
     except ValueError as exc:
         raise ResultTableImportError(f"Invalid integer for {aliases[0]}: {value}") from exc
-

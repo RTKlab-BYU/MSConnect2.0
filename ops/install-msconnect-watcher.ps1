@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory = $true)] [string]$EnvFile,
     [string]$PythonExe = "python",
     [string]$TaskName = "MSConnect Watcher",
-    [string]$LogDir = "C:\ProgramData\MSConnect\logs"
+    [string]$LogDir = "C:\ProgramData\MSConnect\logs",
+    [ValidateSet("watcher", "direct-upload")]
+    [string]$Mode = "watcher"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,7 +17,7 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
     throw "MSConnect env file not found: $EnvFile"
 }
 
-$actionArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" -ProjectDir `"$ProjectDir`" -EnvFile `"$EnvFile`" -PythonExe `"$PythonExe`" -LogDir `"$LogDir`""
+$actionArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" -ProjectDir `"$ProjectDir`" -EnvFile `"$EnvFile`" -PythonExe `"$PythonExe`" -LogDir `"$LogDir`" -Mode `"$Mode`""
 $action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $actionArgs -WorkingDirectory $ProjectDir
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $restart = New-ScheduledTaskSettingsSet -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)

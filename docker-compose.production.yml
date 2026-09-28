@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DJANGO_DB_NAME:-msconnect}
+      POSTGRES_USER: ${DJANGO_DB_USER:-msconnect}
+      POSTGRES_PASSWORD: ${DJANGO_DB_PASSWORD:?Set DJANGO_DB_PASSWORD in the deployment env file}
+    volumes:
+      - ${POSTGRES_DATA_HOST_PATH:?Set POSTGRES_DATA_HOST_PATH to durable deployment storage}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  web:
+    image: ${MSCONNECT_IMAGE:?Set MSCONNECT_IMAGE to an approved release image}
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in the deployment env file}
+      # The web healthcheck runs from inside the container with Host=127.0.0.1;
+      # retain loopback entries even when the public deployment hostname is the
+      # only value supplied by the operator.
+      DJANGO_ALLOWED_HOSTS: "127.0.0.1,localhost,${DJANGO_ALLOWED_HOSTS:?Set DJANGO_ALLOWED_HOSTS in the deployment env file}"
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:?Set DJANGO_CSRF_TRUSTED_ORIGINS in the deployment env file}
+      DJANGO_DB_ENGINE: django.db.backends.postgresql
+      DJANGO_DB_HOST: postgres
+      DJANGO_DB_PORT: "5432"
+      DJANGO_DB_NAME: ${DJANGO_DB_NAME:-msconnect}
+      DJANGO_DB_USER: ${DJANGO_DB_USER:-msconnect}
+      DJANGO_DB_PASSWORD: ${DJANGO_DB_PASSWORD:?Set DJANGO_DB_PASSWORD in the deployment env file}
+      MSCONNECT_PUBLIC_SIGNUP_ENABLED: "0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  watcher:
+    image: ${MSCONNECT_IMAGE:?Set MSCONNECT_IMAGE to an approved release image}
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in the deployment env file}
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_WATCHER_TOKEN:?Set MSCONNECT_WATCHER_TOKEN in the deployment env file}
+
+  processor:
+    image: ${MSCONNECT_IMAGE:?Set MSCONNECT_IMAGE to an approved release image}
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in the deployment env file}
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:?Set MSCONNECT_PROCESSOR_TOKEN in the deployment env file}
+
+  processor-diann:
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in the deployment env file}
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:?Set MSCONNECT_PROCESSOR_TOKEN in the deployment env file}
+
+  processor-fragpipe:
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in the deployment env file}
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:?Set MSCONNECT_PROCESSOR_TOKEN in the deployment env file}
+
+  processor-pwiz:
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in the deployment env file}
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:?Set MSCONNECT_PROCESSOR_TOKEN in the deployment env file}
+
+  processor-skyline:
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in the deployment env file}
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:?Set MSCONNECT_PROCESSOR_TOKEN in the deployment env file}
+
+  archive-worker:
+    image: ${MSCONNECT_IMAGE:?Set MSCONNECT_IMAGE to an approved release image}
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in the deployment env file}

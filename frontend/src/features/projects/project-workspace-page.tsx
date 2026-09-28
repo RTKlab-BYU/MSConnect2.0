@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { BarChart3, BrainCircuit, CheckCircle2, Copy, FileUp, FolderKanban, RefreshCw, Save, Settings2 } from "lucide-react";
+import { BarChart3, BrainCircuit, CheckCircle2, Copy, FileUp, FolderKanban, RefreshCw, Save, Settings2, WandSparkles } from "lucide-react";
 import type { FormEvent } from "react";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -18,6 +18,9 @@ import {
   fetchExperiments,
   fetchProjectResearcherStatus,
   fetchProjectDiannPreflight,
+  downloadWorklist,
+  downloadGeneratedWorklist,
+  generateProjectWorklist,
   fetchFindingsWorkspace,
   fetchProcessingJobs,
   indexFindingsWorkspace,
@@ -66,6 +69,9 @@ export default function ProjectWorkspacePage() {
   const [worklistName, setWorklistName] = useState("Imported LC-MS worklist");
   const [worklistRows, setWorklistRows] = useState<WorklistImportRow[]>([]);
   const [worklistError, setWorklistError] = useState("");
+  const [generatorOpen, setGeneratorOpen] = useState(false);
+  const [generatorFile, setGeneratorFile] = useState<File | null>(null);
+  const [generatedWorklistId, setGeneratedWorklistId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [selectedRunIds, setSelectedRunIds] = useState<number[]>([]);
   const [workspaceMode, setWorkspaceMode] = useState<"personal" | "shared">("personal");
@@ -162,6 +168,52 @@ export default function ProjectWorkspacePage() {
     },
     onError: (error) => setWorklistError(error instanceof Error ? error.message : "Could not import worklist."),
   });
+  const generatorMutation = useMutation({
+    mutationFn: () => {
+      if (!generatorFile) throw new Error("Choose an Excel workbook first.");
+      return generateProjectWorklist(projectId, generatorFile, {
+        worklistName,
+        experimentName: experiment?.name,
+      });
+    },
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: statusQueryKey });
+      await queryClient.invalidateQueries({ queryKey: preflightQueryKey });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.projectExperiments(projectId) });
+      setGeneratorOpen(false);
+      setGeneratorFile(null);
+      setGeneratedWorklistId(result.worklist.id);
+      setWorklistError(result.generator ? `Generated ${result.generator.run_count} runs: ${result.generator.ms_csv} and ${result.generator.lc_csv}.` : "Worklist generated.");
+    },
+    onError: (error) => setWorklistError(error instanceof Error ? error.message : "Could not generate worklist."),
+  });
+  async function exportWorklist(exportFormat: "ms" | "lc") {
+    const worklistId = preflightQuery.data?.worklist?.id;
+    if (!worklistId) {
+      setWorklistError("No generated worklist is available for export.");
+      return;
+    }
+    const blob = await downloadWorklist(Number(worklistId), exportFormat);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${project?.code ?? "msconnect"}_${exportFormat.toUpperCase()}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+  async function downloadGeneratedCsv(exportFormat: "ms" | "lc") {
+    if (!generatedWorklistId) {
+      setWorklistError("Generate a workbook first to download its instrument CSV.");
+      return;
+    }
+    const blob = await downloadGeneratedWorklist(generatedWorklistId, exportFormat);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${project?.code ?? "msconnect"}_generated_${exportFormat.toUpperCase()}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
   const queueMutation = useMutation({
     mutationFn: () => queueProjectReadyRuns(projectId, isExperimentRoute ? experimentId : undefined),
     onSuccess: async () => {
@@ -330,6 +382,53 @@ export default function ProjectWorkspacePage() {
                 </form>
               </DialogContent>
             </Dialog>
+            <Dialog open={generatorOpen} onOpenChange={setGeneratorOpen}>
+              <DialogTrigger asChild>
+                <Button variant="secondary">
+                  <WandSparkles className="h-4 w-4" />
+                  Generate from Excel
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-xl">
+                <DialogHeader>
+                  <DialogTitle>Generate instrument worklists</DialogTitle>
+                  <DialogDescription>
+                    Upload the validated method-development workbook. MSConnect will generate MS and LC CSVs and create the planned runs under this project.
+                  </DialogDescription>
+                </DialogHeader>
+                <form
+                  className="grid gap-4"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    generatorMutation.mutate();
+                  }}
+                >
+                  <Input value={worklistName} onChange={(event) => setWorklistName(event.target.value)} placeholder="Worklist name" />
+                  <Input type="file" accept=".xlsx,.xlsm" onChange={(event) => setGeneratorFile(event.target.files?.[0] ?? null)} />
+                  <div className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+                    The generated MS CSV is used for run matching; the LC CSV is retained alongside it for instrument setup.
+                  </div>
+                  <div className="flex justify-end gap-2 border-t pt-3">
+                    <Button type="button" variant="secondary" onClick={() => setGeneratorOpen(false)}>Cancel</Button>
+                    <Button type="submit" disabled={generatorMutation.isPending || !generatorFile || !worklistName.trim()}>
+                      {generatorMutation.isPending ? "Generating..." : "Generate and import"}
+                    </Button>
+                  </div>
+                </form>
+              </DialogContent>
+            </Dialog>
+            <Button variant="secondary" onClick={() => void exportWorklist("ms")} disabled={!preflightQuery.data?.worklist}>
+              Export MS CSV
+            </Button>
+            <Button variant="secondary" onClick={() => void exportWorklist("lc")} disabled={!preflightQuery.data?.worklist}>
+              Export LC CSV
+            </Button>
+            <Button variant="ghost" onClick={() => void downloadGeneratedCsv("ms")} disabled={!generatedWorklistId}>
+              Download generated MS
+            </Button>
+            <Button variant="ghost" onClick={() => void downloadGeneratedCsv("lc")} disabled={!generatedWorklistId}>
+              Download generated LC
+            </Button>
           </>
         }
       />

@@ -37,6 +37,9 @@ class RoleScopedWritePermission(permissions.BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
 
+        if getattr(view, "allow_watcher_agent", False) and getattr(request.user, "agent_role", None) == "watcher":
+            return True
+
         if request.method in permissions.SAFE_METHODS:
             return True
 

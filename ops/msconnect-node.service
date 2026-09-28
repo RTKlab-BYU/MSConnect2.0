@@ -8,9 +8,9 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=%E/MSCONNECT_PROJECT_DIR
-ExecStart=/usr/bin/docker compose --env-file %E/MSCONNECT_ENV_FILE up -d --remove-orphans %E/MSCONNECT_COMPOSE_SERVICES
-ExecStop=/usr/bin/docker compose --env-file %E/MSCONNECT_ENV_FILE stop %E/MSCONNECT_COMPOSE_SERVICES
-ExecReload=/usr/bin/docker compose --env-file %E/MSCONNECT_ENV_FILE up -d --remove-orphans %E/MSCONNECT_COMPOSE_SERVICES
+ExecStart=/usr/bin/docker compose --env-file %E/MSCONNECT_ENV_FILE %E/MSCONNECT_COMPOSE_FILES up -d --remove-orphans %E/MSCONNECT_COMPOSE_SERVICES
+ExecStop=/usr/bin/docker compose --env-file %E/MSCONNECT_ENV_FILE %E/MSCONNECT_COMPOSE_FILES stop %E/MSCONNECT_COMPOSE_SERVICES
+ExecReload=/usr/bin/docker compose --env-file %E/MSCONNECT_ENV_FILE %E/MSCONNECT_COMPOSE_FILES up -d --remove-orphans %E/MSCONNECT_COMPOSE_SERVICES
 TimeoutStartSec=0
 TimeoutStopSec=120
 

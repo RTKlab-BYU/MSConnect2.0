@@ -1,0 +1,17 @@
+from core.worklist_generator.vendor.worklist_classes.excel_parser import ExcelParser
+from core.worklist_generator.vendor.worklist_classes.blocker import Blocker
+from core.worklist_generator.vendor.worklist_classes.output import Output
+
+def main(input_filename):
+    parser = ExcelParser(input_filename)
+    parsed_for_blocker, parsed_for_output = parser.parse()
+
+    blocker = Blocker(parsed_for_blocker)
+    blocked_for_output = blocker.block()
+
+    output = Output(parsed_for_output, blocked_for_output)
+    ms_pd, lc_pd, ms_filename, lc_filename, filenames, condition_names, rep_numbers = output.putout()
+    return ms_pd, lc_pd, ms_filename, lc_filename, filenames, condition_names, rep_numbers
+
+if __name__ == "__main__":
+    main()
