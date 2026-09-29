@@ -31,6 +31,8 @@ router.register("pipeline-events", api.PipelineEventViewSet, basename="pipeline-
 router.register("processing-pipelines", api.ProcessingPipelineViewSet)
 router.register("deployment-releases", api.DeploymentReleaseViewSet)
 router.register("processing-nodes", api.ProcessingNodeViewSet)
+router.register("acquisition-agents", api.AcquisitionAgentViewSet)
+router.register("acquisition-routes", api.AcquisitionRouteViewSet)
 router.register("processing-jobs", api.ProcessingJobViewSet)
 router.register("proteins", api.ProteinViewSet)
 router.register("peptides", api.PeptideViewSet)
@@ -48,6 +50,7 @@ urlpatterns = [
     path("intake-requests/metrics/", api.ProjectIntakeRequestViewSet.as_view({"get": "metrics"})),
     path("system-health/", api.SystemHealthView.as_view()),
     path("agents/ping/", api.AgentPingView.as_view()),
+    path("agents/config/", api.AgentConfigView.as_view()),
     path("agents/heartbeat/", api.AgentHeartbeatView.as_view()),
     path("agents/raw-files/import/", api.AgentRawFileImportView.as_view()),
     path("agents/ingestion-failures/", api.AgentIngestionFailureView.as_view()),

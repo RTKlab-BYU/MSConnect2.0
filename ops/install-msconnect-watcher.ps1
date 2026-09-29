@@ -4,7 +4,7 @@ param(
     [string]$PythonExe = "python",
     [string]$TaskName = "MSConnect Watcher",
     [string]$LogDir = "C:\ProgramData\MSConnect\logs",
-    [ValidateSet("watcher", "direct-upload")]
+    [ValidateSet("watcher", "direct-upload", "staged-direct-upload")]
     [string]$Mode = "watcher"
 )
 

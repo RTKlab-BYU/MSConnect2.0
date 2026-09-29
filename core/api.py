@@ -61,6 +61,11 @@ from msconnect.health import _database_check, _path_check
 
 from .agent_auth import AgentTokenAuthentication
 from .models import (
+    AcquisitionAgent,
+    AcquisitionRoute,
+    AcquisitionRouteMode,
+    AcquisitionRouteStatus,
+    AcquisitionSourceRootStatus,
     AcquisitionWorklist,
     AnalysisPreset,
     DeploymentRelease,
@@ -548,6 +553,35 @@ class DirectUploadSessionSerializer(BaseSerializer):
                 }
             )
         return urls
+
+
+class AcquisitionAgentSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = AcquisitionAgent
+        read_only_fields = ("config_version", "last_seen_at", "last_validation")
+
+
+class AcquisitionRouteSerializer(BaseSerializer):
+    agent_name = serializers.CharField(source="agent.name", read_only=True)
+    project_code = serializers.CharField(source="project.code", read_only=True)
+
+    class Meta(BaseSerializer.Meta):
+        model = AcquisitionRoute
+        fields = "__all__"
+
+    def validate(self, attrs):
+        source_prefix = str(attrs.get("source_prefix", getattr(self.instance, "source_prefix", "")) or "")
+        spool_folder = str(attrs.get("spool_folder", getattr(self.instance, "spool_folder", "")) or "")
+        for value, field in ((source_prefix, "source_prefix"), (spool_folder, "spool_folder")):
+            candidate = PurePath(value.replace("\\", "/"))
+            if candidate.is_absolute() or re.match(r"^[A-Za-z]:", value) or ".." in candidate.parts:
+                raise serializers.ValidationError({field: "Must be a relative path without '..'."})
+        mode = attrs.get("mode", getattr(self.instance, "mode", AcquisitionRouteMode.WORKLIST))
+        if mode == AcquisitionRouteMode.WORKLIST and not attrs.get("worklist", getattr(self.instance, "worklist", None)):
+            raise serializers.ValidationError({"worklist": "A worklist route requires a worklist."})
+        if mode == AcquisitionRouteMode.ADHOC and not attrs.get("experiment", getattr(self.instance, "experiment", None)):
+            raise serializers.ValidationError({"experiment": "An ad hoc route requires an experiment."})
+        return attrs
 
 
 def _direct_upload_root() -> Path:
@@ -1487,6 +1521,15 @@ def _queue_processing_job_for_raw_file(raw_file: RawFile) -> ProcessingJob | Non
         .first()
     )
     if not entry:
+        pipeline_id = (raw_file.metadata or {}).get("processing_pipeline_id")
+        pipeline = ProcessingPipeline.objects.filter(pk=pipeline_id).first() if pipeline_id else None
+        if pipeline:
+            return ProcessingJob.objects.get_or_create(
+                run_id=raw_file.run_id,
+                raw_file=raw_file,
+                pipeline=pipeline,
+                defaults={"status": ProcessingStatus.QUEUED, "metadata": {"queued_by": "staged_upload_agent", "routing": "adhoc"}},
+            )[0]
         return None
 
     pipeline_id = (entry.worklist.metadata or {}).get("processing_pipeline_id")
@@ -1948,6 +1991,60 @@ class AgentPingView(AgentApiView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class AgentConfigView(AgentApiView):
+    """Configuration consumed by acquisition PCs; never exposes another agent's routes."""
+
+    agent_roles = ("watcher",)
+
+    def get(self, request):
+        label = getattr(request.user, "token_label", "")
+        agent = AcquisitionAgent.objects.filter(token_label=label, active=True).first()
+        if not agent:
+            raise ValidationError({"agent": "No active acquisition-agent record matches this token label."})
+        agent.last_seen_at = timezone.now()
+        agent.save(update_fields=["last_seen_at", "updated_at"])
+        routes = AcquisitionRoute.objects.filter(agent=agent, status=AcquisitionRouteStatus.ACTIVE).select_related(
+            "project", "worklist", "experiment", "processing_pipeline"
+        )
+        return Response({
+            "agent_name": agent.name,
+            "config_version": agent.config_version,
+            "source_root": agent.source_root,
+            "proposed_source_root": agent.proposed_source_root,
+            "source_root_status": agent.source_root_status,
+            "routes": [
+                {
+                    "id": route.id,
+                    "name": route.name,
+                    "project_id": route.project_id,
+                    "project_code": route.project.code,
+                    "source_prefix": route.source_prefix,
+                    "spool_folder": route.spool_folder,
+                    "mode": route.mode,
+                    "status": route.status,
+                    "worklist_id": route.worklist_id,
+                    "experiment_id": route.experiment_id,
+                    "experiment_name": route.experiment.name if route.experiment_id else "",
+                    "processing_pipeline_id": route.processing_pipeline_id,
+                    "quiet_period_seconds": route.quiet_period_seconds,
+                    "delete_spool_after_upload": route.delete_spool_after_upload,
+                    "metadata": route.metadata,
+                }
+                for route in routes
+            ],
+        })
+
+    def post(self, request):
+        """Record local validation of the approved root without allowing the PC to approve it."""
+        label = getattr(request.user, "token_label", "")
+        agent = get_object_or_404(AcquisitionAgent, token_label=label, active=True)
+        validation = _ensure_dict(request.data.get("validation"), field_name="validation")
+        agent.last_validation = validation
+        agent.last_seen_at = timezone.now()
+        agent.save(update_fields=["last_validation", "last_seen_at", "updated_at"])
+        return Response({"status": "recorded", "config_version": agent.config_version})
 
 
 class AgentRawFileImportView(AgentApiView):
@@ -5371,6 +5468,15 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
             matched_run = _resolve_run_for_expected_filename(project_id=project.id, filename=intended_filename)
             if matched_run:
                 run_id = matched_run.id
+        incoming_metadata = _ensure_dict(request.data.get("metadata"), field_name="metadata")
+        if not run_id and incoming_metadata.get("mode") == "adhoc" and incoming_metadata.get("experiment_id"):
+            experiment = Experiment.objects.filter(pk=incoming_metadata["experiment_id"], project=project).first()
+            if not experiment:
+                raise ValidationError({"metadata": "The ad hoc experiment must belong to the selected project."})
+            sample_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename.rsplit(".", 1)[0])[:240] or "uploaded-sample"
+            sample, _ = Sample.objects.get_or_create(experiment=experiment, name=sample_name)
+            run, _ = Run.objects.get_or_create(sample=sample, run_name=filename[:240], defaults={"expected_filename": filename})
+            run_id = run.id
         matched_run = Run.objects.filter(pk=run_id, sample__experiment__project=project).select_related(
             "sample", "sample__experiment"
         ).first() if run_id else None
@@ -5409,7 +5515,7 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
                 "delivery_mode": delivery_mode,
             },
             metadata={
-                **_ensure_dict(request.data.get("metadata"), field_name="metadata"),
+                **incoming_metadata,
                 "delivery_mode": delivery_mode,
                 "uploader_agent": getattr(request.user, "token_label", "") if getattr(request.user, "agent_role", None) else "",
             },
@@ -5976,6 +6082,54 @@ class DeploymentReleaseViewSet(AuthenticatedModelViewSet):
                 message=f"Release {release.version} verification produced failures. Results: {json.dumps(results)}",
             )
         return Response({"release": release.version, "results": results, "rollback_release": previous.version if previous else None})
+
+
+class AcquisitionAgentViewSet(AuthenticatedModelViewSet):
+    queryset = AcquisitionAgent.objects.all()
+    serializer_class = AcquisitionAgentSerializer
+    write_requires_admin = True
+    search_fields = ("name", "token_label", "source_root")
+    ordering_fields = ("name", "source_root_status", "last_seen_at", "updated_at")
+
+    @action(detail=True, methods=["post"], url_path="propose-source-root")
+    def propose_source_root(self, request, pk=None):
+        agent = self.get_object()
+        value = str(request.data.get("source_root") or "").strip()
+        if not value:
+            raise ValidationError({"source_root": "A source_root is required."})
+        agent.proposed_source_root = value
+        agent.source_root_status = AcquisitionSourceRootStatus.PENDING
+        agent.config_version += 1
+        agent.save(update_fields=["proposed_source_root", "source_root_status", "config_version", "updated_at"])
+        return Response(AcquisitionAgentSerializer(agent).data)
+
+    @action(detail=True, methods=["post"], url_path="approve-source-root")
+    def approve_source_root(self, request, pk=None):
+        agent = self.get_object()
+        if not agent.proposed_source_root:
+            raise ValidationError({"source_root": "There is no proposed source root."})
+        agent.source_root = agent.proposed_source_root
+        agent.proposed_source_root = ""
+        agent.source_root_status = AcquisitionSourceRootStatus.APPROVED
+        agent.config_version += 1
+        agent.save(update_fields=["source_root", "proposed_source_root", "source_root_status", "config_version", "updated_at"])
+        return Response(AcquisitionAgentSerializer(agent).data)
+
+
+class AcquisitionRouteViewSet(AuthenticatedModelViewSet):
+    queryset = AcquisitionRoute.objects.select_related("agent", "project", "worklist", "experiment", "processing_pipeline")
+    serializer_class = AcquisitionRouteSerializer
+    write_requires_admin = True
+    search_fields = ("name", "agent__name", "project__code", "source_prefix")
+    ordering_fields = ("name", "agent__name", "project__code", "updated_at")
+
+    @action(detail=True, methods=["post"])
+    def finish(self, request, pk=None):
+        route = self.get_object()
+        route.status = AcquisitionRouteStatus.PAUSED
+        route.metadata = {**(route.metadata or {}), "finished_at": timezone.now().isoformat(), "finished_by": request.user.get_username()}
+        route.save(update_fields=["status", "metadata", "updated_at"])
+        return Response(AcquisitionRouteSerializer(route).data)
 
 
 class ProcessingNodeViewSet(AuthenticatedModelViewSet):

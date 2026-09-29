@@ -198,6 +198,22 @@ class ProcessingNodeStatus(models.TextChoices):
     ERROR = "error", "Error"
 
 
+class AcquisitionSourceRootStatus(models.TextChoices):
+    APPROVED = "approved", "Approved"
+    PENDING = "pending", "Pending approval"
+    REJECTED = "rejected", "Rejected"
+
+
+class AcquisitionRouteMode(models.TextChoices):
+    WORKLIST = "worklist", "Worklist"
+    ADHOC = "adhoc", "Ad hoc experiment"
+
+
+class AcquisitionRouteStatus(models.TextChoices):
+    ACTIVE = "active", "Active"
+    PAUSED = "paused", "Paused"
+
+
 class ReleaseChannel(models.TextChoices):
     STAGING = "staging", "Staging"
     PRODUCTION = "production", "Production"
@@ -1174,3 +1190,51 @@ class PeptideQuant(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.peptide} {self.label}={self.value}"
+
+
+class AcquisitionAgent(TimestampedModel):
+    """Server-owned identity and approved local source root for one MS PC."""
+
+    name = models.CharField(max_length=128, unique=True)
+    token_label = models.CharField(max_length=128, unique=True)
+    source_root = models.TextField(blank=True)
+    proposed_source_root = models.TextField(blank=True)
+    source_root_status = models.CharField(
+        max_length=32, choices=AcquisitionSourceRootStatus.choices, default=AcquisitionSourceRootStatus.PENDING
+    )
+    config_version = models.PositiveIntegerField(default=1)
+    active = models.BooleanField(default=True)
+    last_seen_at = models.DateTimeField(blank=True, null=True)
+    last_validation = models.JSONField(default=dict, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("name",)
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class AcquisitionRoute(TimestampedModel):
+    """A server-assigned project/batch destination for an acquisition agent."""
+
+    agent = models.ForeignKey(AcquisitionAgent, on_delete=models.CASCADE, related_name="routes")
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name="acquisition_routes")
+    name = models.CharField(max_length=255)
+    source_prefix = models.TextField(blank=True, help_text="Relative folder below the agent's approved source root.")
+    spool_folder = models.CharField(max_length=255)
+    mode = models.CharField(max_length=16, choices=AcquisitionRouteMode.choices, default=AcquisitionRouteMode.WORKLIST)
+    worklist = models.ForeignKey(AcquisitionWorklist, on_delete=models.PROTECT, blank=True, null=True, related_name="routes")
+    experiment = models.ForeignKey(Experiment, on_delete=models.PROTECT, blank=True, null=True, related_name="acquisition_routes")
+    processing_pipeline = models.ForeignKey(ProcessingPipeline, on_delete=models.PROTECT, blank=True, null=True, related_name="acquisition_routes")
+    status = models.CharField(max_length=16, choices=AcquisitionRouteStatus.choices, default=AcquisitionRouteStatus.ACTIVE)
+    quiet_period_seconds = models.PositiveIntegerField(default=300)
+    delete_spool_after_upload = models.BooleanField(default=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("agent__name", "name")
+        constraints = (models.UniqueConstraint(fields=("agent", "name"), name="uniq_acquisition_route_name"),)
+
+    def __str__(self) -> str:
+        return f"{self.agent.name}: {self.name}"

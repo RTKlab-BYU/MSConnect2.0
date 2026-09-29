@@ -1,6 +1,8 @@
 from django.contrib import admin
 
 from .models import (
+    AcquisitionAgent,
+    AcquisitionRoute,
     AcquisitionWorklist,
     AnalysisPreset,
     DeploymentRelease,
@@ -39,6 +41,20 @@ from .models import (
     UserProfile,
     WorklistEntry,
 )
+
+
+@admin.register(AcquisitionAgent)
+class AcquisitionAgentAdmin(admin.ModelAdmin):
+    list_display = ("name", "token_label", "source_root", "source_root_status", "last_seen_at", "active")
+    search_fields = ("name", "token_label", "source_root", "proposed_source_root")
+    list_filter = ("source_root_status", "active")
+
+
+@admin.register(AcquisitionRoute)
+class AcquisitionRouteAdmin(admin.ModelAdmin):
+    list_display = ("name", "agent", "project", "mode", "source_prefix", "spool_folder", "status")
+    search_fields = ("name", "agent__name", "project__code", "source_prefix")
+    list_filter = ("mode", "status", "agent")
 
 
 @admin.register(University)
