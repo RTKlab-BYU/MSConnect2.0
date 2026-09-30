@@ -63,11 +63,11 @@ docker compose up --build
 
 The image build now compiles the React app and boots Django under a startup lock, so the direct Django app is published at `http://localhost:8000/` without a separate manual frontend build. The nginx reverse proxy is published at `http://localhost:8080/` by default so local machines that already use port 80 do not block the stack.
 
-3. Create an admin user:
-
-```sh
-docker compose run --rm web python manage.py createsuperuser
-```
+3. On first web startup, MSConnect creates the superuser configured by
+   `MSCONNECT_BOOTSTRAP_SUPERUSER_USERNAME`, `MSCONNECT_BOOTSTRAP_SUPERUSER_EMAIL`,
+   and `MSCONNECT_BOOTSTRAP_SUPERUSER_PASSWORD` in `.env`. Set those before the
+   first `docker compose up`; the bootstrap is skipped once any superuser exists.
+   If no password is supplied, a random one is printed once in the web startup log.
 
 4. Open the Django admin:
 

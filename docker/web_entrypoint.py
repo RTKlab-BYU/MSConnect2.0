@@ -21,6 +21,7 @@ def main() -> None:
     with lock_path.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         _run([sys.executable, "manage.py", "migrate", "--noinput"])
+        _run([sys.executable, "manage.py", "bootstrap_superuser"])
         _run([sys.executable, "manage.py", "collectstatic", "--noinput"])
 
     os.execvp(

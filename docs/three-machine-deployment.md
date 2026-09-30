@@ -35,10 +35,15 @@ Vendor RAW directories such as `.d` folders are imported as a single raw path. A
 ```sh
 cp docs/env.server.example .env
 docker compose up -d --build web nginx
-docker compose exec web python manage.py migrate
-docker compose exec web python manage.py createsuperuser
 curl -f http://localhost/readyz/
 ```
+
+Before the first `up`, set `MSCONNECT_BOOTSTRAP_SUPERUSER_USERNAME`,
+`MSCONNECT_BOOTSTRAP_SUPERUSER_EMAIL`, and
+`MSCONNECT_BOOTSTRAP_SUPERUSER_PASSWORD` in `.env`. The web entrypoint creates
+that account after migrations when the database has no superuser. It never
+resets an existing account; use Django admin or `manage.py changepassword` for
+later changes.
 
 To make the server start automatically after a host reboot:
 
