@@ -24,6 +24,7 @@ const SpectraPage = lazy(() => import("@/features/spectra/spectra-page"));
 const WatcherPage = lazy(() => import("@/features/watcher/watcher-page"));
 const UploadsPage = lazy(() => import("@/features/uploads/uploads-page"));
 const SettingsPage = lazy(() => import("@/features/settings/settings-page"));
+const WorklistGeneratorPage = lazy(() => import("@/features/worklist-generator/worklist-generator-page"));
 
 export const router = createBrowserRouter(
   [
@@ -173,6 +174,16 @@ export const router = createBrowserRouter(
             <RoleGuard allow={["admin", "pi"]}>
               <Suspense fallback={<RouteFallback label="Loading uploads" />}>
                 <UploadsPage />
+              </Suspense>
+            </RoleGuard>
+          ),
+        },
+        {
+          path: "worklist-generator",
+          element: (
+            <RoleGuard allow={["admin", "pi", "researcher", "collaborator"]}>
+              <Suspense fallback={<RouteFallback label="Loading worklist generator" />}>
+                <WorklistGeneratorPage />
               </Suspense>
             </RoleGuard>
           ),

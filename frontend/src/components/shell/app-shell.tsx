@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, ClipboardList, FlaskConical, LayoutDashboard, Microscope, Moon, Search, Server, Settings2, Sun, Upload } from "lucide-react";
+import { Activity, ClipboardList, FlaskConical, LayoutDashboard, Microscope, Moon, Search, Server, Settings2, Sun, Upload, WandSparkles } from "lucide-react";
 import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 
@@ -13,6 +13,7 @@ import { useUiStore } from "@/store/ui-store";
 const collaboratorNavItems = [
   { to: "/projects", label: "Projects", icon: FlaskConical },
   { to: "/submissions", label: "Submissions", icon: ClipboardList },
+  { to: "/worklist-generator", label: "Worklist generator", icon: WandSparkles },
 ];
 
 const operatorNavItems = [
@@ -20,6 +21,7 @@ const operatorNavItems = [
   { to: "/projects", label: "Projects", icon: FlaskConical },
   { to: "/intake", label: "Intake", icon: ClipboardList },
   { to: "/uploads", label: "Uploads", icon: Upload },
+  { to: "/worklist-generator", label: "Worklist generator", icon: WandSparkles },
   { to: "/qc", label: "QC", icon: Microscope },
   { to: "/monitoring", label: "Monitoring", icon: Search },
   { to: "/processing", label: "Processing", icon: Activity },
