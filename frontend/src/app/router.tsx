@@ -24,7 +24,6 @@ const SpectraPage = lazy(() => import("@/features/spectra/spectra-page"));
 const WatcherPage = lazy(() => import("@/features/watcher/watcher-page"));
 const UploadsPage = lazy(() => import("@/features/uploads/uploads-page"));
 const SettingsPage = lazy(() => import("@/features/settings/settings-page"));
-const WorklistGeneratorPage = lazy(() => import("@/features/worklist-generator/worklist-generator-page"));
 
 export const router = createBrowserRouter(
   [
@@ -97,7 +96,7 @@ export const router = createBrowserRouter(
         {
           path: "qc/hye",
           element: (
-            <RoleGuard allow={["admin", "pi", "researcher", "collaborator"]}>
+            <RoleGuard allow={["admin", "pi"]}>
               <Suspense fallback={<RouteFallback label="Loading HYE QC workspace" />}><QcPage /></Suspense>
             </RoleGuard>
           ),
@@ -105,7 +104,7 @@ export const router = createBrowserRouter(
         {
           path: "qc/prtc",
           element: (
-            <RoleGuard allow={["admin", "pi", "researcher", "collaborator"]}>
+            <RoleGuard allow={["admin", "pi"]}>
               <Suspense fallback={<RouteFallback label="Loading PRTC QC workspace" />}><QcPage /></Suspense>
             </RoleGuard>
           ),
@@ -113,7 +112,7 @@ export const router = createBrowserRouter(
         {
           path: "qc/hye/:worklistId/:pairLabel",
           element: (
-            <RoleGuard allow={["admin", "pi", "researcher", "collaborator"]}>
+            <RoleGuard allow={["admin", "pi"]}>
               <Suspense fallback={<RouteFallback label="Loading HYE record" />}>
                 <HyePairPage />
               </Suspense>
@@ -174,16 +173,6 @@ export const router = createBrowserRouter(
             <RoleGuard allow={["admin", "pi"]}>
               <Suspense fallback={<RouteFallback label="Loading uploads" />}>
                 <UploadsPage />
-              </Suspense>
-            </RoleGuard>
-          ),
-        },
-        {
-          path: "worklist-generator",
-          element: (
-            <RoleGuard allow={["admin", "pi", "researcher", "collaborator"]}>
-              <Suspense fallback={<RouteFallback label="Loading worklist generator" />}>
-                <WorklistGeneratorPage />
               </Suspense>
             </RoleGuard>
           ),

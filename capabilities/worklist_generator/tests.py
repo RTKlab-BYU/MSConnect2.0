@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 
 
@@ -29,28 +30,50 @@ class WorklistGeneratorApiTests(TestCase):
         with override_settings(MEDIA_ROOT=self.media_directory.name):
             response = self.client.post(
                 "/api/capabilities/worklist-generator/generate/",
-                {"worklist": ("worklist.xlsx", b"placeholder")},
+                {"worklist": SimpleUploadedFile("worklist.xlsx", b"placeholder")},
                 format="multipart",
             )
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual({item["kind"] for item in response.data["files"]}, {"ms", "lc"})
-        self.assertTrue(all(item["url"].startswith("http") for item in response.data["files"]))
+        self.assertTrue(all(item["url"].startswith("/api/") for item in response.data["files"]))
 
-        download_path = response.data["files"][0]["url"].split("/api", 1)[1]
         with override_settings(MEDIA_ROOT=self.media_directory.name):
-            download = self.client.get("/api" + download_path)
+            download = self.client.get(response.data["files"][0]["url"])
         self.assertEqual(download.status_code, 200)
-        self.assertEqual(download.content, b"MS\n")
+        self.assertEqual(b"".join(download.streaming_content), b"MS\n")
 
     def test_generate_rejects_non_excel_uploads(self):
         with override_settings(MEDIA_ROOT=self.media_directory.name):
             response = self.client.post(
                 "/api/capabilities/worklist-generator/generate/",
-                {"worklist": ("worklist.txt", b"not excel")},
+                {"worklist": SimpleUploadedFile("worklist.txt", b"not excel")},
                 format="multipart",
             )
         self.assertEqual(response.status_code, 400)
+
+    @override_settings(MEDIA_ROOT="/tmp/msconnect-worklist-generator-stages")
+    def test_metadata_and_template_stages_create_downloadable_workbooks(self):
+        media_root = Path("/tmp/msconnect-worklist-generator-stages")
+        response = self.client.post(
+            "/api/capabilities/worklist-generator/metadata/",
+            {"name": "Demo experiment", "description": "Demo", "groups": ["Healthy", "Diseased"]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        metadata_file = media_root / "worklist_generator_results" / response.data["job_id"] / response.data["files"][0]["name"]
+        self.assertTrue(metadata_file.is_file())
+
+        response = self.client.post(
+            "/api/capabilities/worklist-generator/worklist-template/",
+            {"metadata": SimpleUploadedFile(metadata_file.name, metadata_file.read_bytes())},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        worklist_file = media_root / "worklist_generator_results" / response.data["job_id"] / response.data["files"][0]["name"]
+        self.assertTrue(worklist_file.is_file())
 
     def test_download_rejects_path_traversal(self):
         with override_settings(MEDIA_ROOT=self.media_directory.name):
