@@ -93,7 +93,7 @@ export default function ProjectsPage() {
               <DialogContent className="max-h-[92vh] max-w-5xl overflow-auto rounded-3xl p-6">
                 <DialogHeader>
                   <DialogTitle className="text-2xl font-black tracking-tight">WorkListGenerator</DialogTitle>
-                  <DialogDescription>Follow the three WorkListGenerator stages. This flow generates files only; project-record integration will be added later.</DialogDescription>
+                  <DialogDescription>Follow the three WorkListGenerator stages here.</DialogDescription>
                 </DialogHeader>
                 <WorklistGeneratorFlow />
               </DialogContent>
