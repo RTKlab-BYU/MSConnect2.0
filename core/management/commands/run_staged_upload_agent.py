@@ -1,6 +1,7 @@
 """API-configured acquisition-PC uploader with a local, restart-safe spool."""
 
 import hashlib
+import json
 import mimetypes
 import shutil
 import socket
@@ -23,6 +24,7 @@ class State:
     def __init__(self, filename):
         self.db = sqlite3.connect(str(filename))
         self.db.execute("CREATE TABLE IF NOT EXISTS uploads (route_id INTEGER, source_rel TEXT, fingerprint TEXT, status TEXT, staged_path TEXT, updated_at REAL, PRIMARY KEY(route_id, source_rel))")
+        self.db.execute("CREATE TABLE IF NOT EXISTS observations (route_id INTEGER, source_rel TEXT, fingerprint TEXT, first_seen_at REAL, stable_count INTEGER, PRIMARY KEY(route_id, source_rel))")
         self.db.commit()
 
     def get(self, route_id, source_rel):
@@ -31,6 +33,23 @@ class State:
     def put(self, route_id, source_rel, fingerprint, status, staged_path):
         self.db.execute("INSERT OR REPLACE INTO uploads VALUES (?,?,?,?,?,?)", (route_id, source_rel, str(fingerprint), status, str(staged_path), time.time()))
         self.db.commit()
+
+    def observe(self, route_id, source_rel, fingerprint):
+        now = time.time()
+        row = self.db.execute(
+            "SELECT fingerprint, first_seen_at, stable_count FROM observations WHERE route_id=? AND source_rel=?",
+            (route_id, source_rel),
+        ).fetchone()
+        if row and row[0] == str(fingerprint):
+            first_seen_at, stable_count = row[1], row[2] + 1
+        else:
+            first_seen_at, stable_count = now, 1
+        self.db.execute(
+            "INSERT OR REPLACE INTO observations VALUES (?,?,?,?,?)",
+            (route_id, source_rel, str(fingerprint), first_seen_at, stable_count),
+        )
+        self.db.commit()
+        return stable_count, now - first_seen_at
 
 
 class Command(BaseCommand):
@@ -53,13 +72,18 @@ class Command(BaseCommand):
         state_path = Path(settings.MSCONNECT_AGENT_STATE_DB)
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state = State(state_path)
-        stability = {}
         while True:
             try:
                 config = client.get_config()
-                root = Path(config.get("source_root") or settings.MSCONNECT_ACQUISITION_SOURCE_ROOT)
+                if config.get("source_root_status") != "approved" or not config.get("source_root"):
+                    raise CommandError("The server has not approved an acquisition source root for this agent.")
+                root = Path(config["source_root"])
                 self._validate_root(root)
                 candidates = 0
+                uploads_completed = 0
+                latest_candidate = None
+                latest_route = None
+                latest_activity = "scanning"
                 for route in config.get("routes", []):
                     if route.get("status") == "paused":
                         continue
@@ -67,37 +91,61 @@ class Command(BaseCommand):
                     source_base.mkdir(parents=True, exist_ok=True)
                     spool_base = self._safe_join(Path(settings.MSCONNECT_SPOOL_ROOT), route["spool_folder"])
                     spool_base.mkdir(parents=True, exist_ok=True)
+                    expected_files = {
+                        PurePath(str(item.get("expected_filename") or "")).name.casefold(): item
+                        for item in route.get("expected_files", [])
+                        if item.get("expected_filename")
+                    }
                     for path in self._discover(source_base):
+                        expected = expected_files.get(path.name.casefold())
+                        if route["mode"] == "worklist" and not expected:
+                            continue
                         candidates += 1
+                        latest_candidate = path.name
+                        latest_route = route.get("name") or str(route.get("id", ""))
                         rel = path.relative_to(source_base).as_posix()
                         fingerprint = _acquisition_fingerprint(path)
                         if fingerprint is None:
                             continue
-                        key = (route["id"], rel)
-                        previous, count = stability.get(key, (None, 0))
-                        count = count + 1 if previous == fingerprint else 1
-                        stability[key] = (fingerprint, count)
+                        count, stable_seconds = state.observe(route["id"], rel, fingerprint)
                         receipt = state.get(route["id"], rel)
                         if receipt and receipt[0] == str(fingerprint) and receipt[1] == "complete":
                             continue
                         if count < max(1, int(options["stability_checks"])):
                             continue
-                        staged = self._stage(path, spool_base, rel, fingerprint)
-                        state.put(route["id"], rel, fingerprint, "staged", staged)
+                        if stable_seconds < max(0, int(route.get("quiet_period_seconds", 0))):
+                            continue
+                        upload_route = {**route, **(expected or {})}
+                        staged = None
                         try:
-                            self._upload(client, staged, path.name, route, rel, int(options["chunk_size"]))
+                            staged = self._stage(path, spool_base, rel, fingerprint)
+                            state.put(route["id"], rel, fingerprint, "staged", staged)
+                            self._upload(client, staged, path.name, upload_route, rel, fingerprint, int(options["chunk_size"]))
                             state.put(route["id"], rel, fingerprint, "complete", staged)
+                            uploads_completed += 1
+                            latest_activity = "uploaded"
                             if route.get("delete_spool_after_upload", settings.MSCONNECT_DELETE_SPOOL_AFTER_UPLOAD):
                                 self._remove(staged)
                             self.stdout.write(f"uploaded {path} via {route['name']}")
                         except Exception as exc:
-                            state.put(route["id"], rel, fingerprint, "failed", staged)
+                            latest_activity = "upload_failed"
+                            state.put(route["id"], rel, fingerprint, "failed", staged or "")
                             self.stderr.write(self.style.ERROR(f"failed {path}: {exc}"))
                             try:
                                 client.record_ingestion_failure({"source_path": str(path), "failure_reason": str(exc), "metadata": {"importer": "staged_upload_agent", "route_id": route["id"]}})
                             except AgentApiError:
                                 pass
-                self._heartbeat(client, agent_name, candidates, config, root)
+                self._heartbeat(
+                    client,
+                    agent_name,
+                    candidates,
+                    config,
+                    root,
+                    uploads_completed=uploads_completed,
+                    latest_candidate=latest_candidate,
+                    latest_route=latest_route,
+                    latest_activity=latest_activity,
+                )
             except Exception as exc:
                 self.stderr.write(self.style.ERROR(f"configuration/scan failure: {exc}"))
             if options["once"]:
@@ -130,18 +178,25 @@ class Command(BaseCommand):
     def _stage(source, spool_base, rel, fingerprint):
         destination = spool_base / rel
         destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() and _acquisition_fingerprint(destination) == fingerprint:
+            return destination
         temp = destination.parent / f".{destination.name}.copying-{uuid.uuid4().hex}"
-        if source.is_dir():
-            shutil.copytree(source, temp)
-        else:
-            shutil.copy2(source, temp)
-        if _acquisition_fingerprint(source) != fingerprint:
+        try:
+            if source.is_dir():
+                shutil.copytree(source, temp)
+            else:
+                shutil.copy2(source, temp)
+            if _acquisition_fingerprint(source) != fingerprint:
+                raise CommandError(f"Source changed while staging: {source}")
+            if destination.exists():
+                Command._remove(destination)
+            temp.replace(destination)
+        except Exception:
             Command._remove(temp)
-            raise CommandError(f"Source changed while staging: {source}")
-        temp.replace(destination)
+            raise
         return destination
 
-    def _upload(self, client, staged, original_name, route, relative, chunk_size):
+    def _upload(self, client, staged, original_name, route, relative, fingerprint, chunk_size):
         upload_path = staged
         metadata = {
             "importer": "staged_upload_agent",
@@ -149,9 +204,13 @@ class Command(BaseCommand):
             "route_id": route["id"],
             "route_name": route["name"],
             "source_relative_path": relative,
+            "source_fingerprint": json.dumps(fingerprint, separators=(",", ":")),
             "mode": route["mode"],
             "experiment_id": route.get("experiment_id"),
             "processing_pipeline_id": route.get("processing_pipeline_id"),
+            "worklist_id": route.get("worklist_id"),
+            "run_id": route.get("run_id"),
+            "expected_filename": route.get("expected_filename") or original_name,
         }
         if staged.is_dir():
             upload_path = self._bundle_directory(staged)
@@ -161,8 +220,9 @@ class Command(BaseCommand):
         session = client.create_direct_upload(
             {
                 "project": route["project_id"],
+                "run": route.get("run_id"),
                 "filename": original_name,
-                "expected_filename": original_name,
+                "expected_filename": route.get("expected_filename") or original_name,
                 "size_bytes": size,
                 "chunk_size_bytes": chunk_size,
                 "content_type": content_type,
@@ -171,6 +231,7 @@ class Command(BaseCommand):
             }
         )
         digest = hashlib.sha256()
+        last_heartbeat = 0.0
         with upload_path.open("rb") as handle:
             for part in session["upload_urls"]:
                 length = int(part["end"]) - int(part["start"])
@@ -179,6 +240,24 @@ class Command(BaseCommand):
                     raise CommandError(f"Unexpected end of staged file: {upload_path}")
                 digest.update(payload)
                 client.upload_direct_chunk(session["id"], part["part_number"], payload, content_type)
+                if time.monotonic() - last_heartbeat >= max(5, int(settings.MSCONNECT_AGENT_HEARTBEAT_SECONDS)):
+                    client.heartbeat(
+                        name=settings.MSCONNECT_AGENT_NAME or socket.gethostname(),
+                        node_type="watcher",
+                        status="busy",
+                        container_image=settings.MSCONNECT_IMAGE,
+                        metadata={
+                            "mode": "staged-direct-upload",
+                            "latest_activity": "uploading",
+                            "latest_candidate": original_name,
+                            "latest_route": route.get("name"),
+                            "upload_part": part["part_number"],
+                            "upload_part_count": len(session["upload_urls"]),
+                        },
+                        settings={"source_root": settings.MSCONNECT_ACQUISITION_SOURCE_ROOT, "spool_root": settings.MSCONNECT_SPOOL_ROOT},
+                        release_version=settings.MSCONNECT_RELEASE_VERSION,
+                    )
+                    last_heartbeat = time.monotonic()
         client.complete_direct_upload(session["id"], digest.hexdigest())
         if upload_path != staged:
             upload_path.unlink(missing_ok=True)
@@ -200,7 +279,7 @@ class Command(BaseCommand):
             path.unlink(missing_ok=True)
 
     @staticmethod
-    def _heartbeat(client, agent_name, candidates, config, root):
+    def _heartbeat(client, agent_name, candidates, config, root, *, uploads_completed=0, latest_candidate=None, latest_route=None, latest_activity="idle"):
         validation = {"ok": root.exists() and root.is_dir(), "path": str(root), "config_version": config.get("config_version"), "checked_at": time.time()}
         try:
             client.report_config_validation(validation)
@@ -212,6 +291,11 @@ class Command(BaseCommand):
                 metadata={
                     "mode": "staged-direct-upload",
                     "candidate_count": candidates,
+                    "uploads_completed_this_scan": uploads_completed,
+                    "latest_candidate": latest_candidate,
+                    "latest_route": latest_route,
+                    "latest_activity": latest_activity,
+                    "last_scan_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "config_version": config.get("config_version"),
                     "source_root_validation": validation,
                 },

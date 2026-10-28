@@ -577,10 +577,17 @@ class AcquisitionRouteSerializer(BaseSerializer):
             if candidate.is_absolute() or re.match(r"^[A-Za-z]:", value) or ".." in candidate.parts:
                 raise serializers.ValidationError({field: "Must be a relative path without '..'."})
         mode = attrs.get("mode", getattr(self.instance, "mode", AcquisitionRouteMode.WORKLIST))
-        if mode == AcquisitionRouteMode.WORKLIST and not attrs.get("worklist", getattr(self.instance, "worklist", None)):
+        project = attrs.get("project", getattr(self.instance, "project", None))
+        worklist = attrs.get("worklist", getattr(self.instance, "worklist", None))
+        experiment = attrs.get("experiment", getattr(self.instance, "experiment", None))
+        if mode == AcquisitionRouteMode.WORKLIST and not worklist:
             raise serializers.ValidationError({"worklist": "A worklist route requires a worklist."})
-        if mode == AcquisitionRouteMode.ADHOC and not attrs.get("experiment", getattr(self.instance, "experiment", None)):
+        if mode == AcquisitionRouteMode.WORKLIST and project and worklist and worklist.experiment.project_id != project.id:
+            raise serializers.ValidationError({"worklist": "The worklist must belong to the selected project."})
+        if mode == AcquisitionRouteMode.ADHOC and not experiment:
             raise serializers.ValidationError({"experiment": "An ad hoc route requires an experiment."})
+        if mode == AcquisitionRouteMode.ADHOC and project and experiment and experiment.project_id != project.id:
+            raise serializers.ValidationError({"experiment": "The experiment must belong to the selected project."})
         return attrs
 
 
@@ -2008,32 +2015,48 @@ class AgentConfigView(AgentApiView):
         routes = AcquisitionRoute.objects.filter(agent=agent, status=AcquisitionRouteStatus.ACTIVE).select_related(
             "project", "worklist", "experiment", "processing_pipeline"
         )
+        route_payloads = []
+        for route in routes:
+            expected_files = []
+            if route.mode == AcquisitionRouteMode.WORKLIST and route.worklist_id:
+                expected_files = [
+                    {
+                        "run_id": entry.run_id,
+                        "expected_filename": entry.expected_filename,
+                        "file_role": entry.file_role,
+                        "worklist_entry_id": entry.id,
+                    }
+                    for entry in route.worklist.entries.filter(is_active=True).order_by("position").only(
+                        "id", "run_id", "expected_filename", "file_role"
+                    )
+                ]
+            route_payloads.append({
+                "id": route.id,
+                "name": route.name,
+                "project_id": route.project_id,
+                "project_code": route.project.code,
+                "source_prefix": route.source_prefix,
+                "spool_folder": route.spool_folder,
+                "mode": route.mode,
+                "status": route.status,
+                "worklist_id": route.worklist_id,
+                "experiment_id": route.experiment_id or (route.worklist.experiment_id if route.worklist_id else None),
+                "experiment_name": route.experiment.name if route.experiment_id else (route.worklist.experiment.name if route.worklist_id else ""),
+                "processing_pipeline_id": route.processing_pipeline_id or (
+                    (route.worklist.metadata or {}).get("processing_pipeline_id") if route.worklist_id else None
+                ),
+                "quiet_period_seconds": route.quiet_period_seconds,
+                "delete_spool_after_upload": route.delete_spool_after_upload,
+                "expected_files": expected_files,
+                "metadata": route.metadata,
+            })
         return Response({
             "agent_name": agent.name,
             "config_version": agent.config_version,
             "source_root": agent.source_root,
             "proposed_source_root": agent.proposed_source_root,
             "source_root_status": agent.source_root_status,
-            "routes": [
-                {
-                    "id": route.id,
-                    "name": route.name,
-                    "project_id": route.project_id,
-                    "project_code": route.project.code,
-                    "source_prefix": route.source_prefix,
-                    "spool_folder": route.spool_folder,
-                    "mode": route.mode,
-                    "status": route.status,
-                    "worklist_id": route.worklist_id,
-                    "experiment_id": route.experiment_id,
-                    "experiment_name": route.experiment.name if route.experiment_id else "",
-                    "processing_pipeline_id": route.processing_pipeline_id,
-                    "quiet_period_seconds": route.quiet_period_seconds,
-                    "delete_spool_after_upload": route.delete_spool_after_upload,
-                    "metadata": route.metadata,
-                }
-                for route in routes
-            ],
+            "routes": route_payloads,
         })
 
     def post(self, request):
@@ -5418,7 +5441,7 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
 
     def get_queryset(self):
         if getattr(self.request.user, "agent_role", None) == "watcher":
-            return self.queryset
+            return self.queryset.filter(metadata__uploader_agent=getattr(self.request.user, "token_label", ""))
         return super().get_queryset()
     ordering_fields = ("filename", "status", "size_bytes", "created_at", "updated_at")
 
@@ -5449,6 +5472,54 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         intended_filename = PurePath(
             str(request.data.get("expected_filename") or request.data.get("intended_filename") or "")
         ).name
+        incoming_metadata = _ensure_dict(request.data.get("metadata"), field_name="metadata")
+        watcher_label = getattr(request.user, "token_label", "") if getattr(request.user, "agent_role", None) == "watcher" else ""
+        run_id = request.data.get("run") or None
+        staged_route = None
+        if watcher_label and incoming_metadata.get("importer") == "staged_upload_agent":
+            agent = AcquisitionAgent.objects.filter(token_label=watcher_label, active=True).first()
+            if not agent:
+                raise PermissionDenied("This watcher token is not assigned to an active acquisition agent.")
+            staged_route = AcquisitionRoute.objects.filter(
+                pk=incoming_metadata.get("route_id"),
+                agent=agent,
+                project=project,
+                status=AcquisitionRouteStatus.ACTIVE,
+            ).select_related("worklist", "experiment", "processing_pipeline").first()
+            if not staged_route:
+                raise PermissionDenied("This watcher is not assigned to the requested active acquisition route.")
+            if staged_route.mode == AcquisitionRouteMode.WORKLIST:
+                if not staged_route.worklist_id:
+                    raise ValidationError({"route": "The active worklist route has no worklist."})
+                if not intended_filename:
+                    raise ValidationError({"expected_filename": "A worklist upload must name its assigned expected file."})
+                entries = list(
+                    staged_route.worklist.entries.filter(is_active=True, expected_filename__iexact=intended_filename)
+                    .select_related("run")[:2]
+                )
+                if len(entries) != 1:
+                    raise ValidationError({"expected_filename": "This filename is not uniquely assigned in the route worklist."})
+                if request.data.get("run") and str(request.data["run"]) != str(entries[0].run_id):
+                    raise ValidationError({"run": "The requested run does not match this route's worklist entry."})
+                incoming_metadata.update({
+                    "mode": staged_route.mode,
+                    "worklist_id": staged_route.worklist_id,
+                    "run_id": entries[0].run_id,
+                })
+                run_id = entries[0].run_id
+            else:
+                if not staged_route.experiment_id:
+                    raise ValidationError({"route": "The active ad hoc route has no experiment."})
+                requested_experiment = incoming_metadata.get("experiment_id")
+                if requested_experiment and str(requested_experiment) != str(staged_route.experiment_id):
+                    raise ValidationError({"experiment": "The requested experiment does not match this route."})
+                if run_id and not Run.objects.filter(pk=run_id, sample__experiment_id=staged_route.experiment_id).exists():
+                    raise ValidationError({"run": "The requested run does not belong to this route's experiment."})
+                incoming_metadata.update({
+                    "mode": staged_route.mode,
+                    "experiment_id": staged_route.experiment_id,
+                    "processing_pipeline_id": staged_route.processing_pipeline_id,
+                })
 
         try:
             size_bytes = int(request.data.get("size_bytes"))
@@ -5492,6 +5563,23 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         if matched_run:
             file_role = matched_run.file_role
 
+        source_fingerprint = str(incoming_metadata.get("source_fingerprint") or "")
+        source_relative_path = str(incoming_metadata.get("source_relative_path") or "")
+        if watcher_label and staged_route and source_fingerprint and source_relative_path:
+            existing_session = DirectUploadSession.objects.filter(
+                project=project,
+                run_id=run_id,
+                filename=filename,
+                size_bytes=size_bytes,
+                metadata__uploader_agent=watcher_label,
+                metadata__route_id=staged_route.id,
+                metadata__source_relative_path=source_relative_path,
+                metadata__source_fingerprint=source_fingerprint,
+            ).order_by("-created_at").first()
+            if existing_session:
+                serializer = self.get_serializer(existing_session)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+
         chunk_size_bytes = int(request.data.get("chunk_size_bytes") or 8 * 1024 * 1024)
         chunk_count = max(1, math.ceil(size_bytes / chunk_size_bytes))
         upload_id = uuid.uuid4()
@@ -5517,7 +5605,7 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
             metadata={
                 **incoming_metadata,
                 "delivery_mode": delivery_mode,
-                "uploader_agent": getattr(request.user, "token_label", "") if getattr(request.user, "agent_role", None) else "",
+                "uploader_agent": watcher_label or "",
             },
         )
         serializer = self.get_serializer(session)

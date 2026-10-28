@@ -70,10 +70,23 @@ MSCONNECT_RELEASE_VERSION=0663117c54fb12249fa0350f06bcc802ea18b914
 MSCONNECT_IMAGE=python-native
 ```
 
-The local source root is only a fallback until the server has an approved
-root. The server route configuration supplies the project and nested source
-prefixes; no project ID needs to be edited into the computer `.env` for each
-new project.
+The server must have an approved source root before the agent will watch. The
+route configuration supplies the project, worklist entries, experiment, and
+nested source prefixes; no project ID needs to be edited into the computer
+`.env` for each new project. Worklist routes only stage filenames assigned to
+that route's active worklist, and the server checks the route token and exact
+run assignment again when an upload session is created. The watcher includes
+the source path and file fingerprint in its upload request so a retry after a
+lost response reuses the same upload session.
+
+For a real instrument network, set `MSCONNECT_API_BASE_URL` to the HTTPS URL
+served by the facility. The HTTP URL in the example is suitable only for an
+isolated local test network. Give the Windows scheduled-task account read
+access to the vendor output and write access to the spool and state directories.
+Keep `MSCONNECT_AGENT_STATE_DB` at a persistent local path on that computer;
+do not put it in a temporary container filesystem or share one state database
+between instruments. It records stability observations and completed uploads
+across restarts.
 
 ## Test before enabling background operation
 
@@ -114,5 +127,6 @@ Each route is independent, so several project uploads can run on one computer
 at the same time. Worklist routes match expected filenames. Ad-hoc routes
 create a sample/run for each uploaded file under the selected experiment and
 queue the selected processing pipeline immediately; the route's quiet period
-is operational metadata for deciding when acquisition has gone quiet, while a
-future UI can add an explicit Finish action for closing the batch.
+is enforced after the file fingerprint stays unchanged. Set it to `0` for a
+small smoke test; use a longer period for production acquisition folders. The
+route's `finish` action pauses further watching of that worklist.
