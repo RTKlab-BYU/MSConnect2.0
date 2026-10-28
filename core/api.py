@@ -3852,24 +3852,39 @@ class SystemHealthView(APIView):
                 }
             )
         if offline_total:
+            watcher_offline = any(
+                n.node_type.lower() == "watcher" and _processing_node_health(n, now)[0] == "red"
+                for n in nodes
+            )
             alerts.append(
                 {
                     "severity": "critical",
                     "code": "offline-nodes",
                     "title": "Downed nodes detected",
                     "detail": f"{offline_total} node(s) are marked offline.",
-                    "route": "/processing/admin?type=watcher" if any(n.node_type.lower() == "watcher" and _processing_node_health(n, now)[0] == "red" for n in nodes) else "/processing/admin?type=processor",
-                    "guidance": "Check the node process and its last error/logs, API reachability, token, and storage mounts. Restart it, then wait for a fresh heartbeat. If it is intentionally retired, deactivate/remove the node record.",
+                    "route": "/processing/admin?type=watcher" if watcher_offline else "/processing/admin?type=processor",
+                    "guidance": (
+                        "Check the node process and its last error/logs, API reachability, token, and storage mounts. "
+                        "Restart it, then wait for a fresh heartbeat. If it is intentionally retired, deactivate/remove the node record."
+                    ),
                 }
             )
         if stale_total:
+            watcher_stale = any(
+                n.node_type.lower() == "watcher" and _processing_node_health(n, now)[0] == "yellow"
+                for n in nodes
+            )
+            processor_stale = any(
+                n.node_type.lower() != "watcher" and _processing_node_health(n, now)[0] == "yellow"
+                for n in nodes
+            )
             alerts.append(
                 {
                     "severity": "warning",
                     "code": "stale-nodes",
                     "title": "Stale node heartbeats",
                     "detail": f"{stale_total} node(s) have a delayed heartbeat (older than {self.stale_seconds}s, but not yet red).",
-                    "route": "/processing/admin?type=watcher" if any(n.node_type.lower() == "watcher" and _processing_node_health(n, now)[0] == "yellow" for n in nodes) and not any(n.node_type.lower() != "watcher" and _processing_node_health(n, now)[0] == "yellow" for n in nodes) else "/processing/admin?type=processor",
+                    "route": "/processing/admin?type=watcher" if watcher_stale and not processor_stale else "/processing/admin?type=processor",
                     "guidance": "Yellow clears automatically when the agent posts a heartbeat within 75 seconds. Check its API/network connection, agent process, and system clock; then refresh.",
                 }
             )
@@ -3892,7 +3907,10 @@ class SystemHealthView(APIView):
                     "title": "No watcher nodes registered",
                     "detail": "No watcher containers or agents have reported yet.",
                     "route": "/processing/admin?type=watcher",
-                    "guidance": "Register/start the watcher if this instance should monitor acquisitions. If watcher deployment is not part of this instance, this informational warning can be ignored.",
+                    "guidance": (
+                        "Register/start the watcher if this instance should monitor acquisitions. "
+                        "If watcher deployment is not part of this instance, this informational warning can be ignored."
+                    ),
                 }
             )
         if processor_group["total"] and processor_group["connected"] == 0:
@@ -4725,6 +4743,12 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         super().check_object_permissions(request, obj)
         if request.method not in permissions.SAFE_METHODS and not is_admin(request.user) and obj.owner_id != request.user.pk:
             raise PermissionDenied("Shared project access is read-only.")
+
+    def perform_update(self, serializer):
+        target_lab = serializer.validated_data.get("lab")
+        if target_lab and not is_admin(self.request.user) and target_lab.id not in set(active_lab_ids(self.request.user)):
+            raise PermissionDenied("This project cannot be moved to a lab outside your membership scope.")
+        super().perform_update(serializer)
 
     @action(detail=True, methods=["post"], url_path="generate-worklist")
     def generate_worklist(self, request, pk=None):

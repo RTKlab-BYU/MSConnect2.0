@@ -435,7 +435,7 @@ class ApiPermissionTests(TestCase):
                 self.assertEqual(self.client.get(f"/api/raw-files/{raw_file.id}/download/").status_code, 404)
 
     def test_project_rerun_latest_diann_batch_requeues_raw_job_without_conversion(self):
-        self.client.force_authenticate(user=self.pi_user)
+        self.client.force_authenticate(user=self.researcher)
         experiment = Experiment.objects.create(project=self.project_a, name="Batch rerun", created_by=self.pi_user)
         worklist = AcquisitionWorklist.objects.create(
             experiment=experiment,
@@ -953,7 +953,7 @@ class ApiPermissionTests(TestCase):
                     name="watcher-1",
                     node_type="watcher",
                     status="idle",
-                    last_heartbeat_at=timezone.now() - timedelta(seconds=240),
+                    last_heartbeat_at=timezone.now() - timedelta(seconds=120),
                 )
                 processor = ProcessingNode.objects.create(
                     name="processor-1",
@@ -2310,7 +2310,7 @@ class AgentApiTests(TestCase):
 
         raw_file = RawFile.objects.get(checksum_sha256=checksum)
         raw_file.run.refresh_from_db()
-        job = ProcessingJob.objects.get(raw_file=raw_file)
+        job = ProcessingJob.objects.get(raw_file=raw_file, pipeline__name="DIA-NN")
         self.assertEqual(raw_file.file_role, raw_file.run.file_role)
         self.assertEqual(raw_file.status, "imported")
         self.assertEqual(raw_file.run.status, "imported")

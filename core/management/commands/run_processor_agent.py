@@ -1,5 +1,5 @@
-import json
 import hashlib
+import json
 import platform
 import socket
 import subprocess
@@ -186,6 +186,7 @@ class Command(BaseCommand):
             for input_path, checksum in zip(
                 (job.get("metadata") or {}).get("input_files") or [],
                 (job.get("metadata") or {}).get("input_file_checksums") or [],
+                strict=False,
             ):
                 if input_path and checksum:
                     input_checksums[str(input_path)] = str(checksum)

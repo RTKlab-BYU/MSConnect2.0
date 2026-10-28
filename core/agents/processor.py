@@ -195,7 +195,7 @@ def _select_input_path(*, raw_file: dict, parameters: dict) -> str:
         return ""
 
     adapter = str(parameters.get("adapter") or "").strip().lower()
-    if adapter in {"diann", "dia-nn"}:
+    if adapter in {"diann", "dia-nn"} and parameters.get("requires_mzml_input"):
         for derivative in raw_file.get("derivatives") or []:
             derivative_type = str(derivative.get("derivative_type") or "").lower()
             derivative_status = str(derivative.get("status") or "").lower()

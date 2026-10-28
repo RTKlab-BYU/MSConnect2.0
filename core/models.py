@@ -402,6 +402,14 @@ class Project(TimestampedModel):
     def __str__(self) -> str:
         return f"{self.code}: {self.title}"
 
+    def save(self, *args, **kwargs):
+        if self.owner_id is None and self.pi_id is not None:
+            self.owner_id = self.pi_id
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None:
+                kwargs["update_fields"] = set(update_fields) | {"owner"}
+        super().save(*args, **kwargs)
+
 
 class ProjectMembership(TimestampedModel):
     """A read-only project share for a user outside the project's lab membership."""

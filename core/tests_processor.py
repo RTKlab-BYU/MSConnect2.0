@@ -333,7 +333,7 @@ class ProcessorAdapterTests(SimpleTestCase):
             self.assertIn("--temp", execution.command)
             self.assertEqual(
                 execution.command[execution.command.index("--temp") + 1],
-                str((root / "results" / "jobs" / "42").resolve()),
+                str((root / "results" / "jobs" / "42" / "temp").resolve()),
             )
             manifest = json.loads(execution.runtime_manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["software"]["adapter"], "diann")

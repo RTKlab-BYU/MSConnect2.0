@@ -2,7 +2,6 @@ import django.db.models.deletion
 from django.conf import settings
 from django.db import migrations, models
 
-
 DEFAULT_HYE_TARGETS = {
     "Homo sapiens": {"a": 0.65, "b": 0.65},
     "Saccharomyces cerevisiae": {"a": 0.30, "b": 0.15},
