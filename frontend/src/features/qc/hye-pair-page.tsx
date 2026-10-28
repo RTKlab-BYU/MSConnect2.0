@@ -159,9 +159,9 @@ export default function HyePairPage() {
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-start justify-between gap-3 rounded-2xl border bg-background/50 px-3 py-2">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="text-right font-semibold">{value}</span>
+    <div className="flex items-start justify-between gap-3 rounded-md bg-muted px-3 py-2">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span className="min-w-0 break-all text-right font-semibold">{value}</span>
     </div>
   );
 }

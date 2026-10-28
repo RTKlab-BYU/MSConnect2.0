@@ -97,7 +97,7 @@ export default function QcPage() {
         }
       />
 
-      <Tabs value={program} onValueChange={(value) => navigate(value === "prtc" ? "/qc/prtc" : "/qc/hye")}>
+      <Tabs className="grid gap-4" value={program} onValueChange={(value) => navigate(value === "prtc" ? "/qc/prtc" : "/qc/hye")}>
         <TabsList>
           <TabsTrigger value="hye">HYE</TabsTrigger>
           <TabsTrigger value="prtc">PRTC</TabsTrigger>
@@ -153,14 +153,14 @@ export default function QcPage() {
                   <SelectItem value="ratio_escherichia_coli">E. coli B/A ratio</SelectItem>
                 </SelectContent>
               </Select> : null}
-              <label className="grid gap-1 text-xs font-bold uppercase text-muted-foreground">From<input className="h-10 rounded-xl border bg-background px-3 text-sm font-normal text-foreground" type="date" value={start} onChange={(event) => updateParam("start", event.target.value)} /></label>
-              <label className="grid gap-1 text-xs font-bold uppercase text-muted-foreground">To<input className="h-10 rounded-xl border bg-background px-3 text-sm font-normal text-foreground" type="date" value={end} onChange={(event) => updateParam("end", event.target.value)} /></label>
-              <div className="rounded-2xl border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">Ratios within {passThreshold}% pass; warning extends to {warningThreshold}%.</div>
+              <label className="grid gap-1 text-xs font-bold uppercase text-muted-foreground">From<input className="h-10 rounded-md border border-transparent bg-muted px-3 text-sm font-normal text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" type="date" value={start} onChange={(event) => updateParam("start", event.target.value)} /></label>
+              <label className="grid gap-1 text-xs font-bold uppercase text-muted-foreground">To<input className="h-10 rounded-md border border-transparent bg-muted px-3 text-sm font-normal text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" type="date" value={end} onChange={(event) => updateParam("end", event.target.value)} /></label>
+              <div className="rounded-md bg-muted px-4 py-3 text-sm text-muted-foreground">Ratios within {passThreshold}% pass; warning extends to {warningThreshold}%.</div>
             </div>
           </CardContent>
         </Card>
 
-        <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
           <MetricCard label="QC Injections" value={overview?.qc_injection_count ?? "-"} detail="control runs in scope" />
           <MetricCard label="Complete Pairs" value={overview?.complete_pair_count ?? "-"} detail="A/B pairs with quant output" />
           <MetricCard label="Out of Spec" value={overview?.out_of_spec_pair_count ?? "-"} detail="warning or failed pairs" />
@@ -169,7 +169,7 @@ export default function QcPage() {
           <MetricCard label="HYE Health" value={healthScore === null ? "-" : `${healthScore}/100`} detail="ratio and completeness indicator" />
         </section>
 
-        <TabsContent value="hye" className="grid gap-4">
+        <TabsContent value="hye" className="mt-0 grid gap-4">
           <section className="grid gap-4 xl:grid-cols-[1fr_360px]">
             <Card>
               <CardHeader>
@@ -231,18 +231,26 @@ export default function QcPage() {
             details.pairs.map((pair) => (
               <Card key={`${pair.worklist_id}-${pair.pair_label}`}>
                 <CardHeader>
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <div className="text-xs font-bold uppercase text-muted-foreground">{pair.worklist_name}</div>
-                      <CardTitle className="mt-1">{pair.pair_label}</CardTitle>
-                      <CardDescription className="mt-2">
-                        <span className="font-medium">A:</span> {pair.a_filename || pair.a_run_name || "Missing"}{" "}
-                        <span className="ml-3 font-medium">B:</span> {pair.b_filename || pair.b_run_name || "Missing"}
-                      </CardDescription>
+                  <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+                    <div className="min-w-0">
+                      <div className="break-words text-xs font-bold uppercase text-muted-foreground">{pair.worklist_name}</div>
+                      <CardTitle className="mt-1 break-all">{pair.pair_label}</CardTitle>
+                      <dl className="mt-3 grid min-w-0 gap-1.5">
+                        <div className="grid min-w-0 grid-cols-[1.25rem_minmax(0,1fr)] gap-2 rounded-md bg-muted px-2.5 py-2 text-sm">
+                          <dt className="font-bold text-muted-foreground">A</dt>
+                          <dd className="min-w-0 break-all font-mono text-xs leading-5">{pair.a_filename || pair.a_run_name || "Missing"}</dd>
+                        </div>
+                        <div className="grid min-w-0 grid-cols-[1.25rem_minmax(0,1fr)] gap-2 rounded-md bg-muted px-2.5 py-2 text-sm">
+                          <dt className="font-bold text-muted-foreground">B</dt>
+                          <dd className="min-w-0 break-all font-mono text-xs leading-5">{pair.b_filename || pair.b_run_name || "Missing"}</dd>
+                        </div>
+                      </dl>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <StatusBadge status={pair.status} />
-                      <StatusBadge status={pair.machine_key === "unassigned" ? "warning" : "complete"} />
+                      <span className={`rounded-sm px-2 py-1 text-xs font-semibold ${pair.machine_key === "unassigned" ? "bg-warning/10 text-warning" : "bg-success/10 text-success"}`}>
+                        {pair.machine_key === "unassigned" ? "Machine unassigned" : "Machine assigned"}
+                      </span>
                       <Button asChild variant="secondary" size="sm">
                         <Link to={`/projects/${pair.project_id}`}>{pair.project_code}</Link>
                       </Button>
@@ -253,20 +261,20 @@ export default function QcPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="grid gap-3">
-                  <div className="grid gap-3 md:grid-cols-3">
-                    <div className="rounded-2xl border bg-secondary/20 px-3 py-2 text-sm">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-md bg-muted px-3 py-2 text-sm">
                       <div className="text-xs font-bold uppercase text-muted-foreground">Shared Proteins</div>
                       <div className="mt-1 text-lg font-semibold">{pair.shared_total_n}</div>
                     </div>
-                    <div className="rounded-2xl border bg-secondary/20 px-3 py-2 text-sm">
+                    <div className="rounded-md bg-muted px-3 py-2 text-sm">
                       <div className="text-xs font-bold uppercase text-muted-foreground">Completed</div>
                       <div className="mt-1 text-lg font-semibold">{formatDate(pair.completed_at)}</div>
                     </div>
-                    <div className="rounded-2xl border bg-secondary/20 px-3 py-2 text-sm">
+                    <div className="rounded-md bg-muted px-3 py-2 text-sm">
                       <div className="text-xs font-bold uppercase text-muted-foreground">Project</div>
                       <div className="mt-1 text-lg font-semibold">{pair.project_code}</div>
                     </div>
-                    <div className="rounded-2xl border bg-secondary/20 px-3 py-2 text-sm">
+                    <div className="rounded-md bg-muted px-3 py-2 text-sm">
                       <div className="text-xs font-bold uppercase text-muted-foreground">Machine</div>
                       <div className="mt-1 text-lg font-semibold">{pair.machine_label}</div>
                     </div>
@@ -275,19 +283,19 @@ export default function QcPage() {
                     <table className="w-full min-w-[840px] text-sm">
                       <thead className="text-left text-xs uppercase text-muted-foreground">
                         <tr>
-                          <th className="border-b px-2 py-2">Organism</th>
-                          <th className="border-b px-2 py-2">Status</th>
-                          <th className="border-b px-2 py-2">Shared N</th>
-                          <th className="border-b px-2 py-2">Median log2 A</th>
-                          <th className="border-b px-2 py-2">Median log2 B</th>
-                          <th className="border-b px-2 py-2">Observed B/A</th>
-                          <th className="border-b px-2 py-2">Ideal B/A</th>
-                          <th className="border-b px-2 py-2">Relative Error</th>
+                          <th className="border-b border-border/60 px-2 py-2">Organism</th>
+                          <th className="border-b border-border/60 px-2 py-2">Status</th>
+                          <th className="border-b border-border/60 px-2 py-2">Shared N</th>
+                          <th className="border-b border-border/60 px-2 py-2">Median log2 A</th>
+                          <th className="border-b border-border/60 px-2 py-2">Median log2 B</th>
+                          <th className="border-b border-border/60 px-2 py-2">Observed B/A</th>
+                          <th className="border-b border-border/60 px-2 py-2">Ideal B/A</th>
+                          <th className="border-b border-border/60 px-2 py-2">Relative Error</th>
                         </tr>
                       </thead>
                       <tbody>
                         {pair.organisms.map((organism) => (
-                          <tr key={organism.organism} className="border-b last:border-b-0">
+                          <tr key={organism.organism} className="border-b border-border/50 last:border-b-0">
                             <td className="px-2 py-2 font-medium">{organism.organism}</td>
                             <td className="px-2 py-2">
                               <StatusBadge status={organism.status} />
@@ -356,7 +364,7 @@ export default function QcPage() {
           )}
         </TabsContent>
 
-        <TabsContent value="prtc" className="grid gap-4">
+        <TabsContent value="prtc" className="mt-0 grid gap-4">
           <Card>
             <CardHeader>
               <CardTitle>PRTC standards</CardTitle>
@@ -366,19 +374,19 @@ export default function QcPage() {
             </CardHeader>
             <CardContent className="grid gap-3">
               <div className="grid gap-3 md:grid-cols-3">
-                <div className="rounded-2xl border bg-secondary/20 px-3 py-3">
+                <div className="rounded-md bg-muted px-3 py-3">
                   <div className="text-xs font-bold uppercase text-muted-foreground">Completed PRTC</div>
                   <div className="mt-2 text-xl font-bold">{prtcRuns.length}</div>
                   <div className="mt-1 text-sm text-muted-foreground">Skyline jobs with saved stats</div>
                 </div>
-                <div className="rounded-2xl border bg-secondary/20 px-3 py-3">
+                <div className="rounded-md bg-muted px-3 py-3">
                   <div className="text-xs font-bold uppercase text-muted-foreground">Detected Peptides</div>
                   <div className="mt-2 text-xl font-bold">
                     {prtcRuns[0] ? `${prtcRuns[0].detected_peptide_count}/${prtcRuns[0].expected_peptide_count}` : "-"}
                   </div>
                   <div className="mt-1 text-sm text-muted-foreground">latest completed injection</div>
                 </div>
-                <div className="rounded-2xl border bg-secondary/20 px-3 py-3">
+                <div className="rounded-md bg-muted px-3 py-3">
                   <div className="text-xs font-bold uppercase text-muted-foreground">Max RT Shift</div>
                   <div className="mt-2 text-xl font-bold">{formatMetric(prtcRuns[0]?.max_abs_rt_shift_seconds, "s")}</div>
                   <div className="mt-1 text-sm text-muted-foreground">latest completed injection</div>
@@ -398,19 +406,19 @@ export default function QcPage() {
                   <table className="w-full min-w-[980px] text-sm">
                     <thead className="text-left text-xs uppercase text-muted-foreground">
                       <tr>
-                        <th className="border-b px-2 py-2">Run</th>
-                        <th className="border-b px-2 py-2">Status</th>
-                        <th className="border-b px-2 py-2">Peptides</th>
-                        <th className="border-b px-2 py-2">Total Area</th>
-                        <th className="border-b px-2 py-2">Mean RT Shift</th>
-                        <th className="border-b px-2 py-2">Max RT Shift</th>
-                        <th className="border-b px-2 py-2">Missing</th>
-                        <th className="border-b px-2 py-2">Completed</th>
+                        <th className="border-b border-border/60 px-2 py-2">Run</th>
+                        <th className="border-b border-border/60 px-2 py-2">Status</th>
+                        <th className="border-b border-border/60 px-2 py-2">Peptides</th>
+                        <th className="border-b border-border/60 px-2 py-2">Total Area</th>
+                        <th className="border-b border-border/60 px-2 py-2">Mean RT Shift</th>
+                        <th className="border-b border-border/60 px-2 py-2">Max RT Shift</th>
+                        <th className="border-b border-border/60 px-2 py-2">Missing</th>
+                        <th className="border-b border-border/60 px-2 py-2">Completed</th>
                       </tr>
                     </thead>
                     <tbody>
                       {prtcRuns.map((run) => (
-                        <tr key={run.job_id} className="border-b last:border-b-0">
+                        <tr key={run.job_id} className="border-b border-border/50 last:border-b-0">
                           <td className="px-2 py-2">
                             <div className="font-medium">{run.run_name || run.filename}</div>
                             <div className="text-xs text-muted-foreground">{run.filename}</div>
