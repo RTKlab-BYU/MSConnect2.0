@@ -20,6 +20,7 @@ import {
   previewPreAcquisitionSetup,
   quickStartProject,
   queryKeys,
+  uploadReferenceAsset,
 } from "@/lib/api/queries";
 import { queryClient } from "@/lib/api/query-client";
 import { projectColumns } from "@/features/projects/table-columns";
@@ -35,9 +36,9 @@ type SampleDraft = {
 
 const wizardSteps = ["Project", "Samples", "Plate", "Acquisition", "Review"];
 const conditionStyles: Record<string, string> = {
-  healthy: "border-emerald-300 bg-emerald-100 text-emerald-950",
-  diseased: "border-rose-300 bg-rose-100 text-rose-950",
-  hye: "border-sky-300 bg-sky-100 text-sky-950",
+  healthy: "bg-success/10 text-success",
+  diseased: "bg-destructive/10 text-destructive",
+  hye: "bg-info/10 text-info",
 };
 const DIANN_PRESET_SPECLIB_BUILD = "DIA-NN speclib build";
 const DIANN_PRESET_SPECLIB_REUSE = "DIA-NN speclib reuse";
@@ -89,10 +90,7 @@ export default function ProjectsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [quickStartOpen, setQuickStartOpen] = useState(false);
   const [quickStartError, setQuickStartError] = useState("");
-  const [quickStartForm, setQuickStartForm] = useState({
-    title: "Untitled DIA Project",
-    code: "",
-  });
+  const [quickStartForm, setQuickStartForm] = useState("Untitled DIA Project");
   const [step, setStep] = useState(0);
   const [setupError, setSetupError] = useState("");
   const [projectForm, setProjectForm] = useState({
@@ -111,6 +109,10 @@ export default function ProjectsPage() {
   const [speclibPath, setSpeclibPath] = useState("/data/shared/reference/human.speclib");
   const [fastaUploadName, setFastaUploadName] = useState("");
   const [speclibUploadName, setSpeclibUploadName] = useState("");
+  const [fastaUploadFile, setFastaUploadFile] = useState<File | null>(null);
+  const [speclibUploadFile, setSpeclibUploadFile] = useState<File | null>(null);
+  const [fastaReferenceAssetId, setFastaReferenceAssetId] = useState<number | null>(null);
+  const [speclibReferenceAssetId, setSpeclibReferenceAssetId] = useState<number | null>(null);
   const [speclibScope, setSpeclibScope] = useState<"experiment" | "project">("experiment");
   const [speclibBuildRuns, setSpeclibBuildRuns] = useState("3");
   const [diannVersion, setDiannVersion] = useState("2.0");
@@ -142,9 +144,9 @@ export default function ProjectsPage() {
   const plannedRunCount = samples.length + hyePairCount * 2;
   const diannSettings = useMemo(() => parseDiannSettings(diannSettingsText), [diannSettingsText]);
   const preflightTone = {
-    card: "border-sky-300 bg-sky-50/80",
-    banner: "border-sky-300 bg-sky-100 text-sky-950",
-    chip: "border-sky-300 bg-sky-100 text-sky-950",
+    card: "bg-card",
+    banner: "bg-info/10 text-foreground",
+    chip: "bg-info/10 text-info",
   };
   const setupPayload = useMemo(
     () => ({
@@ -168,6 +170,8 @@ export default function ProjectsPage() {
       speclib_path: speclibPath,
       fasta_upload_name: fastaUploadName,
       speclib_upload_name: speclibUploadName,
+      ...(fastaReferenceAssetId ? { fasta_reference_asset_id: fastaReferenceAssetId } : {}),
+      ...(speclibReferenceAssetId ? { speclib_reference_asset_id: speclibReferenceAssetId } : {}),
       speclib_scope: speclibScope,
       speclib_build_runs: Number(speclibBuildRuns),
       diann_version: diannVersion,
@@ -178,6 +182,7 @@ export default function ProjectsPage() {
       diannVersion,
       fastaPath,
       fastaUploadName,
+      fastaReferenceAssetId,
       hyeInterval,
       instrumentConfiguration,
       organisms,
@@ -190,12 +195,27 @@ export default function ProjectsPage() {
       samples,
       speclibPath,
       speclibUploadName,
+      speclibReferenceAssetId,
       speclibScope,
       speclibBuildRuns,
     ],
   );
+  async function uploadSelectedReferences(payload: typeof setupPayload) {
+    let nextPayload = payload;
+    if (fastaUploadFile && !fastaReferenceAssetId) {
+      const asset = await uploadReferenceAsset(fastaUploadFile, "fasta", "experiment");
+      setFastaReferenceAssetId(asset.id);
+      nextPayload = { ...nextPayload, fasta_reference_asset_id: asset.id };
+    }
+    if (speclibUploadFile && !speclibReferenceAssetId) {
+      const asset = await uploadReferenceAsset(speclibUploadFile, "spectral_library", speclibScope);
+      setSpeclibReferenceAssetId(asset.id);
+      nextPayload = { ...nextPayload, speclib_reference_asset_id: asset.id };
+    }
+    return nextPayload;
+  }
   const setupMutation = useMutation({
-    mutationFn: createPreAcquisitionSetup,
+    mutationFn: async (payload: typeof setupPayload) => createPreAcquisitionSetup(await uploadSelectedReferences(payload)),
     onSuccess: async (response) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.projects(params) });
       setDialogOpen(false);
@@ -218,11 +238,11 @@ export default function ProjectsPage() {
     },
   });
   const quickStartMutation = useMutation({
-    mutationFn: quickStartProject,
-    onSuccess: async (response) => {
+    mutationFn: () => quickStartProject({ title: quickStartForm.trim() }),
+    onSuccess: async ({ project, experiment }) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.projects(params) });
-      setQuickStartOpen(false);
-      navigate(response.experiment?.id ? `/projects/${response.project.id}/experiments/${response.experiment.id}` : `/projects/${response.project.id}`);
+      closeQuickStart(false);
+      navigate(`/projects/${project.id}/experiments/${experiment.id}/worklists`);
     },
     onError: (error) => {
       setQuickStartError(error instanceof Error ? error.message : "Could not create quick-start project.");
@@ -250,10 +270,18 @@ export default function ProjectsPage() {
   function submitQuickStart(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setQuickStartError("");
-    quickStartMutation.mutate({
-      title: quickStartForm.title,
-      code: quickStartForm.code || undefined,
-    });
+    if (!quickStartForm.trim()) {
+      setQuickStartError("Enter a project name.");
+      return;
+    }
+    quickStartMutation.mutate();
+  }
+
+  function closeQuickStart(open: boolean) {
+    setQuickStartOpen(open);
+    if (!open) {
+      setQuickStartError("");
+    }
   }
 
   function seedShieldHumanPreview() {
@@ -273,6 +301,10 @@ export default function ProjectsPage() {
     setSpeclibPath(shieldHumanSpeclibPath);
     setFastaUploadName("");
     setSpeclibUploadName("");
+    setFastaUploadFile(null);
+    setSpeclibUploadFile(null);
+    setFastaReferenceAssetId(null);
+    setSpeclibReferenceAssetId(null);
     setDiannVersion("2.0");
     setDiannSettingsText(JSON.stringify(settingsForPreset(DIANN_PRESET_SPECLIB_BUILD), null, 2));
     setPreflightPreview(null);
@@ -303,31 +335,28 @@ export default function ProjectsPage() {
         actions={
           <>
             <StatusBadge status="active" />
-            <Dialog open={quickStartOpen} onOpenChange={setQuickStartOpen}>
+            <Dialog open={quickStartOpen} onOpenChange={closeQuickStart}>
               <DialogTrigger asChild>
                 <Button>
                   <Plus className="h-4 w-4" />
                   Quick start
                 </Button>
               </DialogTrigger>
-              <DialogContent>
+              <DialogContent className="max-w-xl">
                 <DialogHeader>
                   <DialogTitle>Quick start project</DialogTitle>
-                  <DialogDescription>Create the project now, then import or edit the LC-MS worklist from the project page.</DialogDescription>
+                  <DialogDescription>A project code and starter experiment are created automatically. Upload worklists and manage sharing from the project workspace.</DialogDescription>
                 </DialogHeader>
                 <form className="grid gap-3" onSubmit={submitQuickStart}>
-                  <TextField label="Project title" value={quickStartForm.title} onChange={(title) => setQuickStartForm((current) => ({ ...current, title }))} />
-                  <label className="grid gap-1 text-sm font-bold">
-                    Project code
-                    <Input value={quickStartForm.code} placeholder="Auto-generated if blank" onChange={(event) => setQuickStartForm((current) => ({ ...current, code: event.target.value }))} />
-                  </label>
+                  <TextField label="Project name" value={quickStartForm} onChange={setQuickStartForm} />
+                  <p className="text-xs text-muted-foreground">Project code and the initial experiment are generated for you.</p>
                   {quickStartError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{quickStartError}</div> : null}
                   <div className="flex justify-end gap-2 border-t pt-3">
-                    <Button type="button" variant="secondary" onClick={() => setQuickStartOpen(false)}>
+                    <Button type="button" variant="secondary" onClick={() => closeQuickStart(false)}>
                       Cancel
                     </Button>
                     <Button type="submit" disabled={quickStartMutation.isPending}>
-                      {quickStartMutation.isPending ? "Creating..." : "Create project"}
+                      {quickStartMutation.isPending ? "Creating…" : "Create project"}
                     </Button>
                   </div>
                 </form>
@@ -339,7 +368,7 @@ export default function ProjectsPage() {
                   Advanced setup
                 </Button>
               </DialogTrigger>
-              <DialogContent className="max-h-[92vh] max-w-5xl overflow-auto rounded-3xl p-6">
+              <DialogContent className="max-h-[92vh] max-w-5xl overflow-auto rounded-xl p-6">
                 <DialogHeader>
                   <DialogTitle className="text-2xl font-black tracking-tight">Pre-acquisition setup</DialogTitle>
                   <DialogDescription>
@@ -373,7 +402,7 @@ export default function ProjectsPage() {
                         </Button>
                       </div>
                       <textarea
-                        className="min-h-64 rounded-2xl border border-input bg-background/80 px-3 py-2 font-mono text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="min-h-64 rounded-md border border-input bg-background px-3 py-2 font-mono text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         value={sampleText}
                         onChange={(event) => setSampleText(event.target.value)}
                       />
@@ -402,7 +431,7 @@ export default function ProjectsPage() {
                           </Select>
                         </label>
                         <TextField label="HYE interval" type="number" min={0} value={hyeInterval} onChange={setHyeInterval} />
-                        <div className="rounded-2xl border bg-card p-3 text-sm">
+                        <div className="rounded-md bg-muted p-3 text-sm">
                           <div className="font-black">{plannedRunCount} planned injections</div>
                           <div className="text-muted-foreground">
                             {samples.length} samples + {hyePairCount * 2} HYE QC injections
@@ -455,7 +484,7 @@ export default function ProjectsPage() {
                           </p>
                         </label>
                       </div>
-                      <div className="grid gap-3 rounded-2xl border bg-background/60 p-4 md:grid-cols-[1fr_180px]">
+                      <div className="grid gap-3 rounded-lg bg-muted p-4 md:grid-cols-[1fr_180px]">
                         <label className="grid gap-1 text-sm font-bold">
                           Spectral-library scope
                           <Select value={speclibScope} onValueChange={(value) => setSpeclibScope(value as "experiment" | "project")}>
@@ -469,7 +498,7 @@ export default function ProjectsPage() {
                         </label>
                         <TextField label="Runs used to build" type="number" min={1} value={speclibBuildRuns} onChange={setSpeclibBuildRuns} />
                       </div>
-                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-background/60 px-4 py-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted px-4 py-3">
                         <div className="grid gap-1">
                           <div className="text-sm font-black">Shield human preview</div>
                           <div className="text-xs text-muted-foreground">
@@ -489,8 +518,8 @@ export default function ProjectsPage() {
                           <button
                             key={value}
                             type="button"
-                            className={`rounded-2xl border p-4 text-left text-sm font-bold transition ${
-                              organisms.includes(value) ? "border-primary bg-primary/10 text-primary" : "bg-card hover:bg-muted"
+                            className={`rounded-md p-4 text-left text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                              organisms.includes(value) ? "bg-primary/10 text-primary shadow-sm" : "bg-muted hover:bg-secondary"
                             }`}
                             onClick={() => toggleOrganism(value, setOrganisms)}
                           >
@@ -509,19 +538,29 @@ export default function ProjectsPage() {
                       <div className="grid gap-3 md:grid-cols-2">
                         <label className="grid gap-1 text-sm font-bold">
                           Optional FASTA upload
-                          <Input type="file" accept=".fasta,.fa" onChange={(event) => setFastaUploadName(event.target.files?.[0]?.name ?? "")} />
+                          <Input type="file" accept=".fasta,.fa,.faa,.fna" onChange={(event) => {
+                            const file = event.target.files?.[0] ?? null;
+                            setFastaUploadFile(file);
+                            setFastaUploadName(file?.name ?? "");
+                            setFastaReferenceAssetId(null);
+                          }} />
                           {fastaUploadName ? <span className="text-xs text-muted-foreground">{fastaUploadName}</span> : null}
                         </label>
                         <label className="grid gap-1 text-sm font-bold">
                           Optional SPECLIB upload
-                          <Input type="file" accept=".speclib,.tsv,.parquet" onChange={(event) => setSpeclibUploadName(event.target.files?.[0]?.name ?? "")} />
+                          <Input type="file" accept=".speclib,.tsv,.parquet,.lib" onChange={(event) => {
+                            const file = event.target.files?.[0] ?? null;
+                            setSpeclibUploadFile(file);
+                            setSpeclibUploadName(file?.name ?? "");
+                            setSpeclibReferenceAssetId(null);
+                          }} />
                           {speclibUploadName ? <span className="text-xs text-muted-foreground">{speclibUploadName}</span> : null}
                         </label>
                       </div>
                         <div className="grid gap-1 text-sm font-bold">
                         DIA-NN experimental settings JSON
                         <textarea
-                          className="min-h-56 rounded-2xl border border-input bg-background/80 px-3 py-2 font-mono text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          className="min-h-56 rounded-md border border-input bg-background px-3 py-2 font-mono text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           value={diannSettingsText}
                           onChange={(event) => setDiannSettingsText(event.target.value)}
                         />
@@ -551,7 +590,7 @@ export default function ProjectsPage() {
                           detail="Saved lab LC-MS setup"
                         />
                       </div>
-                      <Card className={`border-primary/25 ${preflightTone.card}`}>
+                      <Card className={preflightTone.card}>
                         <CardHeader className="pb-3">
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <div>
@@ -570,7 +609,7 @@ export default function ProjectsPage() {
                         </CardHeader>
                         <CardContent className="grid gap-4 xl:grid-cols-[1fr_360px]">
                           <div className="grid gap-3">
-                            <div className={`rounded-2xl border px-4 py-3 ${preflightTone.banner}`}>
+                            <div className={`rounded-xl px-4 py-3 ${preflightTone.banner}`}>
                               <div className="text-xs font-bold uppercase tracking-[0.16em] opacity-80">Draft setup preview</div>
                               <div className="mt-1 text-lg font-black">
                                 {preflightPreview?.source_label ?? "Draft setup preview"}
@@ -578,48 +617,48 @@ export default function ProjectsPage() {
                               <div className="mt-1 text-sm">
                                 {preflightPreview?.source_detail ?? "The preview is using the draft setup and site-controlled defaults."}
                               </div>
-                              <div className="mt-2 inline-flex rounded-full border px-3 py-1 text-xs font-bold uppercase tracking-[0.14em]">
+                              <div className="mt-2 inline-flex rounded-sm bg-background px-2.5 py-1 text-xs font-bold uppercase tracking-[0.12em]">
                                 {speclibModeLabel(preflightPreview?.speclib_mode ?? diannSpeclibModeForPreset(processingPreset))}
                               </div>
-                              <div className="mt-3 inline-flex rounded-full border px-3 py-1 text-xs font-bold uppercase tracking-[0.14em]">
+                              <div className="mt-3 inline-flex rounded-sm bg-background px-2.5 py-1 text-xs font-bold uppercase tracking-[0.12em]">
                                 Draft preview
                               </div>
                             </div>
-                            <div className="rounded-2xl border bg-background/80 p-3">
+                            <div className="rounded-lg bg-muted p-3">
                               <div className="text-xs font-bold uppercase text-muted-foreground">Status</div>
                               {diannSettings.error ? (
                                 <div className="mt-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">{diannSettings.error}</div>
                               ) : preflightError ? (
                                 <div className="mt-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">{preflightError}</div>
                               ) : preflightPreview ? (
-                                <div className="mt-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">
+                                <div className="mt-2 rounded-md bg-success/10 px-3 py-2 text-sm text-success">
                                   Ready to submit. The preflight snapshot is valid and uses the site-controlled DIA-NN performance tags.
                                 </div>
                               ) : (
-                                <div className="mt-2 rounded-lg border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                                <div className="mt-2 rounded-md bg-background px-3 py-2 text-sm text-muted-foreground">
                                   Preview will appear automatically on this step.
                                 </div>
                               )}
                             </div>
-                            <div className="rounded-2xl border bg-background/80 p-3">
+                            <div className="rounded-lg bg-muted p-3">
                               <div className="text-xs font-bold uppercase text-muted-foreground">Resolved settings</div>
                               <div className="mt-2 grid gap-2 text-sm">
-                                <div className="rounded-lg border bg-background/70 p-3">
+                                <div className="rounded-md bg-background p-3">
                                   <div className="text-xs font-bold uppercase text-muted-foreground">Preset</div>
                                   <div className="mt-1 font-semibold">{preflightPreview?.processing_preset ?? processingPreset}</div>
                                 </div>
-                                <div className="rounded-lg border bg-background/70 p-3">
+                                <div className="rounded-md bg-background p-3">
                                   <div className="text-xs font-bold uppercase text-muted-foreground">Version</div>
                                   <div className="mt-1 font-semibold">DIA-NN {preflightPreview?.diann_version ?? diannVersion}</div>
                                 </div>
-                                <div className="rounded-lg border bg-background/70 p-3">
+                                <div className="rounded-md bg-background p-3">
                                   <div className="text-xs font-bold uppercase text-muted-foreground">Speclib mode</div>
                                   <div className="mt-1 font-semibold">{speclibModeLabel(preflightPreview?.speclib_mode ?? diannSpeclibModeForPreset(processingPreset))}</div>
                                   <div className="mt-1 text-xs text-muted-foreground">
                                     {speclibModeDetail(preflightPreview?.speclib_mode ?? diannSpeclibModeForPreset(processingPreset))}
                                   </div>
                                 </div>
-                                <div className="rounded-lg border bg-background/70 p-3">
+                                <div className="rounded-md bg-background p-3">
                                   <div className="text-xs font-bold uppercase text-muted-foreground">Reference assets</div>
                                   <div className="mt-1 break-all text-xs text-muted-foreground">
                                     <div>FASTA: {String(preflightPreview?.reference_assets?.fasta_path ?? fastaPath)}</div>
@@ -630,42 +669,42 @@ export default function ProjectsPage() {
                             </div>
                           </div>
                           <div className="grid gap-3">
-                            <div className="rounded-2xl border bg-background/80 p-3">
+                            <div className="rounded-lg bg-muted p-3">
                               <div className="text-xs font-bold uppercase text-muted-foreground">Performance tags</div>
                               <div className="mt-2 grid gap-2">
                                 {tagEntries(preflightPreview?.performance_tags).length ? (
                                   tagEntries(preflightPreview?.performance_tags).map((entry) => (
-                                    <div key={entry.key} className={`rounded-lg border px-3 py-2 text-sm ${preflightTone.chip}`}>
+                                    <div key={entry.key} className={`rounded-md px-3 py-2 text-sm ${preflightTone.chip}`}>
                                       <div className="text-xs font-bold uppercase text-muted-foreground">{entry.key}</div>
                                       <div className="mt-1 font-mono">{formatTagValue(entry.value)}</div>
                                     </div>
                                   ))
                                 ) : (
-                                  <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">No performance tags resolved.</div>
+                                  <div className="rounded-md bg-background px-3 py-2 text-sm text-muted-foreground">No performance tags resolved.</div>
                                 )}
                               </div>
                             </div>
-                            <div className="rounded-2xl border bg-background/80 p-3">
+                            <div className="rounded-lg bg-muted p-3">
                               <div className="text-xs font-bold uppercase text-muted-foreground">Experimental tags</div>
                               <div className="mt-2 grid gap-2">
                                 {tagEntries(preflightPreview?.experimental_tags).length ? (
                                   tagEntries(preflightPreview?.experimental_tags).map((entry) => (
-                                    <div key={entry.key} className="rounded-lg border bg-background px-3 py-2 text-sm">
+                                    <div key={entry.key} className="rounded-md bg-background px-3 py-2 text-sm">
                                       <div className="text-xs font-bold uppercase text-muted-foreground">{entry.key}</div>
                                       <div className="mt-1 font-mono">{formatTagValue(entry.value)}</div>
                                     </div>
                                   ))
                                 ) : (
-                                  <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">No experimental tags resolved.</div>
+                                  <div className="rounded-md bg-background px-3 py-2 text-sm text-muted-foreground">No experimental tags resolved.</div>
                                 )}
                               </div>
                             </div>
-                            <div className="rounded-2xl border bg-background/80 p-3">
+                            <div className="rounded-lg bg-muted p-3">
                               <div className="text-xs font-bold uppercase text-muted-foreground">Command options</div>
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {(preflightPreview?.options ?? []).length ? (
                                   preflightPreview?.options.map((option) => (
-                                    <span key={option} className="rounded-full border bg-background px-3 py-1 font-mono text-xs">
+                                    <span key={option} className="rounded-sm bg-background px-2 py-1 font-mono text-xs">
                                       {option}
                                     </span>
                                   ))
@@ -680,7 +719,7 @@ export default function ProjectsPage() {
                     </section>
                   ) : null}
 
-                  {setupError ? <div className="rounded-2xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{setupError}</div> : null}
+                  {setupError ? <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{setupError}</div> : null}
 
                   <div className="flex flex-wrap justify-between gap-2 border-t pt-4">
                     <Button type="button" variant="secondary" onClick={() => (step === 0 ? setDialogOpen(false) : setStep((current) => current - 1))}>
@@ -741,7 +780,7 @@ function WizardProgress({ step }: { step: number }) {
   return (
     <div className="grid gap-2 sm:grid-cols-5">
       {wizardSteps.map((label, index) => (
-        <div key={label} className={`rounded-2xl border px-3 py-2 text-sm font-bold ${index <= step ? "border-primary bg-primary/10 text-primary" : "bg-card text-muted-foreground"}`}>
+        <div key={label} className={`rounded-md px-3 py-2 text-sm font-bold ${index <= step ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`}>
           {index + 1}. {label}
         </div>
       ))}
@@ -760,7 +799,7 @@ function TextField(props: { label: string; value: string; onChange: (value: stri
 
 function Metric({ label, value, detail }: { label: string; value: string | number; detail?: string }) {
   return (
-    <div className="rounded-2xl border bg-card p-3">
+    <div className="rounded-md bg-muted p-3">
       <div className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
       <div className="pt-1 text-xl font-black">{value}</div>
       {detail ? <div className="pt-1 text-sm text-muted-foreground">{detail}</div> : null}
@@ -773,13 +812,13 @@ function PlateMap({ samples, plateType }: { samples: SampleDraft[]; plateType: "
   const wells = buildWells(plateType);
   const columns = plateType === "384" ? 24 : 12;
   return (
-    <div className="overflow-auto rounded-2xl border bg-card p-3">
+    <div className="overflow-auto rounded-lg bg-muted p-3">
       <div className="grid min-w-max gap-1" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 4rem))` }}>
         {wells.map((well) => {
           const sample = sampleByWell.get(well);
-          const style = sample ? conditionStyles[sample.condition] ?? "border-amber-300 bg-amber-100 text-amber-950" : "border-border bg-muted/40 text-muted-foreground";
+          const style = sample ? conditionStyles[sample.condition] ?? "bg-warning/15 text-warning" : "bg-muted/50 text-muted-foreground";
           return (
-            <div key={well} className={`h-12 w-16 rounded-xl border p-1 text-[10px] ${style}`} title={sample ? `${sample.sample_id} (${sample.condition})` : well}>
+            <div key={well} className={`h-12 w-16 rounded-md p-1 text-[10px] ${style}`} title={sample ? `${sample.sample_id} (${sample.condition})` : well}>
               <div className="font-black">{well}</div>
               <div className="truncate">{sample?.sample_id ?? ""}</div>
             </div>

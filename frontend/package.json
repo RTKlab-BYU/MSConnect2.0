@@ -11,6 +11,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test:worklist-import": "node --experimental-strip-types --test src/features/projects/worklist-import.test.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

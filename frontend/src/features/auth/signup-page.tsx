@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,8 +8,8 @@ import { Input } from "@/components/ui/input";
 import { signupAccount } from "@/lib/api/queries";
 
 export default function SignupPage() {
-  const navigate = useNavigate();
   const [error, setError] = useState("");
+  const [createdEmail, setCreatedEmail] = useState("");
   const [form, setForm] = useState({
     username: "",
     email: "",
@@ -20,8 +20,9 @@ export default function SignupPage() {
 
   const signupMutation = useMutation({
     mutationFn: signupAccount,
-    onSuccess: () => {
-      navigate("/submissions/new");
+    onSuccess: (result) => {
+      setCreatedEmail(result.user.email);
+      setError("");
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : "Could not create account.");
@@ -35,7 +36,7 @@ export default function SignupPage() {
           <CardHeader className="border-b bg-secondary/30">
             <CardTitle className="text-3xl">Create a collaborator account</CardTitle>
             <CardDescription>
-              Use this to provision a lab-scoped workspace, verify your email, and submit intake requests directly.
+              Create a collaborator account. You’ll receive a link to verify your email address.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 p-6 md:grid-cols-2">
@@ -71,8 +72,9 @@ export default function SignupPage() {
               </Button>
             </div>
             {error ? <div className="md:col-span-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
+            {createdEmail ? <div className="md:col-span-2 rounded-lg border border-primary/30 bg-primary/5 p-4 text-sm" role="status" aria-live="polite">Account created for <strong>{createdEmail}</strong>. {signupMutation.data?.verification.email_sent ? "Check your inbox (and spam folder) for the verification link." : "The verification email could not be sent. Ask an administrator to check email settings, then resend the link."} <Link className="ml-1 font-semibold underline underline-offset-2" to="/projects">Continue to MSConnect</Link></div> : null}
             <div className="md:col-span-2 rounded-lg border bg-background/70 p-4 text-sm text-muted-foreground">
-              Verification email is queued when email delivery is configured. In development, the account is provisioned immediately and can be used to submit requests.
+              If you do not receive the message, sign in and use “Resend verification email,” or ask an administrator to check email delivery settings.
             </div>
           </CardContent>
         </Card>

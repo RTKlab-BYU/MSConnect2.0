@@ -38,17 +38,17 @@ export function DataTable<TData, TValue>({
   const rows = table.getRowModel().rows;
 
   return (
-    <div className={cn("min-w-0 overflow-hidden rounded-2xl border bg-card/95 shadow-[0_18px_50px_rgb(15_23_42/0.06)]", className)}>
+    <div className={cn("min-w-0 overflow-hidden rounded-lg bg-card", className)}>
       <div className="table-scroll">
         <div className="max-h-[560px] overflow-auto">
-        <table className="w-full min-w-[960px] border-collapse text-sm">
-          <thead className="sticky top-0 z-10 bg-secondary/95 text-left text-xs uppercase tracking-[0.08em] text-muted-foreground">
+        <table className="w-full min-w-[960px] border-collapse text-sm tabular-nums">
+          <thead className="sticky top-0 z-10 bg-secondary text-left text-xs uppercase tracking-[0.08em] text-muted-foreground">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => {
                   const sort = header.column.getIsSorted();
                   return (
-                    <th key={header.id} className="border-b px-4 py-3 font-bold">
+                    <th key={header.id} className="px-4 py-3 font-bold">
                       {header.isPlaceholder ? null : header.column.getCanSort() ? (
                         <Button
                           className="-ml-2 h-8 px-2 text-xs uppercase tracking-[0.08em]"
@@ -77,7 +77,7 @@ export function DataTable<TData, TValue>({
               {rows.length ? (
                 rows.map((row) => {
                   return (
-                    <tr key={row.id} className="border-b hover:bg-secondary/45">
+                    <tr key={row.id} className="border-b border-border/55 hover:bg-secondary">
                       {row.getVisibleCells().map((cell) => (
                         <td key={cell.id} className="break-words px-4 py-2.5 align-top whitespace-normal">
                           {flexRender(cell.column.columnDef.cell, cell.getContext())}

@@ -1,0 +1,4 @@
+position,run_name,sample_name,expected_filename,file_role,qc_program,hye_pair_label,condition,well,plate
+1,MSCON-001-S01,Sample-01,MSCON_001_Sample-01.raw,sample,,,control,A1,Plate 1
+2,MSCON-002-HYE-A,HYE-A,MSCON_002_HYE-A.raw,hye,hye,HYE-01,QC,B1,Plate 1
+3,MSCON-003-HYE-B,HYE-B,MSCON_003_HYE-B.raw,hye,hye,HYE-01,QC,C1,Plate 1

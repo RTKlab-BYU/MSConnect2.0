@@ -19,7 +19,8 @@ export function RoleGuard({ allow, children }: { allow: Role[]; children: ReactN
   }
 
   const role = currentUserQuery.data?.global_role;
-  if (!role || !allow.includes(role)) {
+  const superuserAllowed = Boolean(currentUserQuery.data?.is_superuser && allow.includes("admin"));
+  if ((!role || !allow.includes(role)) && !superuserAllowed) {
     return <Navigate to="/dashboard" replace state={{ from: location.pathname }} />;
   }
 

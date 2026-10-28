@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Pause, Play, Power, RefreshCw, RotateCcw, Server, ShieldAlert, Stethoscope } from "lucide-react";
+import { Activity, AlertTriangle, Loader2, Pause, Play, Power, RefreshCw, RotateCcw, Server, ShieldAlert, Stethoscope } from "lucide-react";
+import { Link, NavLink, useSearchParams } from "react-router-dom";
 import { useState } from "react";
 
 import { MetricCard, PageHero } from "@/components/layout/page-section";
@@ -11,15 +12,16 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import {
   controlProcessingNode,
   fetchProcessingJobsOverview,
+  fetchProcessingJobs,
   fetchProcessingNodes,
-  fetchProcessingNodesOverview,
   fetchProcessingNodeEvents,
+  fetchAdminRuntimeSettings,
   markProcessingNodeOffline,
   runProcessingNodeDiagnostics,
   queryKeys,
 } from "@/lib/api/queries";
 import { queryClient } from "@/lib/api/query-client";
-import type { ProcessingNode } from "@/lib/api/types";
+import type { ProcessingJob, ProcessingNode } from "@/lib/api/types";
 import { formatDate } from "@/lib/format";
 
 const controlOptions = ["start", "pause", "resume", "drain", "restart", "stop", "upgrade", "reconfigure"] as const;
@@ -35,20 +37,26 @@ const controlLabels: Record<(typeof controlOptions)[number], string> = {
 };
 
 export default function ProcessingAdminPage() {
+  const [searchParams] = useSearchParams();
+  const nodeSection = searchParams.get("type") === "watcher" ? "watcher" : "processor";
+  const isWatcher = nodeSection === "watcher";
   const [typeFilter, setTypeFilter] = useState("all");
   const nodesQuery = useQuery({
     queryKey: queryKeys.processingNodes({ page: 1, page_size: 500 }),
     queryFn: () => fetchProcessingNodes({ page: 1, page_size: 500 }),
     refetchInterval: 10_000,
   });
-  const overviewQuery = useQuery({
-    queryKey: queryKeys.processingNodesOverview(),
-    queryFn: () => fetchProcessingNodesOverview(),
-    refetchInterval: 10_000,
-  });
+  const runtimeQuery = useQuery({ queryKey: queryKeys.adminRuntimeSettings(), queryFn: fetchAdminRuntimeSettings });
   const jobsQuery = useQuery({
     queryKey: queryKeys.processingJobsOverview({ active: true }),
     queryFn: () => fetchProcessingJobsOverview({ active: true }),
+    enabled: !isWatcher,
+    refetchInterval: 10_000,
+  });
+  const activeJobsQuery = useQuery({
+    queryKey: queryKeys.processingJobs({ active: true, page: 1, page_size: 500 }),
+    queryFn: () => fetchProcessingJobs({ active: true, page: 1, page_size: 500 }),
+    enabled: !isWatcher,
     refetchInterval: 10_000,
   });
   const controlMutation = useMutation({
@@ -65,24 +73,26 @@ export default function ProcessingAdminPage() {
     onSuccess: refreshNodes,
   });
   const diagnosticsMutation = useMutation({
-    mutationFn: (node: ProcessingNode) => runProcessingNodeDiagnostics(node.id, ["api", "storage", "engine"]),
+    mutationFn: (node: ProcessingNode) => runProcessingNodeDiagnostics(node.id, node.node_type.toLowerCase() === "watcher" ? ["api", "storage"] : ["api", "storage", "engine"]),
     onSuccess: refreshNodes,
   });
 
-  const nodes = nodesQuery.data?.results ?? [];
-  const visibleNodes = nodes.filter((node) => typeFilter === "all" || node.node_type === typeFilter);
+  const nodes = (nodesQuery.data?.results ?? []).filter((node) => (node.node_type.toLowerCase() === "watcher") === isWatcher);
+  const visibleNodes = nodes.filter((node) => isWatcher || typeFilter === "all" || node.node_type === typeFilter);
   const engines = summarizeEngines(nodes);
   const redNodes = nodes.filter((node) => node.health === "red").length;
   const yellowNodes = nodes.filter((node) => node.health === "yellow").length;
+  const greenNodes = nodes.filter((node) => node.health === "green").length;
+  const slurm = runtimeQuery.data?.compute.slurm;
 
   return (
     <div className="grid gap-4">
-      <Breadcrumbs items={[{ label: "Processing", href: "/processing" }, { label: "Admin" }]} />
+      <Breadcrumbs items={[{ label: "Administration", href: "/admin" }, { label: "Nodes & compute" }, { label: isWatcher ? "Watchers" : "Processors" }]} />
 
       <PageHero
         eyebrow="Admin control"
-        title="Node administration"
-        description="Live watcher and processor inventory, engine health, host identity, shared storage settings, diagnostics, and control requests."
+        title={isWatcher ? "Watcher administration" : "Processor administration"}
+        description={isWatcher ? "Acquisition watcher agents only: heartbeat, file discovery, and upload service health." : "Processing workers only: engine health, Slurm/cloud execution readiness, shared storage, diagnostics, and control requests."}
         actions={
           <>
             <Button variant="secondary" onClick={refreshNodes}>
@@ -94,21 +104,26 @@ export default function ProcessingAdminPage() {
         }
       />
 
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-        <MetricCard label="Nodes" value={overviewQuery.data?.total ?? "-"} detail="registered workers" />
-        <MetricCard label="Stale" value={overviewQuery.data?.stale ?? 0} detail="heartbeat older than 180s" />
-        <MetricCard label="Red" value={redNodes} detail="offline, stale, or error" />
-        <MetricCard label="Yellow" value={yellowNodes} detail="delayed heartbeat" />
-        <MetricCard label="Active Jobs" value={jobsQuery.data?.active ?? "-"} detail="assigned/running/retrying" />
-        <MetricCard label="Failed Jobs" value={jobsQuery.data?.failed ?? "-"} detail="needs operator review" />
+      <nav aria-label="Node administration sections" className="flex w-fit gap-1 rounded-lg bg-muted p-1">
+        <NavLink to="/processing/admin?type=processor" aria-current={!isWatcher ? "page" : undefined} className={`rounded-md px-4 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${!isWatcher ? "bg-card font-semibold text-foreground shadow-sm" : "text-muted-foreground hover:bg-card/70 hover:text-foreground"}`}>Processors</NavLink>
+        <NavLink to="/processing/admin?type=watcher" aria-current={isWatcher ? "page" : undefined} className={`rounded-md px-4 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${isWatcher ? "bg-card font-semibold text-foreground shadow-sm" : "text-muted-foreground hover:bg-card/70 hover:text-foreground"}`}>Watchers</NavLink>
+      </nav>
+
+      <section className={`grid gap-3 sm:grid-cols-2 ${isWatcher ? "xl:grid-cols-4" : "xl:grid-cols-6"}`}>
+        <MetricCard label={isWatcher ? "Watchers" : "Processors"} value={nodes.length} detail="registered in this instance" />
+        <MetricCard label="Online" value={greenNodes} detail="heartbeat ≤ 75 seconds" />
+        <MetricCard label="Delayed" value={yellowNodes} detail="heartbeat 76–180 seconds" />
+        <MetricCard label="Offline / error" value={redNodes} detail="no heartbeat, >180s, offline, or error" />
+        {!isWatcher ? <MetricCard label="Active Jobs" value={jobsQuery.data?.active ?? "-"} detail="assigned / running / retrying" /> : null}
+        {!isWatcher ? <MetricCard label="Failed Jobs" value={jobsQuery.data?.failed ?? "-"} detail="needs operator review" /> : null}
       </section>
 
-      <Card>
+      {!isWatcher ? <Card>
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <CardTitle>Engine Health</CardTitle>
-              <CardDescription>Node types correspond to installed processor instances such as DIA-NN, FragPipe, Skyline, Spectronaut, and Proteome Discoverer.</CardDescription>
+              <CardTitle>Processor engines</CardTitle>
+              <CardDescription>Only processing workers are included here; acquisition watcher health is under the Watchers tab.</CardDescription>
             </div>
             <Select value={typeFilter} onValueChange={setTypeFilter}>
               <SelectTrigger className="w-56">
@@ -123,27 +138,40 @@ export default function ProcessingAdminPage() {
             </Select>
           </div>
         </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <CardContent className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
           {engines.map((engine) => (
-            <div key={engine.type} className="rounded-lg border bg-background/50 p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="font-black">{engine.type}</div>
-                <StatusBadge status={engine.red ? "failed" : engine.yellow ? "warning" : "complete"} />
+            <div key={engine.type} className="min-w-0 rounded-md bg-muted p-3">
+              <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0 break-words font-semibold">{engine.type}</div>
+                <StatusBadge className="shrink-0" status={engine.red ? "failed" : engine.yellow ? "warning" : "complete"} />
               </div>
-              <div className="mt-2 text-sm text-muted-foreground">
-                {engine.total} nodes · {engine.green} green · {engine.yellow} yellow · {engine.red} red
+              <div className="mt-2 break-words text-sm text-muted-foreground">
+                {engine.total} {engine.total === 1 ? "node" : "nodes"} · {engine.green} green · {engine.yellow} yellow · {engine.red} red
               </div>
             </div>
           ))}
-          {!engines.length ? <div className="rounded-lg border p-4 text-sm text-muted-foreground">No processor nodes have reported yet.</div> : null}
+          {!engines.length ? <div className="rounded-md bg-muted p-4 text-sm text-muted-foreground">No processor nodes have reported yet.</div> : null}
         </CardContent>
-      </Card>
+      </Card> : <Card>
+        <CardHeader><CardTitle>Watcher responsibilities</CardTitle><CardDescription>Watchers discover new acquisition files and register them against expected project runs. They do not appear in processor health or engine-load summaries.</CardDescription></CardHeader>
+        <CardContent className="flex flex-wrap items-center justify-between gap-3"><p className="max-w-2xl text-sm text-muted-foreground">Per-project live watcher routes are shown in that project’s Acquisition page. This tab reports only globally registered watcher agents.</p><Button asChild variant="secondary"><Link to="/watcher">Open watcher activity</Link></Button></CardContent>
+      </Card>}
+
+      {!isWatcher ? <Card>
+        <CardHeader><CardTitle>Compute integrations</CardTitle><CardDescription>Execution configuration is read from the server environment. Cloud execution is not available until a provider adapter is implemented.</CardDescription></CardHeader>
+        <CardContent className="grid gap-2 md:grid-cols-2">
+          <IntegrationSummary title="Slurm" ready={Boolean(slurm?.configured)} detail={slurm?.configured ? `${slurm.host}:${slurm.port} · credentials/config present` : "Not ready: set host, dedicated remote root, container image, SSH key, and known_hosts for the Slurm processor."} />
+          <IntegrationSummary title="Cloud compute" ready={false} detail="Not connected. No cloud adapter is configured; the UI will not offer cloud execution as if it were available." />
+        </CardContent>
+      </Card> : null}
 
       <div className="grid gap-4">
         {visibleNodes.map((node) => (
           <NodeAdminCard
             key={node.id}
             node={node}
+            isWatcher={isWatcher}
+            activeJobs={(activeJobsQuery.data?.results ?? []).filter((job) => job.node === node.id)}
             busy={controlMutation.isPending || offlineMutation.isPending || diagnosticsMutation.isPending}
             onControl={(command) => controlMutation.mutate({ node, command })}
             onOffline={() => offlineMutation.mutate(node)}
@@ -162,12 +190,16 @@ export default function ProcessingAdminPage() {
 
 function NodeAdminCard({
   node,
+  isWatcher,
+  activeJobs,
   busy,
   onControl,
   onOffline,
   onDiagnostics,
 }: {
   node: ProcessingNode;
+  isWatcher: boolean;
+  activeJobs: ProcessingJob[];
   busy: boolean;
   onControl: (command: (typeof controlOptions)[number]) => void;
   onOffline: () => void;
@@ -185,39 +217,51 @@ function NodeAdminCard({
   return (
     <Card>
       <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle className="flex items-center gap-2">
-              <Server className="h-4 w-4" />
+        <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <CardTitle className="flex min-w-0 flex-wrap items-center gap-2 break-words">
+              <Server className="h-4 w-4 shrink-0" />
               {node.name}
             </CardTitle>
             <CardDescription>{node.node_type} · {node.ip_address || "No IP reported"}</CardDescription>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex max-w-full flex-wrap items-center gap-2">
             <StatusBadge status={node.status} />
             <StatusBadge status={node.health === "red" ? "failed" : node.health === "yellow" ? "warning" : "complete"} />
           </div>
         </div>
       </CardHeader>
-      <CardContent className="grid gap-4 xl:grid-cols-[1fr_360px]">
-          <div className="grid gap-3 md:grid-cols-2">
+      {node.health !== "green" && node.health_guidance ? (
+        <div role={node.health === "red" ? "alert" : "status"} className={`mx-4 mb-3 border-l-2 px-3 py-2 text-xs ${node.health === "red" ? "border-destructive bg-destructive/5" : "border-warning bg-warning/5"}`}>
+          <span className="font-semibold">How to clear this status:</span> {node.health_guidance}
+        </div>
+      ) : null}
+      <CardContent className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="grid min-w-0 gap-3 md:grid-cols-2">
           <InfoBlock label="Heartbeat" value={node.last_heartbeat_at ? `${formatDate(node.last_heartbeat_at)} (${node.seconds_since_heartbeat ?? "-"}s ago)` : "Never"} />
           <InfoBlock label="Endpoint" value={node.endpoint_url || "-"} />
           <InfoBlock label="Image / Install" value={node.container_image || "-"} />
-          <InfoBlock label="Engine profile" value={engineProfile(node)} />
+          {!isWatcher ? <InfoBlock label="Engine profile" value={engineProfile(node)} /> : null}
           <InfoBlock label="IP Address" value={node.ip_address || "-"} />
           <InfoBlock label="Shared Storage" value={stringSetting(node.settings.processor_shared_storage_root) || stringSetting(node.settings.results_root) || "-"} />
           <InfoBlock label="Raw Storage" value={stringSetting(node.settings.raw_file_storage_root) || "-"} />
         </div>
 
-        <div className="grid gap-3">
-          <div className="rounded-lg border bg-secondary/45 p-3">
+          <div className="grid min-w-0 gap-3">
+          {!isWatcher ? <section className="min-w-0 rounded-md bg-muted p-3" aria-label="Current processor work">
+            <div className="flex items-center gap-2 text-sm font-semibold"><Activity className="h-4 w-4" /> Current work</div>
+            <div className="mt-2 grid gap-3">
+              {activeJobs.map((job) => <JobProgress key={job.id} job={job} />)}
+              {!activeJobs.length ? <p className="text-xs text-muted-foreground">No active jobs assigned to this processor.</p> : null}
+            </div>
+          </section> : null}
+          <div className="min-w-0 rounded-md bg-secondary p-3">
             <div className="flex items-center gap-2 text-sm font-black">
               <ShieldAlert className="h-4 w-4" />
               Control
             </div>
             {controlCommand ? (
-              <div className="mt-2 rounded-lg border bg-background/70 p-2 text-xs text-muted-foreground">
+              <div className="mt-2 break-words rounded-sm bg-card p-2 text-xs text-muted-foreground">
                 Pending: <span className="font-bold text-foreground">{controlCommand}</span> · {controlStatus || "requested"}
               </div>
             ) : (
@@ -265,11 +309,11 @@ function NodeAdminCard({
               </Button>
             </div>
           </div>
-          <details className="rounded-lg border bg-background/50 p-3">
+          <details className="min-w-0 rounded-md bg-muted p-3">
             <summary className="cursor-pointer text-sm font-black">Settings and metadata</summary>
             <pre className="mt-3 max-h-64 overflow-auto text-xs"><code>{JSON.stringify({ settings: node.settings, metadata: node.metadata }, null, 2)}</code></pre>
           </details>
-          <div className="rounded-lg border bg-background/50 p-3">
+          <div className="min-w-0 rounded-md bg-muted p-3">
             <div className="text-sm font-black">Recent activity</div>
             <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
               {(eventsQuery.data ?? []).slice(0, 5).map((event) => (
@@ -287,9 +331,38 @@ function NodeAdminCard({
   );
 }
 
+function JobProgress({ job }: { job: ProcessingJob }) {
+  const rawPercent = job.stats.progress_percent;
+  const percent = typeof rawPercent === "number" && Number.isFinite(rawPercent)
+    ? Math.max(0, Math.min(100, rawPercent))
+    : null;
+  const title = job.raw_file_filename || job.run_name || `Processing job ${job.id}`;
+  return <div className="min-w-0 border-t border-border/60 pt-2 first:border-t-0 first:pt-0">
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+      <span className="min-w-0 break-words text-xs font-semibold">{title}</span>
+      <span className="flex shrink-0 items-center gap-1 text-xs text-primary">
+        {job.status === "running" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Activity className="h-3.5 w-3.5" aria-hidden="true" />}{job.status}
+      </span>
+    </div>
+    <div className="mt-1 h-2 overflow-hidden rounded-full bg-background" role="progressbar" aria-label={`${title} progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent ?? undefined} aria-valuetext={percent === null ? "Progress percentage not reported by processor" : `${percent}%`}>
+      {percent === null
+        ? <div className="h-full w-1/3 animate-[msconnect-progress-sweep_1.8s_ease-in-out_infinite] bg-primary" />
+        : <div className="h-full bg-primary transition-[width] duration-500" style={{ width: `${percent}%` }} />}
+    </div>
+    {percent === null ? <p className="mt-1 text-[11px] text-muted-foreground">Working · processor does not report percent complete</p> : <p className="mt-1 text-[11px] text-muted-foreground">{percent}% complete</p>}
+  </div>;
+}
+
+function IntegrationSummary({ title, ready, detail }: { title: string; ready: boolean; detail: string }) {
+  return <div className="min-w-0 rounded-md bg-muted p-3">
+    <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">{title}</h3><StatusBadge status={ready ? "complete" : "warning"} /></div>
+    <p className="mt-2 break-words text-sm text-muted-foreground">{detail}</p>
+  </div>;
+}
+
 function InfoBlock({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border bg-background/50 p-3">
+    <div className="min-w-0 rounded-md bg-muted p-3">
       <div className="text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">{label}</div>
       <div className="mt-2 break-all text-sm font-semibold">{value}</div>
     </div>

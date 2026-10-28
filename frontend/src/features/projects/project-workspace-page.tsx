@@ -1,8 +1,8 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { BarChart3, BrainCircuit, CheckCircle2, Copy, FileUp, FolderKanban, RefreshCw, Save, Settings2, WandSparkles } from "lucide-react";
+import { BarChart3, BrainCircuit, CheckCircle2, Copy, FileUp, FolderKanban, RefreshCw, Save, Settings2, UsersRound } from "lucide-react";
 import type { FormEvent } from "react";
-import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { MetricCard, PageHero } from "@/components/layout/page-section";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
@@ -12,33 +12,40 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { ProjectAssistantPanel } from "@/features/projects/project-assistant-panel";
+import { parseWorklistText, roleOptions, type InstrumentWorklistKind } from "@/features/projects/worklist-import";
 import {
   fetchCurrentUser,
+  fetchFileMatchExceptions,
   fetchExperiment,
   fetchExperiments,
   fetchProjectResearcherStatus,
+  fetchProjectMembers,
+  shareProjectWithUser,
+  removeProjectMember,
+  fetchAcquisitionRoutes,
   fetchProjectDiannPreflight,
-  downloadWorklist,
-  downloadGeneratedWorklist,
-  generateProjectWorklist,
   fetchFindingsWorkspace,
   fetchProcessingJobs,
+  fetchRawFiles,
   indexFindingsWorkspace,
   importProjectWorklist,
   prepareFindingsWorkspace,
   queueProjectRuns,
   queueProjectReadyRuns,
   rerunLatestDiannBatch,
+  reanalyzeProject,
+  fetchAnalysisBatches,
+  resolveFileMatchException,
   queryKeys,
   updateRun,
   updateWorklistEntry,
 } from "@/lib/api/queries";
 import { queryClient } from "@/lib/api/query-client";
 import { formatBytes, formatDate } from "@/lib/format";
-import type { FindingsWorkspace, ProcessingJob, ProjectResearcherRun, WorklistImportRow } from "@/lib/api/types";
+import type { AnalysisBatch, FileMatchException, FindingsWorkspace, ProjectResearcherRun, RawFile, WorklistImportRow } from "@/lib/api/types";
 import { isOperatorRole } from "@/lib/ui-surface";
 
-const roleOptions = ["sample", "qc", "hye", "prtc", "library", "blank", "true_blank", "wash", "calibration"] as const;
 const runStatusOptions = ["planned", "acquired", "imported", "processed", "failed"] as const;
 
 type EditDraft = {
@@ -53,30 +60,41 @@ type EditDraft = {
   notes: string;
 };
 
-type DiannProcessStep = {
-  key: string;
-  label: string;
-  detail: string;
-  status: string;
-};
+const lifecycleSections = [
+  ["overview", "Overview"],
+  ["worklists", "Worklists"],
+  ["acquisition", "Acquisition"],
+  ["processing", "Processing"],
+  ["qc", "QC"],
+  ["analysis", "Analysis"],
+  ["assistant", "Assistant"],
+] as const;
 
 export default function ProjectWorkspacePage() {
-  const projectId = Number(useParams().projectId);
-  const experimentId = Number(useParams().experimentId);
+  const params = useParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const projectId = Number(params.projectId);
+  const experimentId = Number(params.experimentId);
+  const activeSection = lifecycleSections.some(([section]) => section === params.section) ? params.section! : "overview";
+  const quickStartImportError = (location.state as { quickStartImportError?: string } | null)?.quickStartImportError;
   const isExperimentRoute = Number.isFinite(experimentId);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
+  const [runPage, setRunPage] = useState(1);
   const [worklistOpen, setWorklistOpen] = useState(false);
   const [worklistName, setWorklistName] = useState("Imported LC-MS worklist");
-  const [worklistRows, setWorklistRows] = useState<WorklistImportRow[]>([]);
+  const [msWorklistFile, setMsWorklistFile] = useState<File | null>(null);
+  const [msWorklistRows, setMsWorklistRows] = useState<WorklistImportRow[]>([]);
+  const [lcWorklistFile, setLcWorklistFile] = useState<File | null>(null);
+  const [lcWorklistRows, setLcWorklistRows] = useState<WorklistImportRow[]>([]);
   const [worklistError, setWorklistError] = useState("");
-  const [generatorOpen, setGeneratorOpen] = useState(false);
-  const [generatorFile, setGeneratorFile] = useState<File | null>(null);
-  const [generatedWorklistId, setGeneratedWorklistId] = useState<number | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [selectedRunIds, setSelectedRunIds] = useState<number[]>([]);
   const [workspaceMode, setWorkspaceMode] = useState<"personal" | "shared">("personal");
   const [dataStrategy, setDataStrategy] = useState<"manifest" | "symlink">("manifest");
   const [rerunNotice, setRerunNotice] = useState("");
+  const [analysisExecutor, setAnalysisExecutor] = useState<"local" | "slurm">("slurm");
   const statusParams = isExperimentRoute ? { experiment: experimentId } : undefined;
   const statusQueryKey = queryKeys.projectResearcherStatus(projectId, statusParams);
   const preflightQueryKey = queryKeys.projectDiannPreflight(projectId, statusParams);
@@ -85,12 +103,12 @@ export default function ProjectWorkspacePage() {
     queryKey: statusQueryKey,
     queryFn: () => fetchProjectResearcherStatus(projectId, statusParams),
     enabled: Number.isFinite(projectId),
-    refetchInterval: 30_000,
+    refetchInterval: activeSection === "qc" ? 5_000 : 30_000,
   });
   const preflightQuery = useQuery({
     queryKey: preflightQueryKey,
     queryFn: () => fetchProjectDiannPreflight(projectId, statusParams),
-    enabled: Number.isFinite(projectId),
+    enabled: Number.isFinite(projectId) && (activeSection === "acquisition" || activeSection === "worklists"),
     refetchInterval: 60_000,
   });
   const experimentsQuery = useQuery({
@@ -103,16 +121,28 @@ export default function ProjectWorkspacePage() {
     queryFn: () => fetchExperiment(experimentId),
     enabled: isExperimentRoute,
   });
+  const watcherRoutesQuery = useQuery({
+    queryKey: queryKeys.acquisitionRoutes({ project: projectId, page: 1, page_size: 100 }),
+    queryFn: () => fetchAcquisitionRoutes({ project: projectId, page: 1, page_size: 100 }),
+    enabled: Number.isFinite(projectId) && activeSection === "acquisition",
+    refetchInterval: 5_000,
+  });
   const processingJobsQuery = useQuery({
     queryKey: queryKeys.projectProcessingJobs(projectId),
     queryFn: () => fetchProcessingJobs({ project: projectId, page: 1, page_size: 50 }),
-    enabled: Number.isFinite(projectId),
+    enabled: Number.isFinite(projectId) && (activeSection === "processing" || activeSection === "acquisition"),
+    refetchInterval: 10_000,
+  });
+  const analysisBatchesQuery = useQuery({
+    queryKey: queryKeys.analysisBatches(projectId),
+    queryFn: () => fetchAnalysisBatches(projectId),
+    enabled: Number.isFinite(projectId) && activeSection === "analysis",
     refetchInterval: 10_000,
   });
   const findingsQuery = useQuery({
     queryKey: queryKeys.findingsWorkspace(projectId),
     queryFn: () => fetchFindingsWorkspace(projectId),
-    enabled: Number.isFinite(projectId),
+    enabled: Number.isFinite(projectId) && activeSection === "analysis",
   });
   const currentUserQuery = useQuery({
     queryKey: queryKeys.currentUser(),
@@ -121,15 +151,24 @@ export default function ProjectWorkspacePage() {
   const data = statusQuery.data;
   const project = data?.project;
   const isOperator = isOperatorRole(currentUserQuery.data?.global_role);
+  const canManageSharing = Boolean(project && (project.owner === currentUserQuery.data?.id || currentUserQuery.data?.global_role === "admin"));
   const experiment = experimentQuery.data ?? data?.experiment ?? null;
   const experiments = experimentsQuery.data?.results ?? [];
-  const runs = data?.runs ?? [];
+  const runs = useMemo(() => data?.runs ?? [], [data?.runs]);
+  const visibleRuns = runs.slice((runPage - 1) * 50, runPage * 50);
+  const hyePairs = useMemo(() => buildHyePairs(runs), [runs]);
   const selectedRun = runs.find((row) => row.run.id === selectedRunId) ?? runs[0];
   const readyToProcess = runs.filter((row) => row.raw_file && !row.processing_job);
   const failedRows = runs.filter((row) => row.processing_job?.status === "failed" || row.run.status === "failed");
   const selectedRows = runs.filter((row) => selectedRunIds.includes(row.run.id));
   const selectedReadyRows = selectedRows.filter((row) => row.raw_file && !row.processing_job);
   const allSelected = Boolean(runs.length) && selectedRunIds.length === runs.length;
+
+  useEffect(() => {
+    setRunPage(1);
+    setSelectedRunIds([]);
+    setSelectedRunId(null);
+  }, [projectId, experimentId]);
   const latestDiannJob = useMemo(
     () =>
       (processingJobsQuery.data?.results ?? []).find(
@@ -138,10 +177,6 @@ export default function ProjectWorkspacePage() {
       (processingJobsQuery.data?.results ?? [])[0] ??
       null,
     [processingJobsQuery.data?.results],
-  );
-  const diannProcess = useMemo<DiannProcessStep[]>(
-    () => buildDiannProcessSteps(preflightQuery.data?.is_valid ?? false, readyToProcess.length, latestDiannJob),
-    [latestDiannJob, preflightQuery.data?.is_valid, readyToProcess.length],
   );
   const pageEyebrow = isExperimentRoute ? "Experiment workspace" : "Project workspace";
   const pageTitle = experiment?.name ?? project?.code ?? "Loading project";
@@ -156,64 +191,24 @@ export default function ProjectWorkspacePage() {
       importProjectWorklist(projectId, {
         worklist_name: worklistName,
         experiment_name: experiment?.name ?? undefined,
-        rows: worklistRows,
+        rows: msWorklistRows,
+        ms_filename: msWorklistFile?.name,
+        lc_filename: lcWorklistFile?.name,
+        lc_rows: lcWorklistRows,
       }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: statusQueryKey });
       await queryClient.invalidateQueries({ queryKey: preflightQueryKey });
       await queryClient.invalidateQueries({ queryKey: queryKeys.projectExperiments(projectId) });
       setWorklistOpen(false);
-      setWorklistRows([]);
+      setMsWorklistFile(null);
+      setMsWorklistRows([]);
+      setLcWorklistFile(null);
+      setLcWorklistRows([]);
       setWorklistError("");
     },
     onError: (error) => setWorklistError(error instanceof Error ? error.message : "Could not import worklist."),
   });
-  const generatorMutation = useMutation({
-    mutationFn: () => {
-      if (!generatorFile) throw new Error("Choose an Excel workbook first.");
-      return generateProjectWorklist(projectId, generatorFile, {
-        worklistName,
-        experimentName: experiment?.name,
-      });
-    },
-    onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: statusQueryKey });
-      await queryClient.invalidateQueries({ queryKey: preflightQueryKey });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.projectExperiments(projectId) });
-      setGeneratorOpen(false);
-      setGeneratorFile(null);
-      setGeneratedWorklistId(result.worklist.id);
-      setWorklistError(result.generator ? `Generated ${result.generator.run_count} runs: ${result.generator.ms_csv} and ${result.generator.lc_csv}.` : "Worklist generated.");
-    },
-    onError: (error) => setWorklistError(error instanceof Error ? error.message : "Could not generate worklist."),
-  });
-  async function exportWorklist(exportFormat: "ms" | "lc") {
-    const worklistId = preflightQuery.data?.worklist?.id;
-    if (!worklistId) {
-      setWorklistError("No generated worklist is available for export.");
-      return;
-    }
-    const blob = await downloadWorklist(Number(worklistId), exportFormat);
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${project?.code ?? "msconnect"}_${exportFormat.toUpperCase()}.csv`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  }
-  async function downloadGeneratedCsv(exportFormat: "ms" | "lc") {
-    if (!generatedWorklistId) {
-      setWorklistError("Generate a workbook first to download its instrument CSV.");
-      return;
-    }
-    const blob = await downloadGeneratedWorklist(generatedWorklistId, exportFormat);
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${project?.code ?? "msconnect"}_generated_${exportFormat.toUpperCase()}.csv`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  }
   const queueMutation = useMutation({
     mutationFn: () => queueProjectReadyRuns(projectId, isExperimentRoute ? experimentId : undefined),
     onSuccess: async () => {
@@ -235,6 +230,20 @@ export default function ProjectWorkspacePage() {
       setRerunNotice(
         `Converted ${result.converted} file${result.converted === 1 ? "" : "s"} and requeued ${result.rerun} DIA-NN job${result.rerun === 1 ? "" : "s"}.`,
       );
+    },
+  });
+  const reanalyzeMutation = useMutation({
+    mutationFn: () => reanalyzeProject(projectId, {
+      executor: analysisExecutor,
+      ...(isExperimentRoute ? { experiment: experimentId } : {}),
+    }),
+    onSuccess: async (batches: AnalysisBatch[]) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: statusQueryKey }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.projectProcessingJobs(projectId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.analysisBatches(projectId) }),
+      ]);
+      setRerunNotice(`Queued ${batches.length} experiment analysis batch${batches.length === 1 ? "" : "es"} on ${analysisExecutor === "slurm" ? "BYU Slurm" : "local processors"}.`);
     },
   });
   const editMutation = useMutation({
@@ -273,21 +282,32 @@ export default function ProjectWorkspacePage() {
 
   const health = data?.system_health.status ?? "yellow";
   const healthLabel = health === "green" ? "System green" : health === "red" ? "System red" : "System yellow";
-  const healthClass = health === "green" ? "border-emerald-300 bg-emerald-50 text-emerald-900" : health === "red" ? "border-rose-300 bg-rose-50 text-rose-900" : "border-amber-300 bg-amber-50 text-amber-950";
+  const healthClass = health === "green" ? "bg-success/10 text-success" : health === "red" ? "bg-destructive/10 text-destructive" : "bg-warning/15 text-warning";
 
-  function onWorklistFile(file: File | undefined) {
-    if (!file) return;
+  function onWorklistFile(file: File | undefined, kind: InstrumentWorklistKind) {
+    if (kind === "ms") {
+      setMsWorklistFile(file ?? null);
+      setMsWorklistRows([]);
+    } else {
+      setLcWorklistFile(file ?? null);
+      setLcWorklistRows([]);
+    }
     setWorklistError("");
+    if (!file) return;
     file
       .text()
-      .then((text) => setWorklistRows(parseWorklistText(text)))
+      .then((text) => {
+        const parsedRows = parseWorklistText(text, kind);
+        if (kind === "ms") setMsWorklistRows(parsedRows);
+        else setLcWorklistRows(parsedRows);
+      })
       .catch((error) => setWorklistError(error instanceof Error ? error.message : "Could not read worklist file."));
   }
 
   function submitWorklist(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!worklistRows.length) {
-      setWorklistError("Choose a CSV or TSV worklist before importing.");
+    if (!msWorklistRows.length) {
+      setWorklistError("Choose a valid MS CSV or TSV worklist. The MS file defines the planned runs.");
       return;
     }
     importMutation.mutate();
@@ -330,26 +350,44 @@ export default function ProjectWorkspacePage() {
         eyebrow={pageEyebrow}
         title={pageTitle}
         description={pageDescription}
-        actions={
-          <>
+        actions={canManageSharing ? <Button type="button" variant="secondary" onClick={() => setShareOpen(true)}><UsersRound className="h-4 w-4" />Share project</Button> : undefined}
+      />
+      {project ? <ProjectSharingDialog projectId={project.id} open={shareOpen} onOpenChange={setShareOpen} /> : null}
+      {quickStartImportError ? <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">Project created, but its worklist could not be imported: {quickStartImportError} Use Import worklist below to retry.</div> : null}
+      <div className="flex flex-wrap items-center gap-2">
             {project ? <StatusBadge status={project.status} /> : null}
             {experiment ? (
-              <span className="inline-flex h-9 items-center rounded-md border bg-secondary/40 px-3 text-sm font-bold text-foreground">
+              <span className="inline-flex h-9 items-center rounded-md bg-muted px-3 text-sm font-semibold text-foreground">
                 Experiment selected
               </span>
             ) : null}
-            <span className={`inline-flex h-9 items-center rounded-md border px-3 text-sm font-bold ${healthClass}`}>{healthLabel}</span>
-            {!isExperimentRoute && experiments.length ? (
-              <Button asChild variant="secondary">
-                <Link to={`/projects/${projectId}/experiments/${experiments[0].id}`}>Open latest experiment</Link>
+            <span className={`inline-flex h-9 items-center rounded-sm px-3 text-sm font-semibold ${healthClass}`}>{healthLabel}</span>
+            {experiments.length > 1 ? (
+              <Select
+                value={isExperimentRoute ? String(experimentId) : "project"}
+                onValueChange={(value) => navigate(value === "project" ? `/projects/${projectId}/overview` : `/projects/${projectId}/experiments/${value}/overview`)}
+              >
+                <SelectTrigger className="h-9 w-[190px] bg-background"><SelectValue placeholder="Select experiment" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="project">All project runs</SelectItem>
+                  {experiments.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            ) : null}
+            {experiments.length === 1 && !isExperimentRoute ? (
+              <Button asChild variant="ghost">
+                <Link to={`/projects/${projectId}/experiments/${experiments[0].id}/overview`}>
+                  Experiment: {experiments[0].name}
+                </Link>
               </Button>
             ) : null}
             {isExperimentRoute ? (
               <Button asChild variant="secondary">
-                <Link to={`/projects/${projectId}`}>Project overview</Link>
+                <Link to={`/projects/${projectId}/overview`}>Project overview</Link>
               </Button>
             ) : null}
-            <Dialog open={worklistOpen} onOpenChange={setWorklistOpen}>
+            {activeSection === "worklists" ? <>
+            {canManageSharing ? <Dialog open={worklistOpen} onOpenChange={setWorklistOpen}>
               <DialogTrigger asChild>
                 <Button>
                   <FileUp className="h-4 w-4" />
@@ -358,81 +396,54 @@ export default function ProjectWorkspacePage() {
               </DialogTrigger>
               <DialogContent className="max-h-[90vh] max-w-4xl overflow-auto">
                 <DialogHeader>
-                  <DialogTitle>Import LC-MS worklist</DialogTitle>
+                  <DialogTitle>Import an instrument worklist</DialogTitle>
                   <DialogDescription>
-                    Upload a CSV or TSV worklist to create or update the run ground truth.
+                    Upload the MS worklist, plus its matching LC worklist when available. MS rows define planned runs; LC rows are attached to the worklist for reference.
                     {isExperimentRoute ? " The import will attach to the selected experiment." : " The import will attach to the default experiment for this project."}
                   </DialogDescription>
                 </DialogHeader>
                 <form className="grid gap-4" onSubmit={submitWorklist}>
-                  <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-                    <Input value={worklistName} onChange={(event) => setWorklistName(event.target.value)} />
-                    <Input type="file" accept=".csv,.tsv,.txt" onChange={(event) => onWorklistFile(event.target.files?.[0])} />
+                  <label className="grid gap-1 text-sm font-semibold">
+                    Worklist name
+                    <Input aria-label="Worklist name" value={worklistName} onChange={(event) => setWorklistName(event.target.value)} />
+                  </label>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <WorklistFilePicker kind="ms" file={msWorklistFile} count={msWorklistRows.length} required onFile={(file) => onWorklistFile(file, "ms")} />
+                    <WorklistFilePicker kind="lc" file={lcWorklistFile} count={lcWorklistRows.length} onFile={(file) => onWorklistFile(file, "lc")} />
                   </div>
-                  <WorklistPreview rows={worklistRows} />
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                    <a className="underline underline-offset-2" href="/worklist-examples/example-ms-worklist.csv" download>Example MS worklist</a>
+                    <a className="underline underline-offset-2" href="/worklist-examples/example-lc-worklist-format.csv" download>Example LC worklist</a>
+                    <a className="underline underline-offset-2" href="/worklist-examples/msconnect-import-example.csv" download>Standard MSConnect format</a>
+                  </div>
+                  <WorklistPreview rows={msWorklistRows} />
                   {worklistError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{worklistError}</div> : null}
                   <div className="flex justify-end gap-2 border-t pt-3">
                     <Button type="button" variant="secondary" onClick={() => setWorklistOpen(false)}>
                       Cancel
                     </Button>
-                    <Button type="submit" disabled={importMutation.isPending || !worklistRows.length || (isExperimentRoute && !experiment)}>
+                    <Button type="submit" disabled={importMutation.isPending || !msWorklistRows.length || (isExperimentRoute && !experiment)}>
                       {importMutation.isPending ? "Importing..." : "Import worklist"}
                     </Button>
                   </div>
                 </form>
               </DialogContent>
-            </Dialog>
-            <Dialog open={generatorOpen} onOpenChange={setGeneratorOpen}>
-              <DialogTrigger asChild>
-                <Button variant="secondary">
-                  <WandSparkles className="h-4 w-4" />
-                  Generate from Excel
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="max-w-xl">
-                <DialogHeader>
-                  <DialogTitle>Generate instrument worklists</DialogTitle>
-                  <DialogDescription>
-                    Upload the validated method-development workbook. MSConnect will generate MS and LC CSVs and create the planned runs under this project.
-                  </DialogDescription>
-                </DialogHeader>
-                <form
-                  className="grid gap-4"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    generatorMutation.mutate();
-                  }}
-                >
-                  <Input value={worklistName} onChange={(event) => setWorklistName(event.target.value)} placeholder="Worklist name" />
-                  <Input type="file" accept=".xlsx,.xlsm" onChange={(event) => setGeneratorFile(event.target.files?.[0] ?? null)} />
-                  <div className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
-                    The generated MS CSV is used for run matching; the LC CSV is retained alongside it for instrument setup.
-                  </div>
-                  <div className="flex justify-end gap-2 border-t pt-3">
-                    <Button type="button" variant="secondary" onClick={() => setGeneratorOpen(false)}>Cancel</Button>
-                    <Button type="submit" disabled={generatorMutation.isPending || !generatorFile || !worklistName.trim()}>
-                      {generatorMutation.isPending ? "Generating..." : "Generate and import"}
-                    </Button>
-                  </div>
-                </form>
-              </DialogContent>
-            </Dialog>
-            <Button variant="secondary" onClick={() => void exportWorklist("ms")} disabled={!preflightQuery.data?.worklist}>
-              Export MS CSV
-            </Button>
-            <Button variant="secondary" onClick={() => void exportWorklist("lc")} disabled={!preflightQuery.data?.worklist}>
-              Export LC CSV
-            </Button>
-            <Button variant="ghost" onClick={() => void downloadGeneratedCsv("ms")} disabled={!generatedWorklistId}>
-              Download generated MS
-            </Button>
-            <Button variant="ghost" onClick={() => void downloadGeneratedCsv("lc")} disabled={!generatedWorklistId}>
-              Download generated LC
-            </Button>
-          </>
-        }
-      />
+            </Dialog> : null}
+            </> : null}
+      </div>
 
+      <nav aria-label="Project lifecycle" className="flex flex-wrap gap-1 rounded-lg bg-muted p-1">
+        {lifecycleSections.map(([id, label]) => (
+          <Link
+            key={id}
+            to={workspaceSectionPath(projectId, isExperimentRoute ? experimentId : null, id)}
+            aria-current={activeSection === id ? "page" : undefined}
+            className={`rounded-md px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${activeSection === id ? "bg-card font-semibold text-foreground shadow-sm" : "text-muted-foreground hover:bg-card/70 hover:text-foreground"}`}
+          >{label}</Link>
+        ))}
+      </nav>
+
+      {activeSection === "overview" ? <>
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
         <MetricCard label={isExperimentRoute ? "Experiment" : "Project Status"} value={isExperimentRoute ? experiment?.name ?? "-" : project?.status ?? "-"} detail={isExperimentRoute ? "single acquisition series" : "research workflow"} />
         <MetricCard label="Runs" value={data?.summary.run_count ?? "-"} detail={isExperimentRoute ? "in this experiment" : "planned/acquired"} />
@@ -441,41 +452,22 @@ export default function ProjectWorkspacePage() {
         <MetricCard label="Failed" value={failedRows.length} detail="runs needing review" />
         <MetricCard label="Ready" value={readyToProcess.length} detail="uploaded, not queued" />
       </section>
-      {experiments.length ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Experiments</CardTitle>
-            <CardDescription>Projects can hold multiple experiments. Each experiment is a single acquisition and upload series.</CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {experiments.map((item) => (
-              <Link
-                key={item.id}
-                to={`/projects/${projectId}/experiments/${item.id}`}
-                className={`rounded-2xl border p-4 transition-colors hover:bg-secondary/45 ${
-                  isExperimentRoute && experiment?.id === item.id ? "border-primary bg-primary/5" : "bg-background/70"
-                }`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="font-semibold">{item.name}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">{item.hypothesis || "No hypothesis recorded"}</div>
-                  </div>
-                  <span className="rounded-full border bg-background px-2 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-muted-foreground">
-                    Experiment
-                  </span>
-                </div>
-                <div className="mt-3 text-xs text-muted-foreground">
-                  Updated {formatDate(item.updated_at)} · {item.started_on || "No start date"}
-                </div>
-              </Link>
-            ))}
-          </CardContent>
-        </Card>
-      ) : null}
-      {rerunNotice ? <div className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">{rerunNotice}</div> : null}
+      </> : null}
 
+      {activeSection === "acquisition" ? <>
       <Card>
+        <CardHeader><CardTitle>Live project watchers</CardTitle><CardDescription>Only acquisition routes attached to this project are shown. Updates every five seconds.</CardDescription></CardHeader>
+        <CardContent className="grid gap-2">
+          {(watcherRoutesQuery.data?.results ?? []).map((route) => <div key={route.id} className="grid min-w-0 gap-2 rounded-md bg-muted p-3 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center">
+            <div className="min-w-0"><div className="break-words font-semibold">{route.agent_name} · {route.name}</div><div className="mt-1 break-all text-xs text-muted-foreground">{route.source_prefix || "Project root"} → {route.spool_folder || "Spool root"} · {route.mode}</div><div className="mt-1 text-xs text-muted-foreground">Last agent check-in: {route.agent_last_seen_at ? formatDate(route.agent_last_seen_at) : "Never"}</div></div>
+            <StatusBadge status={route.agent_status === "online" ? "complete" : route.agent_status === "stale" ? "warning" : "failed"} />
+            <StatusBadge status={route.status} />
+          </div>)}
+          {!watcherRoutesQuery.data?.results.length ? <div className="border border-dashed p-4 text-sm text-muted-foreground">{watcherRoutesQuery.isLoading ? "Loading project watcher routes…" : "No watcher routes are assigned to this project yet."}</div> : null}
+          {watcherRoutesQuery.isError ? <div role="alert" className="text-sm text-destructive">Could not load project watcher routes: {watcherRoutesQuery.error.message}</div> : null}
+        </CardContent>
+      </Card>
+      <Card id="acquisition" className="scroll-mt-36">
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -488,26 +480,35 @@ export default function ProjectWorkspacePage() {
             </Button>
           </div>
         </CardHeader>
-        <CardContent className="grid gap-4 xl:grid-cols-[1fr_360px]">
+        <CardContent className="grid gap-3">
+          <div className="grid gap-2 md:grid-cols-4">
+            <div className="rounded-md border p-3"><div className="text-xs text-muted-foreground">DIA-NN settings</div><div className="mt-1 font-semibold">{preflightQuery.data?.is_valid ? "Appropriate" : preflightQuery.isLoading ? "Checking…" : "Needs review"}</div></div>
+            <div className="rounded-md border p-3"><div className="text-xs text-muted-foreground">Preset</div><div className="mt-1 truncate font-semibold">{preflightQuery.data?.processing_preset || "Not configured"}</div></div>
+            <div className="rounded-md border p-3"><div className="text-xs text-muted-foreground">Engine</div><div className="mt-1 font-semibold">DIA-NN {preflightQuery.data?.diann_version || "—"}</div></div>
+            <div className="rounded-md border p-3"><div className="text-xs text-muted-foreground">Current acquisition</div><div className="mt-1 font-semibold">{latestDiannJob?.status === "running" ? "Processing live" : `${readyToProcess.length} runs ready`}</div></div>
+          </div>
+          <details className="rounded-md border px-3 py-2">
+            <summary className="cursor-pointer text-sm font-semibold">DIA-NN configuration and validation details</summary>
+            <div className="mt-3 grid gap-4 xl:grid-cols-[1fr_360px]">
           <div className="grid gap-3">
             <div className="grid gap-2 md:grid-cols-2">
-              <div className="rounded-lg border bg-background/60 p-3">
+              <div className="rounded-md bg-muted p-3">
                 <div className="text-xs font-bold uppercase text-muted-foreground">Source</div>
                 <div className="mt-1 font-semibold">{preflightQuery.data?.source_label ?? "Loading preflight..."}</div>
                 <div className="mt-1 text-sm text-muted-foreground">{preflightQuery.data?.source_detail ?? "Resolve the pipeline snapshot used for upload."}</div>
               </div>
-              <div className="rounded-lg border bg-background/60 p-3">
+              <div className="rounded-md bg-muted p-3">
                 <div className="text-xs font-bold uppercase text-muted-foreground">Preset / version</div>
                 <div className="mt-1 font-semibold">{preflightQuery.data?.processing_preset || "-"}</div>
                 <div className="mt-1 text-sm text-muted-foreground">DIA-NN {preflightQuery.data?.diann_version || "-"}</div>
               </div>
-              <div className="rounded-lg border bg-background/60 p-3">
+              <div className="rounded-md bg-muted p-3">
                 <div className="text-xs font-bold uppercase text-muted-foreground">Speclib mode</div>
                 <div className="mt-1 font-semibold">{speclibModeLabel(preflightQuery.data?.speclib_mode)}</div>
                 <div className="mt-1 text-sm text-muted-foreground">{speclibModeDetail(preflightQuery.data?.speclib_mode)}</div>
               </div>
             </div>
-            <div className="rounded-lg border bg-background/60 p-3">
+            <div className="rounded-md bg-muted p-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="text-xs font-bold uppercase text-muted-foreground">Resolved settings</div>
@@ -521,19 +522,19 @@ export default function ProjectWorkspacePage() {
             </div>
           </div>
           <div className="grid gap-3">
-            <div className="rounded-lg border bg-background/60 p-3">
+            <div className="rounded-md bg-muted p-3">
               <div className="text-xs font-bold uppercase text-muted-foreground">Performance tags</div>
               <pre className="mt-2 overflow-auto rounded-lg bg-background p-3 text-xs">
                 <code>{JSON.stringify(preflightQuery.data?.performance_tags ?? {}, null, 2)}</code>
               </pre>
             </div>
-            <div className="rounded-lg border bg-background/60 p-3">
+            <div className="rounded-md bg-muted p-3">
               <div className="text-xs font-bold uppercase text-muted-foreground">Experimental tags</div>
               <pre className="mt-2 overflow-auto rounded-lg bg-background p-3 text-xs">
                 <code>{JSON.stringify(preflightQuery.data?.experimental_tags ?? {}, null, 2)}</code>
               </pre>
             </div>
-            <div className="rounded-lg border bg-background/60 p-3">
+            <div className="rounded-md bg-muted p-3">
               <div className="text-xs font-bold uppercase text-muted-foreground">Validation</div>
               {preflightQuery.data?.validation_errors?.length ? (
                 <ul className="mt-2 grid gap-2 text-sm text-destructive">
@@ -544,17 +545,17 @@ export default function ProjectWorkspacePage() {
                   ))}
                 </ul>
               ) : (
-                <div className="mt-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">
+                <div className="mt-2 rounded-md bg-success/10 px-3 py-2 text-sm text-success">
                   No validation errors. The preflight snapshot is ready for upload or processing.
                 </div>
               )}
             </div>
-            <div className="rounded-lg border bg-background/60 p-3">
+            <div className="rounded-md bg-muted p-3">
               <div className="text-xs font-bold uppercase text-muted-foreground">Command options</div>
               <div className="mt-2 flex flex-wrap gap-2">
                 {(preflightQuery.data?.options ?? []).length ? (
                   preflightQuery.data?.options.map((option) => (
-                    <span key={option} className="rounded-full border bg-background px-3 py-1 font-mono text-xs">
+                    <span key={option} className="rounded-sm bg-background px-2 py-1 font-mono text-xs">
                       {option}
                     </span>
                   ))
@@ -564,15 +565,20 @@ export default function ProjectWorkspacePage() {
               </div>
             </div>
           </div>
+            </div>
+          </details>
         </CardContent>
       </Card>
+      <ProjectRawFileInbox projectId={projectId} experimentId={isExperimentRoute ? experimentId : null} runs={runs} canResolve={isOperator} />
+      </> : null}
 
-      <Card>
+      {activeSection === "processing" ? <>
+      <Card id="processing" className="scroll-mt-36">
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <CardTitle>DIA-NN process</CardTitle>
-              <CardDescription>Live project execution status, from preflight through queueing to the current DIA-NN job state.</CardDescription>
+              <CardTitle>Processing jobs</CardTitle>
+              <CardDescription>Recent jobs for this project, with current node and run state.</CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
               <StatusBadge status={latestDiannJob ? latestDiannJob.status : readyToProcess.length ? "queued" : "planned"} />
@@ -587,61 +593,112 @@ export default function ProjectWorkspacePage() {
             </div>
           </div>
         </CardHeader>
-        <CardContent className="grid gap-4 xl:grid-cols-[1fr_360px]">
-          <div className="grid gap-3">
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
-              {diannProcess.map((step: DiannProcessStep) => {
-                const { key, ...rest } = step;
-                return <ProcessStepCard key={key} {...rest} />;
-              })}
+        <CardContent className="grid gap-2">
+          {(processingJobsQuery.data?.results ?? []).map((job) => (
+            <div key={job.id} className="grid gap-2 rounded-md border p-3 md:grid-cols-[minmax(0,1fr)_130px_160px_150px] md:items-center">
+              <div className="min-w-0"><div className="truncate font-medium">{job.run_name || job.raw_file_filename}</div><div className="truncate text-xs text-muted-foreground">{job.pipeline_name} {job.pipeline_version} · {job.raw_file_filename}</div></div>
+              <StatusBadge status={job.status} />
+              <div className="truncate text-sm text-muted-foreground">{job.node_name || "Awaiting processor"}</div>
+              <div className="text-xs text-muted-foreground">{formatDate(job.started_at || job.created_at)}</div>
             </div>
+          ))}
+          {!processingJobsQuery.data?.results.length ? <div className="rounded-md border border-dashed p-5 text-sm text-muted-foreground">No processing jobs have been created for this project yet.</div> : null}
+          <div className="text-xs text-muted-foreground">Refreshes every 10 seconds. Detailed queue controls remain on the processing page.</div>
+        </CardContent>
+      </Card>
+      </> : null}
+
+      {activeSection === "qc" ? <>
+      <section id="qc" className="scroll-mt-36">
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div><CardTitle>{isExperimentRoute ? "Experiment QC" : "Project QC"}</CardTitle><CardDescription>All planned HYE A/B pairs for this {isExperimentRoute ? "experiment" : "project"}, refreshed every five seconds while this page is open.</CardDescription></div>
+              <span className="text-xs text-muted-foreground">Updated {statusQuery.dataUpdatedAt ? formatDate(new Date(statusQuery.dataUpdatedAt).toISOString()) : "—"}</span>
+            </div>
+          </CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-3 md:items-center">
+            <MetricCard label="Tagged HYE injections" value={runs.filter((row) => row.run.file_role === "hye" || row.run.qc_program === "hye").length} detail="A/B control runs" />
+            <MetricCard label="HYE pairs" value={hyePairs.length} detail="from worklist labels" />
+            <div className="flex flex-wrap gap-2">
+              <Button asChild variant="secondary"><Link to={`/qc/hye?project=${projectId}${isExperimentRoute ? `&experiment=${experimentId}` : ""}`}>Open HYE analysis</Link></Button>
+              <Button asChild variant="secondary"><Link to={`/qc/prtc?project=${projectId}${isExperimentRoute ? `&experiment=${experimentId}` : ""}`}>Open PRTC QC</Link></Button>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>HYE A/B pairs</CardTitle><CardDescription>Pair integrity and acquisition, file, and processor state are shown separately so planned controls are visible before analysis completes.</CardDescription></CardHeader>
+          <CardContent className="grid gap-2">
+            {hyePairs.map((pair) => (
+              <div key={pair.key} className="grid gap-3 rounded-md border p-3 lg:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-center">
+                <div><div className="font-semibold">{pair.label}</div><div className="text-xs text-muted-foreground">{pair.worklistName || "Worklist"}</div></div>
+                <HyeRunSummary label="A" row={pair.a[0]} duplicates={Math.max(0, pair.a.length - 1)} />
+                <HyeRunSummary label="B" row={pair.b[0]} duplicates={Math.max(0, pair.b.length - 1)} />
+                <div className="flex flex-wrap gap-1">
+                  {pair.issues.length ? <span className="text-xs font-semibold text-warning">Needs attention</span> : <span className="text-xs font-semibold text-success">Pair structure valid</span>}
+                </div>
+                {pair.issues.length ? <div className="text-xs text-warning lg:col-start-2 lg:col-span-3">{pair.issues.join(" · ")}</div> : null}
+              </div>
+            ))}
+            {!hyePairs.length ? <div className="rounded-md border border-dashed p-5 text-sm text-muted-foreground">No HYE controls are tagged for this experiment yet. HYE A/B rows will appear here as soon as they are included in a worklist.</div> : null}
+          </CardContent>
+        </Card>
+      </section>
+      </> : null}
+
+      {activeSection === "analysis" ? <>
+      <Card>
+        <CardHeader>
+          <CardTitle>Reanalyze {isExperimentRoute ? "experiment" : "project"}</CardTitle>
+          <CardDescription>
+            Reprocess each sample raw file with its saved DIA-NN settings, then run one experiment-wide DIA-NN analysis with individual reports and matrices. Each batch snapshots settings and reference checksums when queued.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Select value={analysisExecutor} onValueChange={(value) => setAnalysisExecutor(value as "local" | "slurm")}>
+              <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="slurm">BYU Slurm</SelectItem>
+                <SelectItem value="local">Local processors</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              disabled={!isOperator || reanalyzeMutation.isPending}
+              onClick={() => reanalyzeMutation.mutate()}
+            >
+              <RefreshCw className="h-4 w-4" />
+              {reanalyzeMutation.isPending ? "Queueing analysis…" : "Queue reanalysis"}
+            </Button>
           </div>
-          <div className="grid gap-3">
-            <div className="rounded-2xl border bg-background/80 p-4">
-              <div className="text-xs font-bold uppercase text-muted-foreground">Latest DIA-NN job</div>
-              {latestDiannJob ? (
-                <div className="mt-3 grid gap-2 text-sm">
-                  <div className="rounded-lg border bg-background px-3 py-2">
-                    <div className="text-xs font-bold uppercase text-muted-foreground">Status</div>
-                    <div className="mt-1 font-semibold">{latestDiannJob.status}</div>
-                  </div>
-                  <div className="rounded-lg border bg-background px-3 py-2">
-                    <div className="text-xs font-bold uppercase text-muted-foreground">Pipeline</div>
-                    <div className="mt-1 font-semibold">{latestDiannJob.pipeline_name} {latestDiannJob.pipeline_version}</div>
-                  </div>
-                  <div className="rounded-lg border bg-background px-3 py-2">
-                    <div className="text-xs font-bold uppercase text-muted-foreground">Raw file</div>
-                    <div className="mt-1 break-all font-mono text-xs">{latestDiannJob.raw_file_filename}</div>
-                  </div>
-                  <div className="rounded-lg border bg-background px-3 py-2">
-                    <div className="text-xs font-bold uppercase text-muted-foreground">Node</div>
-                    <div className="mt-1 font-semibold">{latestDiannJob.node_name || "Unassigned"}</div>
-                  </div>
-                  <div className="rounded-lg border bg-background px-3 py-2">
-                    <div className="text-xs font-bold uppercase text-muted-foreground">Started / finished</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {formatDate(latestDiannJob.started_at)} · {formatDate(latestDiannJob.finished_at)}
-                    </div>
-                  </div>
-                  {latestDiannJob.error_message ? (
-                    <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                      {latestDiannJob.error_message}
-                    </div>
-                  ) : null}
-                </div>
-              ) : (
-                <div className="mt-3 rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">
-                  No DIA-NN job is running yet. Queue ready runs or refresh after files have been ingested to watch status change here.
-                </div>
-              )}
-            </div>
-            <div className="rounded-2xl border bg-background/80 p-4 text-sm text-muted-foreground">
-              Polling every 10 seconds while the workspace is open. The process view updates automatically as jobs move through queue, assignment, running, and completion.
-            </div>
+          {rerunNotice ? <div role="status" className="rounded-md bg-success/10 px-4 py-3 text-sm text-success">{rerunNotice}</div> : null}
+          {reanalyzeMutation.error instanceof Error ? <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">{reanalyzeMutation.error.message}</div> : null}
+          <div className="divide-y rounded-md border">
+            {(analysisBatchesQuery.data?.results ?? []).slice(0, 5).map((batch) => (
+              <div key={batch.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
+                <span className="font-medium">{batch.experiment_name} · batch {batch.id}</span>
+                <span className="text-muted-foreground">{batch.executor === "slurm" ? "BYU Slurm" : "Local"} · {batch.status} · {batch.job_ids.length} jobs</span>
+              </div>
+            ))}
+            {!analysisBatchesQuery.isLoading && !analysisBatchesQuery.data?.results.length ? (
+              <div className="px-3 py-3 text-sm text-muted-foreground">No analysis batches have been queued.</div>
+            ) : null}
           </div>
         </CardContent>
       </Card>
+      <section id="analysis" className="scroll-mt-36 grid gap-4">
+        <Card>
+          <CardHeader><CardTitle>Existing analysis outputs</CardTitle><CardDescription>Project-level output counts from completed runs. This view exposes existing results; statistical testing remains in the configured analysis workflow.</CardDescription></CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricCard label="Reported proteins" value={data?.summary.reported_protein_count ?? 0} detail="existing quantification" />
+            <MetricCard label="Reported peptides" value={data?.summary.reported_peptide_count ?? 0} detail="existing quantification" />
+            <MetricCard label="Reported precursors" value={data?.summary.reported_precursor_count ?? 0} detail="existing quantification" />
+            <Button asChild variant="secondary" className="h-auto min-h-16"><Link to={`/spectra?project=${projectId}`}><BarChart3 className="h-4 w-4" />Explore spectra and results</Link></Button>
+          </CardContent>
+        </Card>
+      </section>
 
+      <section className="scroll-mt-36">
       <FindingsWorkflowPanel
         workspace={findingsQuery.data?.workspace ?? null}
         defaultRoot={findingsQuery.data?.default_root_path ?? ""}
@@ -655,8 +712,18 @@ export default function ProjectWorkspacePage() {
         onIndex={(workspaceId) => indexWorkspaceMutation.mutate(workspaceId)}
         indexPending={indexWorkspaceMutation.isPending}
       />
+      </section>
+      </> : null}
 
-      <Card>
+      {activeSection === "assistant" ? <>
+      <section id="assistant" className="scroll-mt-36">
+        <ProjectAssistantPanel projectId={projectId} />
+      </section>
+      </> : null}
+
+      {activeSection === "worklists" ? <>
+      {rerunNotice ? <div className="rounded-md bg-success/10 px-4 py-3 text-sm text-success">{rerunNotice}</div> : null}
+      <Card id="worklists" className="scroll-mt-36">
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -694,8 +761,9 @@ export default function ProjectWorkspacePage() {
             queuePending={queueSelectedMutation.isPending}
             isOperator={isOperator}
           />
-          <div className="table-scroll rounded-lg border">
-            <table className="w-full min-w-[1180px] text-xs">
+          <div className="flex justify-end py-2"><Pager page={runPage} count={runs.length} onPage={setRunPage} pageSize={50} /></div>
+          <div className="table-scroll rounded-md border">
+            <table className="w-full min-w-[720px] text-xs">
               <thead className="bg-secondary/65 text-left text-[11px] uppercase tracking-[0.06em] text-muted-foreground">
                 <tr>
                   <th className="whitespace-nowrap px-2 py-2">
@@ -713,20 +781,18 @@ export default function ProjectWorkspacePage() {
                   <th className="whitespace-nowrap px-2 py-2">Raw File</th>
                   <th className="whitespace-nowrap px-2 py-2">Run</th>
                   <th className="whitespace-nowrap px-2 py-2">Queue</th>
-                  <th className="whitespace-nowrap px-2 py-2">Proteins</th>
-                  <th className="whitespace-nowrap px-2 py-2">Peptides</th>
-                  <th className="whitespace-nowrap px-2 py-2">MS1</th>
-                  <th className="whitespace-nowrap px-2 py-2">MS2</th>
-                  <th className="whitespace-nowrap px-2 py-2">Updated</th>
+                  <th className="whitespace-nowrap px-2 py-2">Protein groups</th>
+                  <th className="hidden whitespace-nowrap px-2 py-2 lg:table-cell">Peptides</th>
+                  <th className="hidden whitespace-nowrap px-2 py-2 xl:table-cell">MS1 / MS2</th>
+                  <th className="hidden whitespace-nowrap px-2 py-2 xl:table-cell">Updated</th>
                   <th className="whitespace-nowrap px-2 py-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {runs.map((row, index) => (
+                {visibleRuns.map((row, index) => (
                   <tr
                     key={row.run.id}
-                    className={`border-t hover:bg-secondary/35 ${selectedRun?.run.id === row.run.id ? "bg-secondary/45" : ""}`}
-                    onClick={() => setSelectedRunId(row.run.id)}
+                    className={selectedRun?.run.id === row.run.id ? "border-t bg-secondary/45" : "border-t"}
                   >
                     <td className="px-2 py-2">
                       <input
@@ -734,32 +800,27 @@ export default function ProjectWorkspacePage() {
                         checked={selectedRunIds.includes(row.run.id)}
                         className="h-4 w-4"
                         type="checkbox"
-                        onChange={(event) => {
-                          event.stopPropagation();
-                          toggleRunSelected(row.run.id);
-                        }}
-                        onClick={(event) => event.stopPropagation()}
+                        onChange={() => toggleRunSelected(row.run.id)}
                       />
                     </td>
-                    <td className="whitespace-nowrap px-2 py-2 font-mono">{index + 1}</td>
-                    <td className="min-w-[220px] px-2 py-2">
-                      <div className="whitespace-nowrap text-sm font-semibold">{row.run.run_name}</div>
-                      <div className="break-words text-xs text-muted-foreground">{row.run.expected_filename || "No expected filename"}</div>
+                    <td className="whitespace-nowrap px-2 py-2 font-mono">{(runPage - 1) * 50 + index + 1}</td>
+                    <td className="max-w-[250px] px-2 py-2">
+                      <Button type="button" variant="ghost" className="h-auto max-w-full justify-start truncate p-0 text-left text-sm font-semibold" onClick={() => setSelectedRunId(row.run.id)}>{row.run.run_name}</Button>
+                      <div className="truncate text-xs text-muted-foreground" title={row.run.expected_filename}>{row.run.expected_filename || "No expected filename"}</div>
                     </td>
-                    <td className="min-w-[100px] px-2 py-2">
-                      <Link className="whitespace-nowrap font-semibold" to={`/projects/${projectId}/samples/${row.sample.id}`} onClick={(event) => event.stopPropagation()}>
+                    <td className="max-w-[130px] truncate px-2 py-2">
+                      <Link className="font-semibold" title={row.sample.name} to={`/projects/${projectId}/samples/${row.sample.id}`} onClick={(event) => event.stopPropagation()}>
                         {row.sample.name}
                       </Link>
                     </td>
-                    <td className="whitespace-nowrap px-2 py-2">{row.raw_file ? <StatusBadge status={row.raw_file.status} /> : <span className="text-muted-foreground">Missing</span>}</td>
-                    <td className="whitespace-nowrap px-2 py-2"><StatusBadge status={row.run.status} /></td>
-                    <td className="whitespace-nowrap px-2 py-2">{row.processing_job ? <StatusBadge status={row.processing_job.status} /> : <span className="text-muted-foreground">Not queued</span>}</td>
-                    <td className="whitespace-nowrap px-2 py-2">{row.stats.reported_protein_count || row.stats.protein_quant_count || "-"}</td>
-                    <td className="whitespace-nowrap px-2 py-2">{row.stats.reported_peptide_count || row.stats.peptide_quant_count || "-"}</td>
-                    <td className="whitespace-nowrap px-2 py-2">{row.stats.ms1_feature_count || row.stats.indexed_ms1_spectra_count || "-"}</td>
-                    <td className="whitespace-nowrap px-2 py-2">{row.stats.ms2_spectra_count || row.stats.indexed_ms2_spectra_count || "-"}</td>
-                    <td className="whitespace-nowrap px-2 py-2">{formatDate(row.run.updated_at)}</td>
-                    <td className="whitespace-nowrap px-2 py-2">
+                    <td className="px-2 py-2">{row.raw_file ? <StatusBadge status={row.raw_file.status} /> : <span className="text-muted-foreground">Missing</span>}</td>
+                    <td className="px-2 py-2"><StatusBadge status={row.run.status} /></td>
+                    <td className="px-2 py-2">{row.processing_job ? <StatusBadge status={row.processing_job.status} /> : <span className="text-muted-foreground">Not queued</span>}</td>
+                    <td className="px-2 py-2">{row.stats.reported_protein_count || row.stats.protein_quant_count || "-"}</td>
+                    <td className="hidden px-2 py-2 lg:table-cell">{row.stats.reported_peptide_count || row.stats.peptide_quant_count || "-"}</td>
+                    <td className="hidden px-2 py-2 xl:table-cell">{row.stats.ms1_feature_count || row.stats.indexed_ms1_spectra_count || 0} / {row.stats.ms2_spectra_count || row.stats.indexed_ms2_spectra_count || 0}</td>
+                    <td className="hidden whitespace-nowrap px-2 py-2 xl:table-cell">{formatDate(row.run.updated_at)}</td>
+                    <td className="px-2 py-2">
                       <Button size="sm" variant="secondary" onClick={(event) => { event.stopPropagation(); startEdit(row); }}>
                         <Settings2 className="h-3.5 w-3.5" />
                         Edit
@@ -769,7 +830,7 @@ export default function ProjectWorkspacePage() {
                 ))}
                 {!runs.length ? (
                   <tr>
-                    <td className="px-3 py-8 text-center text-muted-foreground" colSpan={13}>
+                    <td className="px-3 py-8 text-center text-muted-foreground" colSpan={12}>
                       Import a worklist to establish the planned LC-MS runs for this project.
                     </td>
                   </tr>
@@ -826,8 +887,184 @@ export default function ProjectWorkspacePage() {
           ) : null}
         </DialogContent>
       </Dialog>
+      </> : null}
     </div>
   );
+}
+
+function ProjectRawFileInbox({
+  projectId,
+  experimentId,
+  runs,
+  canResolve,
+}: {
+  projectId: number;
+  experimentId: number | null;
+  runs: ProjectResearcherRun[];
+  canResolve: boolean;
+}) {
+  const [search, setSearch] = useState("");
+  const [rawPage, setRawPage] = useState(1);
+  const [matchPage, setMatchPage] = useState(1);
+  const [targets, setTargets] = useState<Record<number, string>>({});
+  const rawParams = { project: projectId, ...(experimentId ? { experiment: experimentId } : {}), page: rawPage, page_size: 25, search };
+  const matchParams = { project: projectId, ...(experimentId ? { experiment: experimentId } : {}), status: "open", page: matchPage, page_size: 25, search };
+  const rawFilesQuery = useQuery({
+    queryKey: queryKeys.rawFiles(rawParams),
+    queryFn: () => fetchRawFiles(rawParams),
+  });
+  const matchExceptionsQuery = useQuery({
+    queryKey: queryKeys.fileMatchExceptions(matchParams),
+    queryFn: () => fetchFileMatchExceptions(matchParams),
+  });
+  const resolveMutation = useMutation({
+    mutationFn: (value: { exceptionId: number; runId: number }) => resolveFileMatchException(value.exceptionId, value.runId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["raw-files"] });
+      await queryClient.invalidateQueries({ queryKey: ["file-match-exceptions"] });
+      await queryClient.invalidateQueries({ queryKey: ["project", projectId, "researcher-status"] });
+    },
+  });
+  const rawFiles = rawFilesQuery.data?.results ?? [];
+  const exceptions = matchExceptionsQuery.data?.results ?? [];
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><CardTitle>Raw files</CardTitle><CardDescription>Search project files and review files that still need a run match.</CardDescription></div>
+          <Input className="h-9 w-full sm:w-64" type="search" aria-label="Search raw files" placeholder="Search files…" value={search} onChange={(event) => { setSearch(event.target.value); setRawPage(1); setMatchPage(1); }} />
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-5">
+        <section className="grid gap-2">
+          <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-semibold">Files in this project <span className="font-normal text-muted-foreground">({rawFilesQuery.data?.count ?? 0})</span></h3><Pager page={rawPage} count={rawFilesQuery.data?.count ?? 0} onPage={setRawPage} /></div>
+          {rawFiles.map((file) => <RawFileRow key={file.id} file={file} />)}
+          {!rawFiles.length ? <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">No matched files found for this search.</div> : null}
+        </section>
+        <section className="grid gap-2 border-t pt-4">
+          <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-semibold">Files needing a match <span className="font-normal text-muted-foreground">({matchExceptionsQuery.data?.count ?? 0})</span></h3><Pager page={matchPage} count={matchExceptionsQuery.data?.count ?? 0} onPage={setMatchPage} /></div>
+          {exceptions.map((exception) => (
+            <MatchExceptionRow
+              key={exception.id}
+              exception={exception}
+              runs={runs}
+              canResolve={canResolve}
+              selectedRun={targets[exception.id] ?? ""}
+              pending={resolveMutation.isPending}
+              onSelect={(runId) => setTargets((current) => ({ ...current, [exception.id]: runId }))}
+              onResolve={() => {
+                const runId = Number(targets[exception.id]);
+                if (runId) resolveMutation.mutate({ exceptionId: exception.id, runId });
+              }}
+            />
+          ))}
+          {!exceptions.length ? <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">No unmatched files are waiting for review.</div> : null}
+          {resolveMutation.error instanceof Error ? <div role="alert" className="text-sm text-destructive">{resolveMutation.error.message}</div> : null}
+        </section>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RawFileRow({ file }: { file: RawFile }) {
+  return (
+    <div className="grid min-w-0 gap-2 rounded-md border px-3 py-2 sm:grid-cols-[minmax(0,1fr)_120px_100px] sm:items-center">
+      <div className="min-w-0"><div className="truncate text-sm font-medium" title={file.filename}>{file.filename}</div><div className="truncate text-xs text-muted-foreground" title={file.source_path}>{file.source_path}</div></div>
+      <StatusBadge status={file.status} />
+      <span className="text-xs text-muted-foreground">{formatBytes(file.size_bytes)}</span>
+    </div>
+  );
+}
+
+function MatchExceptionRow({
+  exception,
+  runs,
+  canResolve,
+  selectedRun,
+  pending,
+  onSelect,
+  onResolve,
+}: {
+  exception: FileMatchException;
+  runs: ProjectResearcherRun[];
+  canResolve: boolean;
+  selectedRun: string;
+  pending: boolean;
+  onSelect: (runId: string) => void;
+  onResolve: () => void;
+}) {
+  return (
+    <div className="grid min-w-0 gap-2 rounded-md border px-3 py-2 md:grid-cols-[minmax(0,1fr)_minmax(200px,280px)_auto] md:items-center">
+      <div className="min-w-0"><div className="truncate text-sm font-medium" title={exception.filename}>{exception.filename}</div><div className="text-xs text-muted-foreground">{exception.reason}</div></div>
+      {canResolve ? <label className="grid gap-1 text-xs text-muted-foreground">Attach to run
+        <Select value={selectedRun} onValueChange={onSelect}>
+          <SelectTrigger className="h-9 bg-background"><SelectValue placeholder="Choose a run" /></SelectTrigger>
+          <SelectContent>{runs.map((row) => <SelectItem key={row.run.id} value={String(row.run.id)}>{row.run.run_name} · {row.sample.name}</SelectItem>)}</SelectContent>
+        </Select>
+      </label> : <span className="text-xs text-muted-foreground">Ask a project operator to match this file.</span>}
+      {canResolve ? <Button size="sm" disabled={!selectedRun || pending} onClick={onResolve}>{pending ? "Matching…" : "Attach"}</Button> : null}
+    </div>
+  );
+}
+
+function Pager({ page, count, onPage, pageSize = 25 }: { page: number; count: number; onPage: (page: number) => void; pageSize?: number }) {
+  const lastPage = Math.max(1, Math.ceil(count / pageSize));
+  if (lastPage < 2) return null;
+  return <div className="flex items-center gap-1 text-xs text-muted-foreground"><Button size="sm" variant="ghost" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</Button><span>{page} / {lastPage}</span><Button size="sm" variant="ghost" disabled={page >= lastPage} onClick={() => onPage(page + 1)}>Next</Button></div>;
+}
+
+type HyePairGroup = {
+  key: string;
+  label: string;
+  worklistName: string;
+  a: ProjectResearcherRun[];
+  b: ProjectResearcherRun[];
+  other: ProjectResearcherRun[];
+  issues: string[];
+};
+
+function buildHyePairs(rows: ProjectResearcherRun[]): HyePairGroup[] {
+  const groups = new Map<string, HyePairGroup>();
+  rows.filter((row) => row.run.file_role === "hye" || row.run.qc_program === "hye" || row.run.hye_pair_label.trim()).forEach((row) => {
+    const label = row.run.hye_pair_label.trim() || ("Unlabeled - " + row.run.run_name);
+    const key = row.worklist_name + "::" + label;
+    const pair = groups.get(key) ?? { key, label, worklistName: row.worklist_name, a: [], b: [], other: [], issues: [] };
+    const sampleName = row.sample.name.toUpperCase();
+    const mix = String(row.sample.metadata?.mix ?? "").toUpperCase();
+    if (mix === "A" || /HYE[-_ ]?A/.test(sampleName)) pair.a.push(row);
+    else if (mix === "B" || /HYE[-_ ]?B/.test(sampleName)) pair.b.push(row);
+    else pair.other.push(row);
+    groups.set(key, pair);
+  });
+  return [...groups.values()].map((pair) => {
+    if (!pair.a.length) pair.issues.push("Missing HYE-A");
+    if (!pair.b.length) pair.issues.push("Missing HYE-B");
+    if (pair.a.length > 1) pair.issues.push("Duplicate HYE-A (" + pair.a.length + ")");
+    if (pair.b.length > 1) pair.issues.push("Duplicate HYE-B (" + pair.b.length + ")");
+    if (pair.other.length) pair.issues.push(pair.other.length + " invalid member" + (pair.other.length === 1 ? "" : "s"));
+    if (pair.label.startsWith("Unlabeled - ")) pair.issues.push("Pair label missing");
+    return pair;
+  }).sort((left, right) => left.label.localeCompare(right.label, undefined, { numeric: true }));
+}
+
+function HyeRunSummary({ label, row, duplicates }: { label: "A" | "B"; row?: ProjectResearcherRun; duplicates: number }) {
+  if (!row) return <div className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">HYE-{label} is not in this worklist</div>;
+  const fileState = row.raw_file ? "File " + row.raw_file.status : "Waiting for raw file";
+  const processorState = row.processing_job?.node_name || (row.processing_job ? "Processor assigned" : "Not queued");
+  return (
+    <div className="min-w-0 rounded-md bg-muted px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2"><span className="text-xs font-semibold text-muted-foreground">HYE-{label}</span><StatusBadge status={row.run.status} />{row.processing_job ? <StatusBadge status={row.processing_job.status} /> : null}</div>
+      <div className="mt-1 truncate text-sm font-medium" title={row.raw_file?.filename || row.run.expected_filename}>{row.raw_file?.filename || row.run.expected_filename || row.run.run_name}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{fileState} / {processorState}{duplicates > 0 ? " / " + (duplicates + 1) + " entries" : ""}</div>
+    </div>
+  );
+}
+
+function workspaceSectionPath(projectId: number, experimentId: number | null, section: string) {
+  return experimentId
+    ? `/projects/${projectId}/experiments/${experimentId}/${section}`
+    : `/projects/${projectId}/${section}`;
 }
 
 function SelectedRunsPanel({
@@ -1013,7 +1250,7 @@ function FindingsWorkflowPanel({
             </label>
           </div>
 
-          <div className="rounded-lg border bg-background/50 p-3">
+          <div className="rounded-md bg-muted p-3">
             <div className="flex items-center gap-2 text-sm font-bold">
               <FolderKanban className="h-4 w-4" />
               Workspace
@@ -1046,7 +1283,7 @@ function FindingsWorkflowPanel({
           </div>
         </div>
 
-        <div className="rounded-lg border bg-secondary/45 p-3">
+        <div className="rounded-md bg-secondary p-3">
           <div className="flex items-center justify-between gap-3">
             <div className="text-sm font-black">Claude walkthrough</div>
             <Button size="sm" variant="secondary" onClick={copyCommands}>
@@ -1068,7 +1305,7 @@ function FindingsWorkflowPanel({
 
 function WorklistPreview({ rows }: { rows: WorklistImportRow[] }) {
   if (!rows.length) {
-    return <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No rows parsed yet. Expected columns include sample, run, filename, role, condition, well, and position.</div>;
+    return <div className="rounded-md bg-muted p-4 text-sm text-muted-foreground">No rows parsed yet. Expected columns include sample, run, filename, role, condition, well, and position.</div>;
   }
   return (
     <div className="table-scroll max-h-72 rounded-lg border">
@@ -1101,6 +1338,101 @@ function WorklistPreview({ rows }: { rows: WorklistImportRow[] }) {
   );
 }
 
+function WorklistFilePicker({
+  kind,
+  file,
+  count,
+  required = false,
+  onFile,
+}: {
+  kind: InstrumentWorklistKind;
+  file: File | null;
+  count: number;
+  required?: boolean;
+  onFile: (file?: File) => void;
+}) {
+  const instrument = kind.toUpperCase();
+  return (
+    <div className="min-w-0 rounded-md bg-muted p-3">
+      <label className="grid cursor-pointer gap-3 focus-within:outline-none focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+        <span className="flex items-start justify-between gap-2">
+          <span className="min-w-0">
+            <span className="block text-sm font-semibold">{instrument} worklist{required ? " · required" : " · optional"}</span>
+            <span className="mt-1 block text-xs font-normal text-muted-foreground">{kind === "ms" ? "Creates the planned run sequence." : "Saved alongside MS rows as LC method/injection reference."}</span>
+          </span>
+          <span className="shrink-0 rounded-sm bg-background px-2.5 py-1.5 text-xs font-semibold shadow-sm">Choose file</span>
+        </span>
+        <input
+          className="sr-only"
+          type="file"
+          accept=".csv,.tsv,.txt"
+          aria-label={`Choose ${instrument} CSV or TSV worklist${required ? " (required)" : " (optional)"}`}
+          onChange={(event) => onFile(event.target.files?.[0])}
+        />
+      </label>
+      <div className="mt-2 flex min-w-0 items-center justify-between gap-2 border-t border-border/50 pt-2 text-xs" aria-live="polite">
+        <span className="min-w-0 truncate text-muted-foreground" title={file?.name}>{file ? `${file.name} · ${count} rows parsed` : "No file selected"}</span>
+        {file ? <button type="button" className="shrink-0 font-semibold text-primary underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onFile(undefined)}>Remove</button> : null}
+      </div>
+      {!file && required ? <div className="mt-1 text-[11px] text-muted-foreground">MS is required. LC can be added later.</div> : null}
+    </div>
+  );
+}
+
+function ProjectSharingDialog({ projectId, open, onOpenChange }: { projectId: number; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const [selectedUser, setSelectedUser] = useState("");
+  const [error, setError] = useState("");
+  const membersQuery = useQuery({
+    queryKey: queryKeys.projectMembers(projectId),
+    queryFn: () => fetchProjectMembers(projectId),
+    enabled: open,
+  });
+  const addMutation = useMutation({
+    mutationFn: () => shareProjectWithUser(projectId, Number(selectedUser)),
+    onSuccess: async () => {
+      setSelectedUser("");
+      setError("");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.projectMembers(projectId) });
+    },
+    onError: (reason) => setError(reason instanceof Error ? reason.message : "Could not share the project."),
+  });
+  const removeMutation = useMutation({
+    mutationFn: (userId: number) => removeProjectMember(projectId, userId),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.projectMembers(projectId) }); },
+    onError: (reason) => setError(reason instanceof Error ? reason.message : "Could not remove project access."),
+  });
+  const directory = membersQuery.data;
+
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="max-w-xl">
+      <DialogHeader><DialogTitle>Project access</DialogTitle><DialogDescription>Shared users can view project data and live project watchers. They cannot edit worklists, runs, or project settings. Only active members of this project’s lab are eligible.</DialogDescription></DialogHeader>
+      <div className="grid gap-3">
+        <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+          <label className="grid gap-1 text-sm font-semibold" htmlFor="project-share-user">Add a lab member
+            <select id="project-share-user" className="h-10 min-w-0 border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={selectedUser} onChange={(event) => setSelectedUser(event.target.value)}>
+              <option value="">Select user…</option>
+              {(directory?.available_users ?? []).map((user) => <option key={user.id} value={user.id}>{user.display_name} (@{user.username})</option>)}
+            </select>
+          </label>
+          <Button type="button" disabled={!selectedUser || addMutation.isPending} onClick={() => addMutation.mutate()}>{addMutation.isPending ? "Sharing…" : "Add viewer"}</Button>
+        </div>
+        <div className="border-t pt-3">
+          <h3 className="mb-2 text-sm font-semibold">Current viewers</h3>
+          <div className="grid gap-1">
+            {(directory?.members ?? []).map((member) => <div key={member.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 border border-border px-3 py-2">
+              <div className="min-w-0"><div className="truncate text-sm font-medium">{member.display_name}</div><div className="text-xs text-muted-foreground">@{member.username} · read only</div></div>
+              <Button type="button" size="sm" variant="ghost" aria-label={`Remove ${member.username} from this project`} disabled={removeMutation.isPending} onClick={() => { if (window.confirm(`Remove ${member.username}'s access to this project?`)) removeMutation.mutate(member.user); }}>Remove</Button>
+            </div>)}
+            {!directory?.members.length ? <p className="text-sm text-muted-foreground">No additional viewers have been added.</p> : null}
+          </div>
+        </div>
+        {membersQuery.isLoading ? <p className="text-sm text-muted-foreground">Loading lab members…</p> : null}
+        {error || membersQuery.isError ? <p role="alert" className="break-words text-sm text-destructive">{error || (membersQuery.error instanceof Error ? membersQuery.error.message : "Could not load project members.")}</p> : null}
+      </div>
+    </DialogContent>
+  </Dialog>;
+}
+
 function speclibModeLabel(mode?: string) {
   if (mode === "reuse") return "Reuse speclib";
   if (mode === "smoke") return "Smoke only";
@@ -1115,71 +1447,6 @@ function speclibModeDetail(mode?: string) {
   return "Resolve the project preflight to see the DIA-NN speclib mode.";
 }
 
-function buildDiannProcessSteps(preflightValid: boolean, readyCount: number, latestJob: ProcessingJob | null) {
-  const latestStatus = latestJob?.status ?? "";
-  const queued = latestStatus === "queued" || latestStatus === "assigned" || latestStatus === "running" || latestStatus === "retrying";
-  const running = latestStatus === "running";
-  const done = latestStatus === "complete";
-  const failed = latestStatus === "failed";
-  return [
-    {
-      key: "preflight",
-      label: "Preflight",
-      detail: preflightValid ? "Resolved settings are ready." : "Resolve settings before queueing.",
-      status: preflightValid ? "complete" : "warning",
-    },
-    {
-      key: "ready",
-      label: "Ready runs",
-      detail: `${readyCount} run${readyCount === 1 ? "" : "s"} can be queued.`,
-      status: readyCount ? "complete" : "warning",
-    },
-    {
-      key: "queued",
-      label: "Queued",
-      detail: queued ? `Latest job is ${latestStatus}.` : "Waiting for queue submission.",
-      status: queued ? "complete" : "warning",
-    },
-    {
-      key: "running",
-      label: "Running",
-      detail: running ? "DIA-NN is executing now." : "Node has not started execution yet.",
-      status: running ? "running" : done ? "complete" : failed ? "failed" : "warning",
-    },
-    {
-      key: "complete",
-      label: "Complete",
-      detail: done ? "Latest job finished successfully." : failed ? "Latest job failed and needs review." : "Completion will appear here after execution.",
-      status: done ? "complete" : failed ? "failed" : "warning",
-    },
-  ] as Array<{
-    key: string;
-    label: string;
-    detail: string;
-    status: string;
-  }>;
-}
-
-function ProcessStepCard({
-  label,
-  detail,
-  status,
-}: {
-  label: string;
-  detail: string;
-  status: string;
-}) {
-  return (
-    <div className="rounded-2xl border bg-background/70 p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="text-sm font-black">{label}</div>
-        <StatusBadge status={status} />
-      </div>
-      <div className="mt-2 text-xs text-muted-foreground">{detail}</div>
-    </div>
-  );
-}
-
 function TextField(props: { label: string; value: string; onChange: (value: string) => void; type?: string }) {
   return (
     <label className="grid gap-1 text-sm font-bold">
@@ -1187,62 +1454,4 @@ function TextField(props: { label: string; value: string; onChange: (value: stri
       <Input type={props.type ?? "text"} value={props.value} onChange={(event) => props.onChange(event.target.value)} required />
     </label>
   );
-}
-
-function parseWorklistText(text: string): WorklistImportRow[] {
-  const lines = text.split(/\r?\n/).filter((line) => line.trim());
-  if (lines.length < 2) return [];
-  const delimiter = lines[0].includes("\t") ? "\t" : ",";
-  const headers = parseDelimitedLine(lines[0], delimiter).map((header) => header.trim().toLowerCase());
-  return lines.slice(1).flatMap((line, index) => {
-    const values = parseDelimitedLine(line, delimiter).map((value) => value.trim());
-    const value = (candidates: string[]) => {
-      const headerIndex = headers.findIndex((header) => candidates.includes(header));
-      return headerIndex >= 0 ? values[headerIndex] ?? "" : "";
-    };
-    const sampleName = value(["sample_name", "sample", "sample id", "sample_id", "name"]) || `Sample-${String(index + 1).padStart(3, "0")}`;
-    const expectedFilename = value(["expected_filename", "expected file", "filename", "file", "raw file", "raw_file"]);
-    if (!expectedFilename) return [];
-    const positionValue = Number(value(["position", "order", "injection", "index", "pos"]));
-    const roleValue = value(["file_role", "role", "type"]).toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
-    const fileRole = roleOptions.includes(roleValue as WorklistImportRow["file_role"]) ? roleValue as WorklistImportRow["file_role"] : "sample";
-    const qcProgramValue = value(["qc_program", "qc program", "qc", "program"]).toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
-    const qcProgram = qcProgramValue === "hye" || fileRole === "hye" ? "hye" : qcProgramValue === "prtc" || fileRole === "prtc" ? "prtc" : "";
-    return {
-      position: Number.isFinite(positionValue) && positionValue > 0 ? positionValue : index + 1,
-      sample_name: sampleName,
-      run_name: value(["run_name", "run", "injection_name"]) || sampleName,
-      expected_filename: expectedFilename,
-      file_role: fileRole,
-      qc_program: qcProgram,
-      condition: value(["condition", "group"]),
-      well: value(["well", "vial", "autosampler_vial"]),
-      plate: value(["plate", "plate_id"]),
-      hye_pair_label: value(["hye_pair_label", "hye pair", "qc_pair"]),
-      metadata: Object.fromEntries(headers.map((header, headerIndex) => [header, values[headerIndex] ?? ""])),
-    };
-  });
-}
-
-function parseDelimitedLine(line: string, delimiter: string) {
-  const values: string[] = [];
-  let current = "";
-  let quoted = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    const next = line[index + 1];
-    if (char === "\"" && quoted && next === "\"") {
-      current += "\"";
-      index += 1;
-    } else if (char === "\"") {
-      quoted = !quoted;
-    } else if (char === delimiter && !quoted) {
-      values.push(current);
-      current = "";
-    } else {
-      current += char;
-    }
-  }
-  values.push(current);
-  return values;
 }

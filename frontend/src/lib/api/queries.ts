@@ -1,6 +1,14 @@
-import { downloadResource, getResource, paginatedResource, patchResource, postResource, type ListParams, uploadResource } from "@/lib/api/client";
+import { deleteResource, downloadResource, getResource, paginatedResource, patchResource, postResource, type ListParams, uploadResource } from "@/lib/api/client";
 import type {
   AcquisitionWorklist,
+  AcquisitionRoute,
+  AccountEmailResult,
+  AdminUserAccessIndex,
+  AdminUserRecord,
+  AdminLabDirectory,
+  AdminRuntimeSettings,
+  AppRole,
+  AnalysisBatch,
   AnalysisPreset,
   ChromatogramsResponse,
   CurrentUser,
@@ -26,6 +34,9 @@ import type {
   ProcessingJobOverview,
   ProcessingNode,
   ProcessingNodeOverview,
+  ProjectAssistantIndex,
+  ProjectAssistantThread,
+  ProjectMemberDirectory,
   ProcessingPipeline,
   Project,
   ProjectQuickStartPayload,
@@ -60,8 +71,12 @@ export const queryKeys = {
   fileMatchExceptions: (params?: ListParams) => ["file-match-exceptions", params] as const,
   pipelineEvents: (params?: ListParams) => ["pipeline-events", params] as const,
   projectProcessingJobs: (id: number) => ["project", id, "processing-jobs"] as const,
+  analysisBatches: (id: number) => ["project", id, "analysis-batches"] as const,
   findingsWorkspace: (id: number) => ["project", id, "findings-workspace"] as const,
   currentUser: () => ["current-user"] as const,
+  adminUserAccess: () => ["admin-user-access"] as const,
+  adminLabDirectory: () => ["admin-lab-directory"] as const,
+  adminRuntimeSettings: () => ["admin-runtime-settings"] as const,
   rawFiles: (params: ListParams) => ["raw-files", params] as const,
   rawFilesOverview: (params?: ListParams) => ["raw-files", "overview", params] as const,
   rawFileDerivatives: (params?: ListParams) => ["raw-file-derivatives", params] as const,
@@ -81,6 +96,8 @@ export const queryKeys = {
   runs: (params: ListParams) => ["runs", params] as const,
   runSummary: (id: number) => ["runs", id, "summary"] as const,
   acquisitions: (params: ListParams) => ["acquisition-worklists", params] as const,
+  acquisitionRoutes: (params: ListParams) => ["acquisition-routes", params] as const,
+  projectMembers: (id: number) => ["project", id, "members"] as const,
   qcOverview: (params?: ListParams) => ["qc", "overview", params] as const,
   qcDetails: (params?: ListParams) => ["qc", "details", params] as const,
   intakeRequests: (params?: ListParams) => ["intake-requests", params] as const,
@@ -98,8 +115,55 @@ export function signupAccount(payload: {
   lab_name?: string;
   institution_name?: string;
   membership_role?: "collaborator" | "pi";
-}): Promise<{ user: CurrentUser; verification: { token: string; verify_url: string }; lab_id: number; lab_code: string }> {
+}): Promise<{ user: CurrentUser; verification: { email_sent: boolean }; lab_id: number; lab_code: string }> {
   return postResource("/auth/signup/", payload);
+}
+
+export function fetchAdminUserAccess(): Promise<AdminUserAccessIndex> {
+  return getResource<AdminUserAccessIndex>("/admin/user-access/");
+}
+
+export function inviteAdminUser(payload: {
+  username: string;
+  email: string;
+  lab: number;
+  global_role: AppRole;
+  membership_role: AppRole;
+}): Promise<{ user: AdminUserRecord; email_sent: boolean; invite_url?: string }> {
+  return postResource("/admin/user-access/", payload);
+}
+
+export function updateAdminUserAccess(userId: number, payload: {
+  lab_id: number;
+  global_role: AppRole;
+  membership_role: AppRole;
+  membership_active: boolean;
+}): Promise<{ user: AdminUserRecord }> {
+  return patchResource(`/admin/user-access/${userId}/`, payload);
+}
+
+export function resendAdminUserEmail(userId: number): Promise<AccountEmailResult> {
+  return postResource(`/admin/user-access/${userId}/resend-email/`, {});
+}
+
+export function resendMyVerification(): Promise<AccountEmailResult> {
+  return postResource("/auth/resend-verification/", {});
+}
+
+export function fetchAdminLabDirectory(): Promise<AdminLabDirectory> {
+  return getResource<AdminLabDirectory>("/admin/lab-directory/");
+}
+
+export function createAdminOrganization(payload: Record<string, string | number>) {
+  return postResource<{ kind: string; record: Record<string, unknown> }>("/admin/lab-directory/", payload);
+}
+
+export function fetchAdminRuntimeSettings(): Promise<AdminRuntimeSettings> {
+  return getResource<AdminRuntimeSettings>("/admin/runtime-settings/");
+}
+
+export function acceptInvitation(payload: { uid: string; token: string; password: string }): Promise<{ verified: boolean; user_id: number }> {
+  return postResource("/auth/accept-invitation/", payload);
 }
 
 export function fetchProjects(params?: ListParams): Promise<Paginated<Project>> {
@@ -120,6 +184,41 @@ export function resolveFileMatchException(id: number, run: number, resolution_no
 
 export function fetchProject(id: number): Promise<Project> {
   return getResource<Project>(`/projects/${id}/`);
+}
+
+export function fetchProjectMembers(id: number): Promise<ProjectMemberDirectory> {
+  return getResource<ProjectMemberDirectory>(`/projects/${id}/members/`);
+}
+
+export function shareProjectWithUser(projectId: number, userId: number) {
+  return postResource(`/projects/${projectId}/members/`, { user: userId });
+}
+
+export function removeProjectMember(projectId: number, userId: number) {
+  return deleteResource(`/projects/${projectId}/members/${userId}/`);
+}
+
+export function fetchAcquisitionRoutes(params: ListParams = {}) {
+  return paginatedResource<AcquisitionRoute>("/acquisition-routes/", params);
+}
+
+export function fetchProjectAssistant(id: number): Promise<ProjectAssistantIndex> {
+  return getResource<ProjectAssistantIndex>(`/projects/${id}/assistant/`);
+}
+
+export function createProjectAssistantThread(id: number, provider: string, model: string): Promise<ProjectAssistantThread> {
+  return postResource<ProjectAssistantThread>(`/projects/${id}/assistant/`, { provider, model });
+}
+
+export function fetchProjectAssistantThread(projectId: number, threadId: number): Promise<ProjectAssistantThread> {
+  return getResource<ProjectAssistantThread>(`/projects/${projectId}/assistant/threads/${threadId}/`);
+}
+
+export function sendProjectAssistantMessage(projectId: number, threadId: number, content: string) {
+  return postResource<{ user_message: number; assistant_message: import("@/lib/api/types").ProjectAssistantMessage }>(
+    `/projects/${projectId}/assistant/threads/${threadId}/messages/`,
+    { content },
+  );
 }
 
 export function fetchExperiments(params?: ListParams): Promise<Paginated<Experiment>> {
@@ -229,6 +328,17 @@ export function previewPreAcquisitionSetup(payload: PreAcquisitionSetupPayload):
   return postResource<PreAcquisitionSetupPreflightResponse>("/projects/pre-acquisition-preflight/", payload);
 }
 
+export function uploadReferenceAsset(file: File, assetType: "fasta" | "spectral_library", scope: "experiment" | "project") {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("asset_type", assetType);
+  formData.append("scope", scope);
+  return uploadResource<{ id: number; filename: string; asset_type: string; checksum_sha256: string }>(
+    "/reference-assets/upload/",
+    formData,
+  );
+}
+
 export function importProjectWorklist(projectId: number, payload: WorklistImportPayload): Promise<WorklistImportResponse> {
   return postResource<WorklistImportResponse>(`/projects/${projectId}/import-worklist/`, payload);
 }
@@ -280,6 +390,22 @@ export function rerunLatestDiannBatch(projectId: number): Promise<{
   skipped: number;
 }> {
   return postResource(`/projects/${projectId}/rerun-latest-diann-batch/`, {});
+}
+
+export function reanalyzeProject(
+  projectId: number,
+  payload: { executor: "local" | "slurm"; experiment?: number },
+): Promise<AnalysisBatch[]> {
+  return postResource<AnalysisBatch[]>(`/projects/${projectId}/reanalyze/`, payload);
+}
+
+export function fetchAnalysisBatches(projectId: number): Promise<Paginated<AnalysisBatch>> {
+  return paginatedResource<AnalysisBatch>("/analysis-batches/", {
+    project: projectId,
+    ordering: "-created_at",
+    page: 1,
+    page_size: 10,
+  });
 }
 
 export function updateWorklistEntry(id: number, payload: Partial<AcquisitionWorklist> & Record<string, unknown>): Promise<unknown> {

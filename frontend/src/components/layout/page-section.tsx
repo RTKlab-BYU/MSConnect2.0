@@ -13,11 +13,11 @@ type PageHeroProps = {
 
 export function PageHero({ eyebrow, title, description, actions, className }: PageHeroProps) {
   return (
-    <section className={cn("rounded-[2rem] border bg-card/95 p-6 shadow-[0_18px_50px_rgb(15_23_42/0.07)]", className)}>
+    <section className={cn("min-w-0 rounded-lg bg-muted p-4 sm:p-5", className)}>
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <p className="text-xs font-black uppercase tracking-[0.2em] text-accent">{eyebrow}</p>
-          <h1 className="mt-2 text-4xl font-black tracking-[-0.055em] text-foreground">{title}</h1>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-accent">{eyebrow}</p>
+          <h1 className="mt-1 break-words text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">{title}</h1>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">{description}</p>
         </div>
         {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}

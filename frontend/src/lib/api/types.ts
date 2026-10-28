@@ -15,6 +15,7 @@ export type Project = {
   title: string;
   code: string;
   pi: EntityId;
+  owner: EntityId | null;
   status: "active" | "paused" | "complete" | "archived";
   description: string;
   created_at: string;
@@ -69,6 +70,7 @@ export type CurrentUser = {
   email: string;
   is_superuser: boolean;
   global_role: "admin" | "pi" | "researcher" | "collaborator";
+  instance_label: string;
   email_verified_at: string | null;
   labs: Array<{
     id: EntityId;
@@ -79,6 +81,65 @@ export type CurrentUser = {
     university_name: string;
   }>;
   active_lab_ids: EntityId[];
+};
+
+export type AppRole = CurrentUser["global_role"];
+export type AdminUserMembership = {
+  id: number;
+  lab_id: number;
+  lab_name: string;
+  facility_name: string;
+  role: AppRole;
+  active: boolean;
+};
+export type AdminUserRecord = {
+  id: number;
+  username: string;
+  email: string;
+  is_active: boolean;
+  is_superuser: boolean;
+  global_role: AppRole;
+  email_verified_at: string | null;
+  memberships: AdminUserMembership[];
+};
+export type AdminUserAccessIndex = {
+  users: AdminUserRecord[];
+  labs: Array<{ id: number; name: string; facility_name: string }>;
+};
+export type AccountEmailResult = {
+  email_sent?: boolean;
+  already_verified?: boolean;
+  account_url?: string;
+  invite_url?: string;
+  detail?: string;
+};
+export type AdminLabDirectory = {
+  universities: Array<{ id: number; name: string; abbreviation: string; website: string; active: boolean }>;
+  facilities: Array<{ id: number; name: string; slug: string; university_id: number; university_name: string; contact_email: string; active: boolean }>;
+  labs: Array<{ id: number; name: string; slug: string; facility_id: number; facility_name: string; university_name: string; billing_code: string; active: boolean; active_member_count: number }>;
+};
+export type AdminRuntimeSettings = {
+  instance_profile: string;
+  default_facility_slug: string;
+  public_signup_enabled: boolean;
+  email: {
+    backend: string;
+    host: string;
+    port: number;
+    from_email: string;
+    use_tls: boolean;
+    credentials_configured: boolean;
+    host_configured: boolean;
+    fail_silently: boolean;
+  };
+  compute: {
+    slurm: { configured: boolean; host: string; port: number; user_configured: boolean; partition_configured: boolean; account_configured: boolean };
+    cloud: { available: boolean; configured: boolean; provider: string };
+  };
+  assistant: {
+    providers: Record<string, { configured: boolean }>;
+    models: Array<{ provider: string; model: string }>;
+  };
 };
 
 export type IntakeMetadata = {
@@ -187,6 +248,8 @@ export type PreAcquisitionSetupPayload = {
   speclib_path?: string;
   fasta_upload_name?: string;
   speclib_upload_name?: string;
+  fasta_reference_asset_id?: EntityId;
+  speclib_reference_asset_id?: EntityId;
   speclib_scope?: "experiment" | "project";
   speclib_build_runs?: number;
   diann_version: string;
@@ -264,7 +327,10 @@ export type WorklistImportRow = {
 export type WorklistImportPayload = {
   worklist_name: string;
   experiment_name?: string;
+  ms_filename?: string;
+  lc_filename?: string;
   rows: WorklistImportRow[];
+  lc_rows?: WorklistImportRow[];
 };
 
 export type WorklistImportResponse = {
@@ -278,6 +344,28 @@ export type WorklistImportResponse = {
     lc_csv: string;
     run_count: number;
   };
+};
+
+export type ProjectMemberDirectory = {
+  members: Array<{ id: EntityId; project: EntityId; user: EntityId; username: string; display_name: string; active: boolean }>;
+  available_users: Array<{ id: EntityId; username: string; display_name: string }>;
+};
+
+export type AcquisitionRoute = {
+  id: EntityId;
+  agent: EntityId;
+  agent_name: string;
+  agent_status: "online" | "stale" | "never";
+  agent_last_seen_at: string | null;
+  project: EntityId;
+  project_code: string;
+  name: string;
+  mode: string;
+  source_prefix: string;
+  spool_folder: string;
+  status: string;
+  metadata: Record<string, unknown>;
+  updated_at: string;
 };
 
 export type InstrumentConfiguration = {
@@ -434,6 +522,27 @@ export type DirectUploadSession = {
   updated_at: string;
 };
 
+export type AnalysisBatch = {
+  id: EntityId;
+  project: EntityId;
+  experiment: EntityId;
+  project_code: string;
+  experiment_name: string;
+  pipeline: EntityId;
+  pipeline_name: string;
+  pipeline_version: string;
+  executor: "local" | "slurm";
+  status: "queued" | "running" | "complete" | "failed";
+  parameters_snapshot: Record<string, unknown>;
+  reference_snapshot: Record<string, unknown>;
+  raw_file_ids: EntityId[];
+  job_ids: EntityId[];
+  metadata: Record<string, unknown>;
+  error_message: string;
+  created_at: string;
+  finished_at: string | null;
+};
+
 export type ProcessingJob = {
   id: EntityId;
   run: EntityId;
@@ -499,6 +608,7 @@ export type ProcessingNode = {
   metadata: Record<string, unknown>;
   ip_address: string;
   health: "green" | "yellow" | "red";
+  health_guidance: string;
   active_control: Record<string, unknown>;
   seconds_since_heartbeat: number | null;
   created_at: string;
@@ -630,11 +740,16 @@ export type SystemHealthSnapshot = {
       status: "green" | "yellow" | "red";
       label: string;
       detail: string;
+      guidance?: string;
     };
     database: {
       ok: boolean;
+      status: "green" | "yellow" | "red";
       path?: string;
       error?: string;
+      label?: string;
+      detail?: string;
+      guidance?: string;
     };
     incoming_raw_root: {
       ok: boolean;
@@ -707,6 +822,7 @@ export type SystemHealthSnapshot = {
     title: string;
     detail: string;
     route?: string;
+    guidance?: string;
   }>;
 };
 
@@ -969,9 +1085,39 @@ export type QcDetails = {
   };
   empty_message: string;
   pairs: QcPair[];
+  target_profiles?: Array<{
+    id: number | null;
+    name: string;
+    version: string;
+    targets: Record<string, { a: number; b: number }>;
+  }>;
   runs?: QcPrtcRun[];
   machine_summaries?: QcMachineSummary[];
   machine_series?: QcMachineSeriesPoint[];
+};
+
+export type ProjectAssistantModel = { provider: "openai" | "anthropic"; model: string };
+export type ProjectAssistantMessage = {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  provider: string;
+  model: string;
+  created_at: string;
+};
+export type ProjectAssistantThread = {
+  id: number;
+  project: number;
+  title: string;
+  provider: "openai" | "anthropic";
+  model: string;
+  created_at: string;
+  updated_at: string;
+  messages?: ProjectAssistantMessage[];
+};
+export type ProjectAssistantIndex = {
+  models: ProjectAssistantModel[];
+  threads: ProjectAssistantThread[];
 };
 
 export type QcPrtcRun = {

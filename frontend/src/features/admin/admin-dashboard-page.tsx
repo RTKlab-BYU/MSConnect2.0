@@ -3,7 +3,6 @@ import {
   Activity,
   ArrowRight,
   Database,
-  ExternalLink,
   FileUp,
   FlaskConical,
   LineChart,
@@ -58,7 +57,7 @@ const featureLinks = [
   {
     title: "Processor Admin",
     description: "Live processor hosts, IPs, engine health, storage roots, and admin controls.",
-    href: "/processing/admin",
+    href: "/processing/admin?type=processor",
     icon: Server,
   },
   {
@@ -76,7 +75,7 @@ const featureLinks = [
   {
     title: "Watcher",
     description: "Direct upload sessions, raw-file storage registration, and file intake checks.",
-    href: "/watcher",
+    href: "/processing/admin?type=watcher",
     icon: FileUp,
   },
   {
@@ -90,6 +89,12 @@ const featureLinks = [
     description: "Users, labs, instruments, pipelines, storage, agents, and security records.",
     href: "/settings",
     icon: Settings2,
+  },
+  {
+    title: "AI Agent",
+    description: "Provider readiness, enabled models, and server-side assistant configuration.",
+    href: "/admin/assistant",
+    icon: TerminalSquare,
   },
 ];
 
@@ -315,7 +320,7 @@ export default function AdminDashboardPage() {
   });
   const redNodes = nodes.filter((node) => node.health === "red").length;
   const yellowNodes = nodes.filter((node) => node.health === "yellow").length;
-  const engineRows = summarizeEngines(nodes);
+  const engineRows = summarizeEngines(nodes.filter((node) => node.node_type.toLowerCase() !== "watcher"));
   const systemStatus = systemHealth?.status ?? (redNodes || (jobsQuery.data?.failed ?? 0) > 0 ? "red" : yellowNodes ? "yellow" : "green");
   const healthAlerts = systemHealth?.alerts ?? [];
   const readinessEntries = Object.entries((systemHealth?.readiness ?? {}) as Record<string, ReadinessEntry>);
@@ -337,22 +342,17 @@ export default function AdminDashboardPage() {
       <PageHero
         eyebrow="System administration"
         title="Admin dashboard"
-        description="System-wide operations across projects, watcher intake, raw storage, processing, QC, agent health, and Django records."
+        description="System-wide operations across projects, watcher intake, raw storage, processing, QC, system readiness, and agent health."
         actions={
           <>
             <StatusBadge status={healthBadgeStatus(systemStatus)} />
             <Button asChild variant="secondary">
-              <Link to="/processing/admin">
+              <Link to="/processing/admin?type=processor">
                 <Server className="h-4 w-4" />
                 Processor admin
               </Link>
             </Button>
-            <Button asChild>
-              <a href="/admin/">
-                <ExternalLink className="h-4 w-4" />
-                Django admin
-              </a>
-            </Button>
+            <Button asChild variant="secondary"><Link to="/admin/assistant"><TerminalSquare className="h-4 w-4" />AI agent</Link></Button>
           </>
         }
       />
@@ -371,13 +371,14 @@ export default function AdminDashboardPage() {
           <div className="grid gap-3">
             {healthAlerts.length ? (
               healthAlerts.map((alert) => (
-                <div key={alert.code} className="flex flex-wrap items-start justify-between gap-3 rounded-xl border bg-background/70 px-4 py-3">
+                <div key={alert.code} className="flex flex-wrap items-start justify-between gap-3 rounded-sm border bg-card px-4 py-3">
                   <div className="grid gap-1">
                     <div className="flex items-center gap-2 font-bold">
                       <StatusBadge status={alertStatus(alert.severity)} />
                       {alert.title}
                     </div>
                     <div className="text-sm text-muted-foreground">{alert.detail}</div>
+                    {alert.guidance ? <div className="max-w-3xl border-l-2 border-primary/60 pl-2 text-xs text-foreground/80">Next: {alert.guidance}</div> : null}
                   </div>
                   {alert.route ? (
                     <Button asChild size="sm" variant="secondary">
@@ -387,7 +388,7 @@ export default function AdminDashboardPage() {
                 </div>
               ))
             ) : (
-              <div className="rounded-xl border bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+              <div className="rounded-sm border bg-card px-4 py-3 text-sm text-muted-foreground">
                 No health warnings. Connected nodes, job queues, and storage checks are currently green.
               </div>
             )}
@@ -401,12 +402,13 @@ export default function AdminDashboardPage() {
 
           <div className="grid gap-2">
             {readinessEntries.map(([key, value]) => (
-              <div key={key} className="rounded-xl border bg-background/70 px-3 py-3">
+              <div key={key} className="rounded-sm border bg-card px-3 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="font-bold">{readinessLabel(key, value)}</div>
                   <StatusBadge status={readinessStatus(value as { ok: boolean })} />
                 </div>
                 <div className="mt-1 text-xs text-muted-foreground">{readinessDetail(value)}</div>
+                {!value.ok && value.guidance ? <div className="mt-2 border-l-2 border-destructive/60 pl-2 text-xs text-foreground/80">Next: {value.guidance}</div> : null}
               </div>
             ))}
           </div>
@@ -500,13 +502,13 @@ export default function AdminDashboardPage() {
             </Button>
           </div>
           <div className="grid gap-3">
-            <div className="rounded-2xl border bg-background/70 p-4">
+            <div className="rounded-sm border bg-card p-4">
               <div className="text-xs font-bold uppercase text-muted-foreground">Resolved metadata preview</div>
               <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">
                 <code>{JSON.stringify(deploymentMetadataPreview, null, 2)}</code>
               </pre>
             </div>
-            <div className="rounded-2xl border bg-background/70 p-4 text-sm text-muted-foreground">
+            <div className="rounded-sm border bg-card p-4 text-sm text-muted-foreground">
               Saved at <span className="font-mono">{formatDate(deploymentSettings?.updated_at)}</span>. DIA-NN previews and uploads will use this site profile.
             </div>
           </div>
@@ -543,17 +545,17 @@ export default function AdminDashboardPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Live Processor Health</CardTitle>
-            <CardDescription>All reporting nodes grouped by engine identity.</CardDescription>
+              <CardTitle>Live Processor Health</CardTitle>
+              <CardDescription>Processing workers only. Watcher health has its own administration tab.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3">
             {engineRows.map((engine) => (
-              <div key={engine.type} className="rounded-lg border bg-background/50 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="font-black">{engine.type}</div>
-                  <StatusBadge status={engine.red ? "failed" : engine.yellow ? "warning" : "complete"} />
+              <div key={engine.type} className="min-w-0 bg-secondary/55 p-3">
+                <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0 break-words font-semibold">{engine.type}</div>
+                  <StatusBadge className="shrink-0" status={engine.red ? "failed" : engine.yellow ? "warning" : "complete"} />
                 </div>
-                <div className="mt-2 text-sm text-muted-foreground">
+                <div className="mt-2 break-words text-sm text-muted-foreground">
                   {engine.total} nodes · {engine.green} green · {engine.yellow} yellow · {engine.red} red
                 </div>
               </div>
@@ -800,6 +802,7 @@ function healthBadgeStatus(status: "green" | "yellow" | "red") {
 
 type ReadinessEntry = {
   ok: boolean;
+  guidance?: string;
   label?: string;
   detail?: string;
   error?: string;
@@ -808,7 +811,7 @@ type ReadinessEntry = {
 
 function MiniHealthStat({ label, value, detail }: { label: string; value: number; detail: string }) {
   return (
-    <div className="rounded-xl border bg-background/70 px-3 py-3">
+    <div className="rounded-sm border bg-card px-3 py-3">
       <div className="text-[11px] font-black uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
       <div className="mt-2 text-2xl font-black">{metricValue(value)}</div>
       <div className="mt-1 text-xs text-muted-foreground">{detail}</div>

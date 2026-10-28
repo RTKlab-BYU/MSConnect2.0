@@ -11,6 +11,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   fetchAcquisitions,
+  fetchExperiments,
   fetchProjects,
   fetchQcDetails,
   fetchQcOverview,
@@ -24,6 +25,7 @@ export default function QcPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const program = location.pathname.includes("/prtc") || searchParams.get("program") === "prtc" ? "prtc" : "hye";
   const project = searchParams.get("project") ?? "all";
+  const experiment = searchParams.get("experiment") ?? "all";
   const worklist = searchParams.get("worklist") ?? "all";
   const machine = searchParams.get("machine") ?? "all";
   const start = searchParams.get("start") ?? "";
@@ -39,6 +41,10 @@ export default function QcPage() {
     }
     if (key === "project") {
       next.delete("worklist");
+      next.delete("experiment");
+    }
+    if (key === "experiment") {
+      next.delete("worklist");
     }
     setSearchParams(next, { replace: true });
   }
@@ -46,6 +52,7 @@ export default function QcPage() {
   const qcParams = {
     program,
     project: project === "all" ? "" : project,
+    experiment: experiment === "all" ? "" : experiment,
     worklist: worklist === "all" ? "" : worklist,
     machine: machine === "all" ? "" : machine,
     start,
@@ -57,22 +64,28 @@ export default function QcPage() {
     queryFn: () => fetchProjects({ page_size: 200 }),
   });
   const worklistsQuery = useQuery({
-    queryKey: queryKeys.acquisitions({ page_size: 200, project: project === "all" ? "" : project }),
-    queryFn: () => fetchAcquisitions({ page_size: 200, project: project === "all" ? "" : project }),
+    queryKey: queryKeys.acquisitions({ page_size: 200, project: project === "all" ? "" : project, experiment: experiment === "all" ? "" : experiment }),
+    queryFn: () => fetchAcquisitions({ page_size: 200, project: project === "all" ? "" : project, experiment: experiment === "all" ? "" : experiment }),
+  });
+  const experimentsQuery = useQuery({
+    queryKey: queryKeys.projectExperiments(project === "all" ? 0 : Number(project)),
+    queryFn: () => fetchExperiments({ page_size: 200, project: project === "all" ? "" : project }),
+    enabled: project !== "all",
   });
   const overviewQuery = useQuery({
     queryKey: queryKeys.qcOverview(qcParams),
     queryFn: () => fetchQcOverview(qcParams),
-    refetchInterval: 20_000,
+    refetchInterval: 5_000,
   });
   const detailsQuery = useQuery({
     queryKey: queryKeys.qcDetails(qcParams),
     queryFn: () => fetchQcDetails(qcParams),
-    refetchInterval: 20_000,
+    refetchInterval: 5_000,
   });
 
   const overview = overviewQuery.data;
   const details = detailsQuery.data;
+  const hyeTargetProfiles = details?.target_profiles ?? [];
   const prtcRuns = details?.runs ?? [];
   const machineSummaries = details?.machine_summaries ?? [];
   const machineSeries = details?.machine_series ?? [];
@@ -123,6 +136,13 @@ export default function QcPage() {
                   ))}
                 </SelectContent>
               </Select>
+              {project !== "all" ? <Select value={experiment} onValueChange={(value) => updateParam("experiment", value)}>
+                <SelectTrigger><SelectValue placeholder="Experiment" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All experiments</SelectItem>
+                  {(experimentsQuery.data?.results ?? []).map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}
+                </SelectContent>
+              </Select> : null}
               <Select value={worklist} onValueChange={(value) => updateParam("worklist", value)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Worklist" />
@@ -174,39 +194,22 @@ export default function QcPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Expected HYE composition</CardTitle>
-                <CardDescription>Human remains constant while Yeast and E. coli shift between A and B.</CardDescription>
+                <CardDescription>Profile snapshots attached to the worklists in this QC scope.</CardDescription>
               </CardHeader>
-              <CardContent>
-                <table className="w-full text-sm">
-                  <thead className="text-left text-xs uppercase text-muted-foreground">
-                    <tr>
-                      <th className="border-b py-2">Organism</th>
-                      <th className="border-b py-2">A</th>
-                      <th className="border-b py-2">B</th>
-                      <th className="border-b py-2">Ideal B/A</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr className="border-b">
-                      <td className="py-2 font-medium">Homo sapiens</td>
-                      <td className="py-2">0.65</td>
-                      <td className="py-2">0.65</td>
-                      <td className="py-2">1.00</td>
-                    </tr>
-                    <tr className="border-b">
-                      <td className="py-2 font-medium">Saccharomyces cerevisiae</td>
-                      <td className="py-2">0.30</td>
-                      <td className="py-2">0.15</td>
-                      <td className="py-2">0.50</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-medium">Escherichia coli</td>
-                      <td className="py-2">0.05</td>
-                      <td className="py-2">0.20</td>
-                      <td className="py-2">4.00</td>
-                    </tr>
-                  </tbody>
-                </table>
+              <CardContent className="grid gap-5">
+                {(hyeTargetProfiles.length ? hyeTargetProfiles : [{ id: null, name: "HYE Standard", version: "legacy default", targets: {
+                  "Homo sapiens": { a: 0.65, b: 0.65 },
+                  "Saccharomyces cerevisiae": { a: 0.3, b: 0.15 },
+                  "Escherichia coli": { a: 0.05, b: 0.2 },
+                } }]).map((profile) => (
+                  <div key={`${profile.name}:${profile.version}`}>
+                    <div className="mb-2 text-sm font-bold">{profile.name} · v{profile.version}</div>
+                    <table className="w-full text-sm">
+                      <thead className="text-left text-xs uppercase text-muted-foreground"><tr><th className="border-b border-border/60 py-2">Organism</th><th className="border-b border-border/60 py-2">A</th><th className="border-b border-border/60 py-2">B</th><th className="border-b border-border/60 py-2">Ideal B/A</th></tr></thead>
+                      <tbody>{Object.entries(profile.targets).map(([organism, target]) => <tr key={organism} className="border-b border-border/50 last:border-0"><td className="py-2 font-medium">{organism}</td><td className="py-2 tabular-nums">{target.a.toFixed(2)}</td><td className="py-2 tabular-nums">{target.b.toFixed(2)}</td><td className="py-2 tabular-nums">{target.a ? (target.b / target.a).toFixed(2) : "-"}</td></tr>)}</tbody>
+                    </table>
+                  </div>
+                ))}
               </CardContent>
             </Card>
 

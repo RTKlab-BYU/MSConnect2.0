@@ -21,6 +21,8 @@ export default function MonitoringPage() {
   const active = feed.jobsOverview?.active ?? 0;
   const failed = feed.jobsOverview?.failed ?? 0;
   const rawFiles = feed.rawFilesOverview?.total ?? 0;
+  const watchers = feed.nodes.filter((node) => node.node_type.toLowerCase().includes("watcher") || node.metadata.mode === "staged-direct-upload");
+  const processors = feed.nodes.filter((node) => !watchers.includes(node));
 
   useEffect(() => {
     if (!feed.lastUpdatedAt) return;
@@ -65,6 +67,8 @@ export default function MonitoringPage() {
         <MetricCard label="Active Jobs" value={active} detail="queued, assigned, running, retrying" />
         <MetricCard label="Failed Jobs" value={failed} detail="needs review" />
         <MetricCard label="Processing Nodes" value={feed.nodesOverview?.total ?? "-"} detail="registered workers" />
+        <MetricCard label="Watchers online" value={watchers.filter((node) => node.health === "green").length} detail={`${watchers.length} registered`} />
+        <MetricCard label="Processors online" value={processors.filter((node) => node.health === "green").length} detail={`${processors.length} registered`} />
         <MetricCard label="Raw Files" value={rawFiles} detail="known SDMS files" />
         <MetricCard label="Unmatched Raw" value={feed.rawFilesOverview?.unmatched ?? "-"} detail="operator review" />
       </section>
@@ -88,33 +92,10 @@ export default function MonitoringPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Node Health</CardTitle>
-            <CardDescription>Current processing and upload workers.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-2">
-              {feed.nodes.map((node) => (
-                <div key={node.id} className="rounded-2xl border bg-background/50 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="font-semibold">{node.name}</div>
-                      <div className="text-xs text-muted-foreground">{node.node_type}</div>
-                    </div>
-                    <StatusBadge status={node.status} />
-                  </div>
-                  <div className="mt-2 text-xs text-muted-foreground">
-                    Last heartbeat: {formatDate(node.last_heartbeat_at)}
-                  </div>
-                </div>
-              ))}
-              {!feed.nodes.length && (
-                <div className="rounded-2xl border p-4 text-sm text-muted-foreground">No processing nodes registered.</div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        <div className="grid gap-4">
+          <NodeGroup title="Acquisition watchers" description="Heartbeat and latest scan/upload activity reported by each watcher." nodes={watchers} empty="No watcher agents are registered." />
+          <NodeGroup title="Connected processors" description="Live worker inventory, node health, current control metadata, and heartbeat." nodes={processors} empty="No processors are registered." />
+        </div>
       </section>
 
       <Card>
@@ -142,4 +123,28 @@ export default function MonitoringPage() {
       </Card>
     </div>
   );
+}
+
+function NodeGroup({ title, description, nodes, empty }: { title: string; description: string; nodes: ReturnType<typeof useRunStatusFeed>["nodes"]; empty: string }) {
+  return <Card>
+    <CardHeader><CardTitle>{title}</CardTitle><CardDescription>{description}</CardDescription></CardHeader>
+    <CardContent className="grid gap-2">
+      {nodes.map((node) => {
+        const metadata = node.metadata ?? {};
+        const online = node.seconds_since_heartbeat !== null && node.seconds_since_heartbeat <= 120 && node.health !== "red";
+        return <div key={node.id} className="rounded-xl border bg-background/50 p-3">
+          <div className="flex items-start justify-between gap-2">
+            <div><div className="font-semibold">{node.name}</div><div className="text-xs text-muted-foreground">{node.node_type} · {online ? "heartbeat current" : "heartbeat overdue/offline"}</div></div>
+            <StatusBadge status={node.status} />
+          </div>
+          <div className="mt-2 text-xs text-muted-foreground">Last heartbeat: {formatDate(node.last_heartbeat_at)}</div>
+          {metadata.mode ? <div className="mt-2 text-xs">Mode: <span className="font-mono">{String(metadata.mode)}</span></div> : null}
+          {metadata.candidate_count !== undefined ? <div className="mt-1 text-xs">Current scan: {String(metadata.candidate_count)} candidates · {String(metadata.uploads_completed_this_scan ?? 0)} uploaded</div> : null}
+          {metadata.latest_candidate ? <div className="mt-1 break-all text-xs text-muted-foreground">Latest candidate: {String(metadata.latest_candidate)}{metadata.latest_route ? ` · ${String(metadata.latest_route)}` : ""} · {String(metadata.latest_activity ?? "")}</div> : null}
+          {Object.keys(node.active_control ?? {}).length ? <pre className="mt-2 max-h-24 overflow-auto rounded bg-muted/50 p-2 text-[10px]">{JSON.stringify(node.active_control, null, 2)}</pre> : null}
+        </div>;
+      })}
+      {!nodes.length ? <div className="rounded-xl border p-4 text-sm text-muted-foreground">{empty}</div> : null}
+    </CardContent>
+  </Card>;
 }

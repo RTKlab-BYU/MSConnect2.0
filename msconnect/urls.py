@@ -3,6 +3,7 @@ from django.contrib import admin
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 from django.http import FileResponse, HttpResponse
 from django.urls import include, path, re_path
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.generic import RedirectView
 
 from core import api
@@ -11,6 +12,7 @@ from .capabilities import capability_urlpatterns
 from .health import healthz, readyz
 
 
+@ensure_csrf_cookie
 def app_shell(_request, _path=""):
     index_path = settings.BASE_DIR / "ui" / "static" / "app" / "index.html"
     if not index_path.exists():

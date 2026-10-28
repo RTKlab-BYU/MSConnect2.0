@@ -4,8 +4,15 @@ import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "@/components/shell/app-shell";
 import { RoleGuard } from "@/components/shell/role-guard";
 import { NotFoundRoute, RouteErrorBoundary, RouteFallback } from "@/components/shell/route-fallback";
+import { isFacilityProfile } from "@/lib/instance-profile";
 
 const SignupPage = lazy(() => import("@/features/auth/signup-page"));
+const VerifyEmailPage = lazy(() => import("@/features/auth/verify-email-page"));
+const AcceptInvitationPage = lazy(() => import("@/features/auth/accept-invitation-page"));
+const AdminUserAccessPage = lazy(() => import("@/features/admin/user-access-page"));
+const AdminLabsPage = lazy(() => import("@/features/admin/labs-page"));
+const AdminGlobalSettingsPage = lazy(() => import("@/features/admin/global-settings-page"));
+const AdminAssistantPage = lazy(() => import("@/features/admin/assistant-admin-page"));
 const ProjectsPage = lazy(() => import("@/features/projects/projects-page"));
 const ProjectWorkspacePage = lazy(() => import("@/features/projects/project-workspace-page"));
 const SampleReportPage = lazy(() => import("@/features/projects/sample-report-page"));
@@ -29,7 +36,7 @@ export const router = createBrowserRouter(
   [
     {
       path: "/",
-      element: <Navigate to="/dashboard" replace />,
+      element: <Navigate to="/projects" replace />,
       errorElement: <RouteErrorBoundary />,
     },
     {
@@ -44,6 +51,16 @@ export const router = createBrowserRouter(
           <SignupPage />
         </Suspense>
       ),
+      errorElement: <RouteErrorBoundary />,
+    },
+    {
+      path: "verify-email/:token",
+      element: <Suspense fallback={<RouteFallback label="Verifying email" />}><VerifyEmailPage /></Suspense>,
+      errorElement: <RouteErrorBoundary />,
+    },
+    {
+      path: "accept-invite/:uid/:token",
+      element: <Suspense fallback={<RouteFallback label="Loading invitation" />}><AcceptInvitationPage /></Suspense>,
       errorElement: <RouteErrorBoundary />,
     },
     {
@@ -70,14 +87,46 @@ export const router = createBrowserRouter(
           ),
         },
         {
-          path: "intake",
+          path: "admin/users",
           element: (
+            <RoleGuard allow={["admin"]}>
+              <Suspense fallback={<RouteFallback label="Loading user access" />}><AdminUserAccessPage /></Suspense>
+            </RoleGuard>
+          ),
+        },
+        {
+          path: "admin/labs",
+          element: (
+            <RoleGuard allow={["admin"]}>
+              <Suspense fallback={<RouteFallback label="Loading organization setup" />}><AdminLabsPage /></Suspense>
+            </RoleGuard>
+          ),
+        },
+        {
+          path: "admin/settings",
+          element: (
+            <RoleGuard allow={["admin"]}>
+              <Suspense fallback={<RouteFallback label="Loading global settings" />}><AdminGlobalSettingsPage /></Suspense>
+            </RoleGuard>
+          ),
+        },
+        {
+          path: "admin/assistant",
+          element: (
+            <RoleGuard allow={["admin"]}>
+              <Suspense fallback={<RouteFallback label="Loading AI agent settings" />}><AdminAssistantPage /></Suspense>
+            </RoleGuard>
+          ),
+        },
+        {
+          path: "intake",
+          element: isFacilityProfile ? (
             <RoleGuard allow={["admin", "pi"]}>
               <Suspense fallback={<RouteFallback label="Loading intake queue" />}>
                 <IntakeQueuePage />
               </Suspense>
             </RoleGuard>
-          ),
+          ) : <Navigate to="/projects" replace />,
         },
         {
           path: "projects",
@@ -179,27 +228,27 @@ export const router = createBrowserRouter(
         },
         {
           path: "submissions",
-          element: (
+          element: isFacilityProfile ? (
             <Suspense fallback={<RouteFallback label="Loading submissions" />}>
               <SubmissionsPage />
             </Suspense>
-          ),
+          ) : <Navigate to="/projects" replace />,
         },
         {
           path: "submissions/new",
-          element: (
+          element: isFacilityProfile ? (
             <Suspense fallback={<RouteFallback label="Loading submission wizard" />}>
               <SubmissionWizardPage />
             </Suspense>
-          ),
+          ) : <Navigate to="/projects" replace />,
         },
         {
           path: "submissions/:submissionId",
-          element: (
+          element: isFacilityProfile ? (
             <Suspense fallback={<RouteFallback label="Loading submission detail" />}>
               <SubmissionDetailPage />
             </Suspense>
-          ),
+          ) : <Navigate to="/projects" replace />,
         },
         {
           path: "projects/:projectId",
@@ -210,7 +259,23 @@ export const router = createBrowserRouter(
           ),
         },
         {
+          path: "projects/:projectId/:section",
+          element: (
+            <Suspense fallback={<RouteFallback label="Loading project workspace" />}>
+              <ProjectWorkspacePage />
+            </Suspense>
+          ),
+        },
+        {
           path: "projects/:projectId/experiments/:experimentId",
+          element: (
+            <Suspense fallback={<RouteFallback label="Loading experiment workspace" />}>
+              <ProjectWorkspacePage />
+            </Suspense>
+          ),
+        },
+        {
+          path: "projects/:projectId/experiments/:experimentId/:section",
           element: (
             <Suspense fallback={<RouteFallback label="Loading experiment workspace" />}>
               <ProjectWorkspacePage />
@@ -228,7 +293,7 @@ export const router = createBrowserRouter(
         {
           path: "settings",
           element: (
-            <RoleGuard allow={["admin", "pi"]}>
+            <RoleGuard allow={["admin"]}>
               <Suspense fallback={<RouteFallback label="Loading settings" />}>
                 <SettingsPage />
               </Suspense>

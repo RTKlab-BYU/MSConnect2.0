@@ -4,19 +4,20 @@
 
 @layer base {
   :root {
-    --background: 210 38% 97%;
-    --foreground: 222 46% 11%;
+    color-scheme: light dark;
+    --background: 210 30% 96%;
+    --foreground: 215 39% 16%;
     --card: 0 0% 100%;
-    --card-foreground: 222 46% 11%;
+    --card-foreground: 215 39% 16%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222 46% 11%;
-    --primary: 211 56% 27%;
+    --popover-foreground: 215 39% 16%;
+    --primary: 212 54% 30%;
     --primary-foreground: 210 40% 98%;
-    --secondary: 210 32% 94%;
-    --secondary-foreground: 222 38% 18%;
-    --muted: 211 28% 92%;
-    --muted-foreground: 215 17% 43%;
-    --accent: 174 68% 29%;
+    --secondary: 210 25% 92%;
+    --secondary-foreground: 215 30% 22%;
+    --muted: 210 22% 94%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 194 55% 35%;
     --accent-foreground: 0 0% 100%;
     --destructive: 356 58% 45%;
     --destructive-foreground: 0 0% 100%;
@@ -26,41 +27,43 @@
     --warning-foreground: 30 100% 10%;
     --info: 209 72% 39%;
     --info-foreground: 0 0% 100%;
-    --border: 214 24% 86%;
-    --input: 214 23% 80%;
-    --ring: 213 49% 36%;
-    --radius: 0.9rem;
+    --border: 213 19% 89%;
+    --input: 213 19% 89%;
+    --ring: 198 55% 43%;
+    --radius: 0.5rem;
     --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.06);
     --shadow-md: 0 12px 28px rgb(15 23 42 / 0.08);
     --shadow-lg: 0 20px 48px rgb(15 23 42 / 0.12);
   }
 
-  .dark {
-    --background: 216 30% 8%;
-    --foreground: 214 24% 92%;
-    --card: 216 28% 11%;
-    --card-foreground: 214 24% 92%;
-    --popover: 216 28% 11%;
-    --popover-foreground: 214 24% 92%;
-    --primary: 210 58% 60%;
-    --primary-foreground: 216 34% 10%;
-    --secondary: 216 24% 16%;
-    --secondary-foreground: 214 24% 92%;
-    --muted: 216 22% 18%;
-    --muted-foreground: 214 16% 68%;
-    --accent: 172 54% 44%;
-    --accent-foreground: 216 34% 9%;
-    --destructive: 356 66% 58%;
-    --destructive-foreground: 0 0% 100%;
-    --success: 151 53% 46%;
-    --success-foreground: 216 34% 9%;
-    --warning: 42 87% 58%;
-    --warning-foreground: 30 100% 10%;
-    --info: 207 82% 62%;
-    --info-foreground: 216 34% 9%;
-    --border: 216 20% 22%;
-    --input: 216 20% 26%;
-    --ring: 210 58% 60%;
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --background: 216 18% 11%;
+      --foreground: 214 20% 92%;
+      --card: 216 17% 15%;
+      --card-foreground: 214 20% 92%;
+      --popover: 216 17% 15%;
+      --popover-foreground: 214 20% 92%;
+      --primary: 198 55% 59%;
+      --primary-foreground: 216 24% 11%;
+      --secondary: 216 15% 21%;
+      --secondary-foreground: 214 20% 92%;
+      --muted: 216 15% 18%;
+      --muted-foreground: 214 13% 69%;
+      --accent: 42 61% 61%;
+      --accent-foreground: 216 24% 11%;
+      --destructive: 356 66% 62%;
+      --destructive-foreground: 216 24% 11%;
+      --success: 151 53% 52%;
+      --success-foreground: 216 24% 11%;
+      --warning: 42 87% 64%;
+      --warning-foreground: 30 100% 10%;
+      --info: 198 55% 67%;
+      --info-foreground: 216 24% 11%;
+      --border: 216 13% 25%;
+      --input: 216 13% 25%;
+      --ring: 198 55% 59%;
+    }
   }
 
   * {
@@ -69,10 +72,8 @@
 
   body {
     @apply bg-background text-foreground antialiased;
-    background:
-      radial-gradient(circle at 12% 0%, hsl(var(--accent) / 0.1), transparent 28rem),
-      radial-gradient(circle at 88% 0%, hsl(var(--primary) / 0.1), transparent 30rem),
-      hsl(var(--background));
+    background: hsl(var(--background));
+    overflow-x: hidden;
     font-family:
       Aptos,
       "Avenir Next",
@@ -93,6 +94,11 @@
     min-width: 0;
   }
 
+  #root {
+    min-width: 0;
+    max-width: 100%;
+  }
+
   .table-scroll {
     min-width: 0;
     max-width: 100%;
@@ -109,5 +115,19 @@
     white-space: normal;
     overflow-wrap: anywhere;
     vertical-align: top;
+  }
+
+  @keyframes msconnect-progress-sweep {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(300%); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      scroll-behavior: auto !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }

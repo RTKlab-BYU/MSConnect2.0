@@ -9,7 +9,7 @@ export function StatusBadge({ status, className }: { status: string; className?:
   return (
     <Badge variant={definition.tone === "error" ? "error" : definition.tone} className={className}>
       <Icon className={cn("h-3.5 w-3.5", status === "running" && "animate-spin")} aria-hidden="true" />
-      <span>{definition.label}</span>
+      <span className="min-w-0 whitespace-normal break-words">{definition.label}</span>
     </Badge>
   );
 }

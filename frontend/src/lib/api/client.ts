@@ -113,3 +113,7 @@ export async function patchResource<T>(path: string, body: unknown) {
     body: JSON.stringify(body),
   });
 }
+
+export async function deleteResource<T = void>(path: string) {
+  return apiFetch<T>(path, { method: "DELETE" });
+}

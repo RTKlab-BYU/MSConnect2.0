@@ -1,7 +1,7 @@
 import type { Config } from "tailwindcss";
 
 const config = {
-  darkMode: ["class"],
+  darkMode: "media",
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
@@ -66,9 +66,12 @@ const config = {
         "3xl": ["1.875rem", { lineHeight: "2.25rem" }],
       },
       borderRadius: {
-        lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
+        sm: "0.25rem",
+        md: "0.375rem",
+        lg: "0.5rem",
+        xl: "0.625rem",
+        "2xl": "0.75rem",
+        "3xl": "0.875rem",
       },
       boxShadow: {
         sm: "var(--shadow-sm)",
