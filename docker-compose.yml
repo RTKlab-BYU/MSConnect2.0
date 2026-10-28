@@ -1,12 +1,17 @@
 services:
   web:
     image: ${MSCONNECT_IMAGE:-msconnect:local}
-    build: .
+    build:
+      context: .
+      args:
+        MSCONNECT_INSTANCE_PROFILE: ${MSCONNECT_INSTANCE_PROFILE:-kelly}
     restart: unless-stopped
     env_file:
       - path: .env
         required: false
     environment:
+      RAW_FILE_STORAGE_ROOT: ${RAW_FILE_STORAGE_ROOT:-/data/raw}
+      RESULTS_ROOT: ${RESULTS_ROOT:-/data/results}
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
       PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
@@ -50,6 +55,8 @@ services:
     environment:
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_WATCHER_TOKEN:-watcher-token}
       MSCONNECT_AGENT_NAME: ${WATCHER_AGENT_NAME:-watcher-1}
+      RAW_FILE_STORAGE_ROOT: ${RAW_FILE_STORAGE_ROOT:-/data/raw}
+      RESULTS_ROOT: ${RESULTS_ROOT:-/data/results}
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
       PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
@@ -84,6 +91,9 @@ services:
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
       MSCONNECT_AGENT_NAME: ${PROCESSOR_AGENT_NAME:-processor-1}
       MSCONNECT_PROCESSOR_ENGINE: ${PROCESSOR_ENGINE:-processor}
+      MSCONNECT_PROCESSOR_EXECUTION_BACKEND: local
+      RAW_FILE_STORAGE_ROOT: ${RAW_FILE_STORAGE_ROOT:-/data/raw}
+      RESULTS_ROOT: ${RESULTS_ROOT:-/data/results}
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
       PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
@@ -126,6 +136,9 @@ services:
       MSCONNECT_PROCESSOR_ENGINE: diann
       MSCONNECT_PROCESSOR_ENGINE_VERSION: ${DIANN_ENGINE_VERSION:-2.0}
       MSCONNECT_PROCESSOR_ENGINE_PROFILE: ${DIANN_ENGINE_PROFILE:-diann:2.0}
+      MSCONNECT_PROCESSOR_EXECUTION_BACKEND: local
+      RAW_FILE_STORAGE_ROOT: ${RAW_FILE_STORAGE_ROOT:-/data/raw}
+      RESULTS_ROOT: ${RESULTS_ROOT:-/data/results}
       MSCONNECT_IMAGE: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.0}
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
@@ -137,6 +150,56 @@ services:
       - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
       - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
       - ${BACKUP_HOST_PATH:-./backups}:/data/backup
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "agent_healthcheck", "--role", "processor"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  processor-slurm:
+    profiles: ["slurm"]
+    image: ${MSCONNECT_IMAGE:-msconnect:local}
+    build: .
+    restart: unless-stopped
+    command: >
+      sh -c "python manage.py run_processor_agent"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
+      MSCONNECT_AGENT_NAME: ${SLURM_AGENT_NAME:-diann-slurm-1}
+      MSCONNECT_PROCESSOR_ENGINE: diann
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: ${DIANN_ENGINE_VERSION:-2.0}
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: ${DIANN_ENGINE_PROFILE:-diann:2.0}
+      MSCONNECT_PROCESSOR_EXECUTION_BACKEND: slurm
+      RAW_FILE_STORAGE_ROOT: ${RAW_FILE_STORAGE_ROOT:-/data/raw}
+      RESULTS_ROOT: ${RESULTS_ROOT:-/data/results}
+      MSCONNECT_SLURM_HOST: ${MSCONNECT_SLURM_HOST:-}
+      MSCONNECT_SLURM_USER: ${MSCONNECT_SLURM_USER:-}
+      MSCONNECT_SLURM_PORT: ${MSCONNECT_SLURM_PORT:-22}
+      MSCONNECT_SLURM_REMOTE_ROOT: ${MSCONNECT_SLURM_REMOTE_ROOT:-}
+      MSCONNECT_SLURM_CONTAINER_IMAGE: ${MSCONNECT_SLURM_CONTAINER_IMAGE:-}
+      MSCONNECT_SLURM_PARTITION: ${MSCONNECT_SLURM_PARTITION:-}
+      MSCONNECT_SLURM_ACCOUNT: ${MSCONNECT_SLURM_ACCOUNT:-}
+      MSCONNECT_SLURM_CPUS: ${MSCONNECT_SLURM_CPUS:-16}
+      MSCONNECT_SLURM_MEMORY: ${MSCONNECT_SLURM_MEMORY:-64G}
+      MSCONNECT_SLURM_TIME: ${MSCONNECT_SLURM_TIME:-24:00:00}
+      MSCONNECT_SLURM_POLL_SECONDS: ${MSCONNECT_SLURM_POLL_SECONDS:-20}
+      MSCONNECT_SLURM_TIMEOUT_SECONDS: ${MSCONNECT_SLURM_TIMEOUT_SECONDS:-259200}
+      MSCONNECT_IMAGE: ${MSCONNECT_IMAGE:-msconnect:local}
+      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
+    volumes:
+      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+      - ${MSCONNECT_SLURM_SSH_KEY_PATH:-./secrets/slurm_id_ed25519}:/home/appuser/.ssh/id_ed25519:ro
+      - ${MSCONNECT_SLURM_KNOWN_HOSTS_PATH:-./secrets/slurm_known_hosts}:/home/appuser/.ssh/known_hosts:ro
     depends_on:
       web:
         condition: service_healthy
@@ -170,6 +233,8 @@ services:
       MSCONNECT_IMAGE: ${MSCONNECT_FRAGPIPE_IMAGE:-msconnect-processor-fragpipe:local}
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      RAW_FILE_STORAGE_ROOT: ${RAW_FILE_STORAGE_ROOT:-/data/raw}
+      RESULTS_ROOT: ${RESULTS_ROOT:-/data/results}
       PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
@@ -207,6 +272,8 @@ services:
       MSCONNECT_MSCONVERT_EXECUTABLE: msconvert
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      RAW_FILE_STORAGE_ROOT: ${RAW_FILE_STORAGE_ROOT:-/data/raw}
+      RESULTS_ROOT: ${RESULTS_ROOT:-/data/results}
       PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
@@ -248,6 +315,8 @@ services:
       MSCONNECT_IMAGE: ${MSCONNECT_SKYLINE_IMAGE:-msconnect-processor-skyline:26.1}
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
+      RAW_FILE_STORAGE_ROOT: ${RAW_FILE_STORAGE_ROOT:-/data/raw}
+      RESULTS_ROOT: ${RESULTS_ROOT:-/data/results}
       PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data

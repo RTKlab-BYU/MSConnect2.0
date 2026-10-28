@@ -11,13 +11,7 @@ def healthz(_request):
 
 
 def readyz(_request):
-    checks = {
-        "database": _database_check(),
-        "incoming_raw_root": _path_check(settings.INCOMING_RAW_ROOT, require_read=True),
-        "raw_file_storage_root": _path_check(settings.RAW_FILE_STORAGE_ROOT, require_read=True, require_write=True),
-        "results_root": _path_check(settings.RESULTS_ROOT, require_read=True, require_write=True),
-        "media_root": _path_check(settings.MEDIA_ROOT, require_read=True, require_write=True),
-    }
+    checks = readiness_snapshot()
     ok = all(item["ok"] for item in checks.values())
     return JsonResponse(
         {
@@ -27,6 +21,16 @@ def readyz(_request):
         },
         status=200 if ok else 503,
     )
+
+
+def readiness_snapshot():
+    return {
+        "database": _database_check(),
+        "incoming_raw_root": _path_check(settings.INCOMING_RAW_ROOT, require_read=True),
+        "raw_file_storage_root": _path_check(settings.RAW_FILE_STORAGE_ROOT, require_read=True, require_write=True),
+        "results_root": _path_check(settings.RESULTS_ROOT, require_read=True, require_write=True),
+        "media_root": _path_check(settings.MEDIA_ROOT, require_read=True, require_write=True),
+    }
 
 
 def _database_check():

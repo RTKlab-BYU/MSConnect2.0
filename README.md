@@ -75,6 +75,10 @@ The image build now compiles the React app and boots Django under a startup lock
 http://localhost/admin/
 ```
 
+For app-level invitations, role assignment, and email verification setup, see
+[`docs/user-access.md`](docs/user-access.md). The in-app admin page is
+`/app/admin/users/`.
+
 ## Local Push Checks
 
 Enable the repo-managed Git hooks once per clone:
@@ -204,7 +208,7 @@ Use these docs as the source of truth instead of spreading the same guidance acr
 
 ## Processing Agent
 
-The `processor` service claims queued `ProcessingJob` records from the main API, runs the configured local command, writes logs under `RESULTS_ROOT`, and reports completion or failure back to the API.
+The processor services claim jobs from the main API, run pinned engine commands on local networked workers or through the optional Slurm profile, and report artifacts back under `RESULTS_ROOT`. Stable watcher imports queue the per-sample jobs; the Analysis workspace can create snapshot-based project/experiment batches with a dependency-gated DIA-NN multi-file rollup. See `docs/processing-engines.md` for network storage and BYU Slurm setup.
 
 V1 pipeline execution is driven by `ProcessingPipeline.parameters`:
 

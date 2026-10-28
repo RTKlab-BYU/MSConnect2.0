@@ -1,5 +1,8 @@
 FROM node:22-slim AS frontend-build
 
+ARG MSCONNECT_INSTANCE_PROFILE=kelly
+ENV VITE_MSConnect_INSTANCE_PROFILE=${MSCONNECT_INSTANCE_PROFILE}
+
 WORKDIR /app
 
 COPY frontend/package*.json /app/frontend/
@@ -24,7 +27,11 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN adduser --disabled-password --gecos "" appuser
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-client rsync \
+    && rm -rf /var/lib/apt/lists/* \
+    && adduser --disabled-password --gecos "" appuser \
+    && install -d -m 0700 -o appuser -g appuser /home/appuser/.ssh
 
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir --upgrade pip \

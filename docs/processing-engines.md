@@ -43,6 +43,29 @@ Processors need the same logical paths for raw files, result outputs, references
 
 Linux containers normally mount these as `/data/raw`, `/data/results`, and `/data/shared`. Windows enterprise workers should mount the same shares at stable paths, for example `Z:\msconnect\raw`, `Z:\msconnect\results`, and `Z:\msconnect\shared`, and run the processor agent with matching environment variables.
 
+## Project Reanalysis Batches
+
+The project workspace's **Analysis** section queues a versioned analysis batch for one experiment or every experiment in a project. A batch captures the DIA-NN pipeline settings, reference paths and SHA-256 checksums, selected sample raw-file IDs, and the requested executor. It queues one sample job per sample-role run, followed by a DIA-NN multi-file experiment job. HYE/PRTC control runs are excluded from the sample set. The experiment job waits for every sample job and writes DIA-NN individual reports and matrices; its outputs remain attached to the batch job so experiment-level results are not attributed to the first sample.
+
+Linux DIA-NN workers consume mzML for Thermo `.raw` acquisitions. With `MSCONNECT_AUTO_QUEUE_SPECTRA_CONVERSION=1`, the watcher queues an msconvert prerequisite for the pre-acquisition DIA-NN pipeline, and the DIA-NN job waits for its ready derivative. Run the `processor-pwiz` conversion service alongside the DIA-NN workers. Bruker `.d` directory acquisitions are consumed directly and skip this conversion path.
+
+Reference FASTA and SPECLIB uploads from project setup are stored under `PROCESSOR_SHARED_STORAGE_ROOT/reference-assets/`, content-addressed by checksum, and shared by workers. An uploaded reference is attached to the project or experiment; the analysis batch snapshots its checksum and verifies that the referenced file still exists before queuing.
+
+## BYU Slurm Executor
+
+The `processor-slurm` Compose profile runs a lightweight API agent on a network host. It claims only jobs marked for the Slurm backend, stages raw inputs and references to an HPC scratch directory with `rsync`, submits an Apptainer command with `sbatch`, renews its API lease while Slurm runs, and syncs all result files back into the shared `RESULTS_ROOT` before completing the job. Reference assets are cached on the HPC shared filesystem by SHA-256, and raw inputs are cached for the lifetime of each analysis batch so individual jobs and the experiment rollup do not repeatedly transfer the same files. Batch input staging is removed after a successful rollup; shared reference cache entries persist for reuse. The remote root must be visible to every compute node; raw/reference sources must be mounted into the agent at their configured paths.
+
+Build or transfer a site-approved DIA-NN SIF to HPC storage, provision an SSH key restricted to the required scratch directory and Slurm commands, and populate a pinned `known_hosts` file. Configure the `MSCONNECT_SLURM_*` settings shown in `docs/env.processor.example`, then start the profile:
+
+```sh
+docker compose --profile slurm up -d processor-slurm
+docker compose --profile conversion up -d processor-pwiz
+```
+
+At minimum, configure `MSCONNECT_SLURM_HOST`, `MSCONNECT_SLURM_USER`, `MSCONNECT_SLURM_REMOTE_ROOT`, and `MSCONNECT_SLURM_CONTAINER_IMAGE`; set the site partition, account, CPUs, memory, and time limit to match BYU allocation policy. Mount the private key at `MSCONNECT_SLURM_SSH_KEY_PATH` and the verified host key file at `MSCONNECT_SLURM_KNOWN_HOSTS_PATH`. The SIF needs DIA-NN and its runtime dependencies, and must be readable from allocated compute nodes. Local processors continue to claim local-executor jobs independently.
+
+For an HPC-only rollout, use the Analysis executor selector to submit a batch to **BYU Slurm**. Select **Local processors** for jobs that should stay on the networked worker pool. Both executor lanes use the same job snapshots and artifact return path. Thermo conversion jobs remain on the local `processor-pwiz` lane; Slurm sample and rollup jobs stage the resulting mzML files.
+
 ## Boot Processor Nodes
 
 Each processor node is a long-running Django management command with a processor token, a stable node name, shared storage roots, and an engine identity. The engine identity is reported in heartbeats and appears in `/app/admin` and `/app/processing/admin`.
