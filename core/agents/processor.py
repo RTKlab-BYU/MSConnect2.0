@@ -30,9 +30,19 @@ class PreparedJobExecution:
 
 def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJobExecution:
     pipeline = job_payload.get("pipeline") or {}
+    job_metadata = job_payload.get("metadata") or {}
     raw_file = job_payload.get("raw_file") or {}
     run = job_payload.get("run") or {}
     parameters = pipeline.get("parameters") or {}
+    if job_metadata.get("job_kind") == "experiment_rollup":
+        parameters = {**parameters, "input_files": list(job_metadata.get("input_files") or [])}
+    elif job_metadata.get("analysis_batch_id") and job_metadata.get("job_kind") == "sample" and not parameters.get("library"):
+        parameters = {**parameters, "generate_speclib": False, "fasta_search": True, "out_library": ""}
+        tags = dict(parameters.get("tags") or {})
+        experimental = dict(tags.get("experimental") or {})
+        experimental.update({"generate_speclib": False, "fasta_search": True, "out_library": ""})
+        tags["experimental"] = experimental
+        parameters["tags"] = tags
     experiment_metadata = run.get("experiment_metadata") or {}
     project_metadata = run.get("project_metadata") or {}
     diann_metadata = experiment_metadata.get("diann") or {}
@@ -186,6 +196,12 @@ def _select_input_path(*, raw_file: dict, parameters: dict) -> str:
 
     adapter = str(parameters.get("adapter") or "").strip().lower()
     if adapter in {"diann", "dia-nn"}:
+        for derivative in raw_file.get("derivatives") or []:
+            derivative_type = str(derivative.get("derivative_type") or "").lower()
+            derivative_status = str(derivative.get("status") or "").lower()
+            path = str(derivative.get("path") or "").strip()
+            if derivative_type in {"mzml", "mzmlb"} and derivative_status == "ready" and path:
+                return path
         return raw_path
 
     return raw_path

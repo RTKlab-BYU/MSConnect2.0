@@ -141,6 +141,23 @@ class ProcessingStatus(models.TextChoices):
     RETRYING = "retrying", "Retrying"
 
 
+class AnalysisBatchStatus(models.TextChoices):
+    QUEUED = "queued", "Queued"
+    RUNNING = "running", "Running"
+    COMPLETE = "complete", "Complete"
+    FAILED = "failed", "Failed"
+
+
+class AnalysisExecutor(models.TextChoices):
+    LOCAL = "local", "Local processors"
+    SLURM = "slurm", "BYU Slurm"
+
+
+class ReferenceAssetType(models.TextChoices):
+    FASTA = "fasta", "FASTA"
+    SPECTRAL_LIBRARY = "spectral_library", "Spectral library"
+
+
 class PipelineEventType(models.TextChoices):
     FILE_DISCOVERED = "file_discovered", "File discovered"
     FILE_UPLOADED = "file_uploaded", "File uploaded"
@@ -364,6 +381,13 @@ class Project(TimestampedModel):
     title = models.CharField(max_length=255)
     code = models.CharField(max_length=80)
     pi = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="owned_projects")
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="projects_created",
+        blank=True,
+        null=True,
+    )
     status = models.CharField(max_length=32, choices=ProjectStatus.choices, default=ProjectStatus.ACTIVE)
     completed_at = models.DateTimeField(blank=True, null=True)
     description = models.TextField(blank=True)
@@ -377,6 +401,21 @@ class Project(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.code}: {self.title}"
+
+
+class ProjectMembership(TimestampedModel):
+    """A read-only project share for a user outside the project's lab membership."""
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="memberships")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="project_memberships")
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ("user__username",)
+        constraints = (models.UniqueConstraint(fields=("project", "user"), name="uniq_project_user_membership"),)
+
+    def __str__(self) -> str:
+        return f"{self.user} can view {self.project}"
 
 
 class AnalysisPreset(TimestampedModel):
@@ -493,6 +532,7 @@ class ProjectIntakeRequest(TimestampedModel):
                 title=intake.requested_title,
                 code=unique_code,
                 pi=preferred_pi,
+                owner=intake.submitted_by or preferred_pi,
                 status=ProjectStatus.ACTIVE,
                 description=intake.objective,
             )
@@ -876,6 +916,52 @@ class AcquisitionWorklist(TimestampedModel):
         return self.name
 
 
+class HyeTargetProfile(TimestampedModel):
+    """Versioned expected organism composition used to evaluate HYE A/B pairs."""
+
+    name = models.CharField(max_length=128)
+    version = models.CharField(max_length=32)
+    targets = models.JSONField(default=dict)
+    active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        ordering = ("name", "-created_at")
+        constraints = (models.UniqueConstraint(fields=("name", "version"), name="uniq_hye_target_profile_version"),)
+
+    def __str__(self) -> str:
+        return f"{self.name} v{self.version}"
+
+
+class ProjectAssistantThread(TimestampedModel):
+    """A private, persistent assistant conversation scoped to one project."""
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="assistant_threads")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="project_assistant_threads")
+    title = models.CharField(max_length=255, blank=True)
+    provider = models.CharField(max_length=32)
+    model = models.CharField(max_length=128)
+
+    class Meta:
+        ordering = ("-updated_at", "-id")
+
+    def __str__(self) -> str:
+        return f"{self.project.code}: {self.title or 'Research assistant'}"
+
+
+class ProjectAssistantMessage(TimestampedModel):
+    thread = models.ForeignKey(ProjectAssistantThread, on_delete=models.CASCADE, related_name="messages")
+    role = models.CharField(max_length=16, choices=(("user", "User"), ("assistant", "Assistant")))
+    content = models.TextField()
+    provider = models.CharField(max_length=32, blank=True)
+    model = models.CharField(max_length=128, blank=True)
+
+    class Meta:
+        ordering = ("created_at", "id")
+
+    def __str__(self) -> str:
+        return f"{self.role}: {self.content[:80]}"
+
+
 class WorklistEntry(TimestampedModel):
     worklist = models.ForeignKey(AcquisitionWorklist, on_delete=models.CASCADE, related_name="entries")
     run = models.OneToOneField(Run, on_delete=models.PROTECT, related_name="worklist_entry")
@@ -1041,6 +1127,13 @@ class ProcessingJob(TimestampedModel):
     run = models.ForeignKey(Run, on_delete=models.PROTECT, related_name="processing_jobs")
     pipeline = models.ForeignKey(ProcessingPipeline, on_delete=models.PROTECT, related_name="jobs")
     raw_file = models.ForeignKey(RawFile, on_delete=models.PROTECT, related_name="processing_jobs")
+    analysis_batch = models.ForeignKey(
+        "AnalysisBatch",
+        on_delete=models.SET_NULL,
+        related_name="jobs",
+        blank=True,
+        null=True,
+    )
     node = models.ForeignKey(
         ProcessingNode,
         on_delete=models.SET_NULL,
@@ -1085,6 +1178,47 @@ class ProcessingJobArtifact(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.job_id} {self.artifact_type}"
+
+
+class AnalysisBatch(TimestampedModel):
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="analysis_batches")
+    experiment = models.ForeignKey(Experiment, on_delete=models.CASCADE, related_name="analysis_batches")
+    pipeline = models.ForeignKey(ProcessingPipeline, on_delete=models.PROTECT, related_name="analysis_batches")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="analysis_batches")
+    executor = models.CharField(max_length=16, choices=AnalysisExecutor.choices, default=AnalysisExecutor.SLURM)
+    status = models.CharField(max_length=16, choices=AnalysisBatchStatus.choices, default=AnalysisBatchStatus.QUEUED)
+    parameters_snapshot = models.JSONField(default=dict, blank=True)
+    reference_snapshot = models.JSONField(default=dict, blank=True)
+    raw_file_ids = models.JSONField(default=list, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True)
+    finished_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+
+    def __str__(self) -> str:
+        return f"Analysis batch {self.id} · {self.project.code} · {self.experiment.name}"
+
+
+class ReferenceAsset(TimestampedModel):
+    asset_type = models.CharField(max_length=32, choices=ReferenceAssetType.choices)
+    filename = models.CharField(max_length=255)
+    storage_path = models.TextField(unique=True)
+    checksum_sha256 = models.CharField(max_length=64, db_index=True)
+    size_bytes = models.PositiveBigIntegerField()
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="reference_assets")
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="reference_assets", blank=True, null=True)
+    experiment = models.ForeignKey(Experiment, on_delete=models.CASCADE, related_name="reference_assets", blank=True, null=True)
+    scope = models.CharField(max_length=16, choices=(("experiment", "Experiment"), ("project", "Project")), default="experiment")
+    active = models.BooleanField(default=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("asset_type", "filename", "-created_at")
+
+    def __str__(self) -> str:
+        return f"{self.asset_type}: {self.filename} ({self.checksum_sha256[:12]})"
 
 
 class Protein(TimestampedModel):

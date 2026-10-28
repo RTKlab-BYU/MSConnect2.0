@@ -13,6 +13,8 @@ def should_queue_spectra_conversion_for_raw_file(raw_file: RawFile, *, processin
         return False
     if processing_job:
         required_engine = _required_engine_for_job(processing_job)
+        if required_engine in {"diann", "dia-nn"}:
+            return bool((processing_job.pipeline.parameters or {}).get("requires_mzml_input"))
         if required_engine and required_engine != "processor":
             return False
     return not raw_file.derivatives.filter(
@@ -31,6 +33,15 @@ def is_spectra_conversion_job(job: ProcessingJob) -> bool:
 
 def job_dependencies_satisfied(job: ProcessingJob) -> bool:
     """Require a converted derivative before a non-conversion job can run."""
+    dependency_ids = (getattr(job, "metadata", None) or {}).get("depends_on_job_ids") or []
+    if dependency_ids:
+        dependency_statuses = dict(
+            ProcessingJob.objects.filter(id__in=dependency_ids).values_list("id", "status")
+        )
+        if len(dependency_statuses) != len(set(dependency_ids)):
+            return False
+        if any(status != "complete" for status in dependency_statuses.values()):
+            return False
     if is_spectra_conversion_job(job):
         return True
     raw_file = getattr(job, "raw_file", None)

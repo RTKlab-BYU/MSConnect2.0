@@ -1,6 +1,7 @@
+from django.db.models import Q
 from rest_framework import permissions
 
-from .models import UserRole
+from .models import Project, UserRole
 
 
 def is_admin(user) -> bool:
@@ -28,6 +29,16 @@ def active_lab_ids(user):
 
     memberships = user.lab_memberships.filter(active=True).values_list("lab_id", flat=True)
     return list(memberships)
+
+
+def accessible_project_ids(user):
+    if not user or not user.is_authenticated:
+        return []
+    return list(
+        Project.objects.filter(Q(owner_id=user.pk) | Q(memberships__user_id=user.pk, memberships__active=True))
+        .values_list("id", flat=True)
+        .distinct()
+    )
 
 
 class RoleScopedWritePermission(permissions.BasePermission):

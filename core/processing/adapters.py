@@ -104,18 +104,21 @@ def _diann_plan(*, parameters: dict, placeholders: dict[str, str], results_dir: 
     effective = diann_effective_settings(parameters)
     executable = _command_prefix(effective.get("executable") or "diann")
     report_name = _substitute(str(effective.get("report") or "diann-report.parquet"), placeholders)
-    temp_dir = _substitute(str(effective.get("temp") or str(results_dir)), placeholders)
+    temp_dir = _substitute(str(effective.get("temp") or str(results_dir / "temp")), placeholders)
     report_path = str((results_dir / report_name).resolve())
     report_format = Path(report_name).suffix.lower().lstrip(".") or "parquet"
-    command = [
-        *executable,
-        "--f",
-        placeholders["raw_file_path"],
+    input_files = parameters.get("input_files") or [placeholders["raw_file_path"]]
+    if not isinstance(input_files, list) or not input_files or not all(str(path).strip() for path in input_files):
+        raise ValueError("DIA-NN input_files must be a non-empty list of paths when provided.")
+    command = [*executable]
+    for input_file in input_files:
+        command.extend(["--f", _substitute(str(input_file), placeholders)])
+    command.extend([
         "--out",
         report_path,
         "--temp",
         temp_dir,
-    ]
+    ])
     library = effective.get("library")
     generate_speclib = bool(effective.get("generate_speclib"))
     if library:

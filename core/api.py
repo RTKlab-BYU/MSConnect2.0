@@ -3,8 +3,10 @@ import hashlib
 import json
 import math
 import mimetypes
+import os
 import re
 import shutil
+import tempfile
 import uuid
 import zipfile
 from datetime import datetime, timedelta
@@ -14,18 +16,24 @@ from statistics import mean, median, pstdev
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
+from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.core.validators import validate_email
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Count, F, Prefetch, Q, Sum
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+from django.utils.text import slugify
 from rest_framework import filters, pagination, permissions, serializers, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import MethodNotAllowed, PermissionDenied, ValidationError
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -35,6 +43,7 @@ from core.processing.diann import (
     site_performance_tags,
 )
 from core.processing.registry import resolve_pipeline_parameters, validate_diann_pipeline_settings
+from core.services.analysis_batches import queue_project_analysis_batches
 from core.services.batch_rerun import rerun_latest_diann_batch
 from core.services.lifecycle import (
     recompute_experiment_and_project_status,
@@ -54,10 +63,11 @@ from core.services.worklist_generation import (
     WorklistGenerationError,
     generate_vendor_worklists,
     generated_worklist_rows,
+    validate_generated_hye_pairs,
 )
 from ingest.result_import import ResultTableImportError, import_diann_report, import_result_tables
 from ingest.services import build_storage_path, find_run_for_path, parse_filename_metadata, record_ingestion_failure
-from msconnect.health import _database_check, _path_check
+from msconnect.health import readiness_snapshot
 
 from .agent_auth import AgentTokenAuthentication
 from .models import (
@@ -67,6 +77,9 @@ from .models import (
     AcquisitionRouteStatus,
     AcquisitionSourceRootStatus,
     AcquisitionWorklist,
+    AnalysisBatch,
+    AnalysisBatchStatus,
+    AnalysisExecutor,
     AnalysisPreset,
     DeploymentRelease,
     DeploymentSetting,
@@ -76,6 +89,7 @@ from .models import (
     Experiment,
     Facility,
     FileMatchException,
+    HyeTargetProfile,
     Instrument,
     InstrumentConfiguration,
     IntakeRecordStatus,
@@ -98,6 +112,7 @@ from .models import (
     ProcessingStatus,
     Project,
     ProjectIntakeRequest,
+    ProjectMembership,
     Protein,
     ProteinIdentification,
     ProteinQuant,
@@ -108,6 +123,8 @@ from .models import (
     RawFileDerivative,
     RawFileDerivativeType,
     RawFileStatus,
+    ReferenceAsset,
+    ReferenceAssetType,
     ReleaseChannel,
     Run,
     RunFileRole,
@@ -121,7 +138,7 @@ from .models import (
     WorklistEntry,
     WorklistStatus,
 )
-from .permissions import AgentRolePermission, RoleScopedWritePermission, active_lab_ids, is_admin, user_role
+from .permissions import AgentRolePermission, RoleScopedWritePermission, accessible_project_ids, active_lab_ids, is_admin, user_role
 
 User = get_user_model()
 
@@ -179,6 +196,20 @@ class InstrumentConfigurationSerializer(BaseSerializer):
 class ProjectSerializer(BaseSerializer):
     class Meta(BaseSerializer.Meta):
         model = Project
+        read_only_fields = ("owner",)
+
+
+class ProjectMembershipSerializer(BaseSerializer):
+    username = serializers.CharField(source="user.username", read_only=True)
+    display_name = serializers.SerializerMethodField()
+
+    class Meta(BaseSerializer.Meta):
+        model = ProjectMembership
+        fields = ("id", "project", "user", "username", "display_name", "active", "created_at")
+        read_only_fields = ("created_at",)
+
+    def get_display_name(self, obj):
+        return obj.user.get_full_name() or obj.user.username
 
 
 class AnalysisPresetSerializer(BaseSerializer):
@@ -218,6 +249,7 @@ class ProjectPreAcquisitionSetupSerializer(serializers.Serializer):
     sample_rows = serializers.ListField(child=serializers.DictField(), required=False)
     plate_type = serializers.ChoiceField(choices=("96", "384"), default="96")
     hye_interval = serializers.IntegerField(min_value=0, max_value=100, default=10)
+    hye_target_profile = serializers.PrimaryKeyRelatedField(queryset=HyeTargetProfile.objects.filter(active=True), required=False, allow_null=True)
     experiment_name = serializers.CharField(max_length=255, default="Discovery DIA")
     worklist_name = serializers.CharField(max_length=255, default="Plate 1 DIA acquisition order")
     instrument_configuration = serializers.PrimaryKeyRelatedField(
@@ -231,6 +263,8 @@ class ProjectPreAcquisitionSetupSerializer(serializers.Serializer):
     processing_preset = serializers.CharField(max_length=128, default="DIA-NN speclib build")
     fasta_upload_name = serializers.CharField(max_length=255, allow_blank=True, required=False)
     speclib_upload_name = serializers.CharField(max_length=255, allow_blank=True, required=False)
+    fasta_reference_asset_id = serializers.IntegerField(min_value=1, required=False)
+    speclib_reference_asset_id = serializers.IntegerField(min_value=1, required=False)
     speclib_scope = serializers.ChoiceField(choices=("experiment", "project"), default="experiment")
     speclib_build_runs = serializers.IntegerField(min_value=1, max_value=20, default=3)
     diann_version = serializers.CharField(max_length=128, default="2.0")
@@ -302,6 +336,10 @@ class WorklistImportSerializer(serializers.Serializer):
     worklist_name = serializers.CharField(max_length=255, default="Imported LC-MS worklist")
     experiment_name = serializers.CharField(max_length=255, default="Default experiment")
     diann_version = serializers.CharField(max_length=128, default="2.0")
+    hye_target_profile = serializers.PrimaryKeyRelatedField(queryset=HyeTargetProfile.objects.filter(active=True), required=False, allow_null=True)
+    ms_filename = serializers.CharField(max_length=255, allow_blank=True, required=False)
+    lc_filename = serializers.CharField(max_length=255, allow_blank=True, required=False)
+    lc_rows = WorklistImportRowSerializer(many=True, required=False, default=list)
     rows = WorklistImportRowSerializer(many=True)
 
     def validate_rows(self, rows):
@@ -563,11 +601,18 @@ class AcquisitionAgentSerializer(BaseSerializer):
 
 class AcquisitionRouteSerializer(BaseSerializer):
     agent_name = serializers.CharField(source="agent.name", read_only=True)
+    agent_status = serializers.SerializerMethodField()
+    agent_last_seen_at = serializers.DateTimeField(source="agent.last_seen_at", read_only=True)
     project_code = serializers.CharField(source="project.code", read_only=True)
 
     class Meta(BaseSerializer.Meta):
         model = AcquisitionRoute
         fields = "__all__"
+
+    def get_agent_status(self, obj):
+        if not obj.agent.last_seen_at:
+            return "never"
+        return "online" if (timezone.now() - obj.agent.last_seen_at).total_seconds() <= 120 else "stale"
 
     def validate(self, attrs):
         source_prefix = str(attrs.get("source_prefix", getattr(self.instance, "source_prefix", "")) or "")
@@ -619,6 +664,30 @@ class AcquisitionWorklistSerializer(BaseSerializer):
         model = AcquisitionWorklist
 
 
+class HyeTargetProfileSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = HyeTargetProfile
+
+    def validate_targets(self, value):
+        if not isinstance(value, dict) or not value:
+            raise serializers.ValidationError("Provide target fractions for at least one organism.")
+        totals = {"a": 0.0, "b": 0.0}
+        for organism, mixes in value.items():
+            if not isinstance(organism, str) or not organism.strip() or not isinstance(mixes, dict):
+                raise serializers.ValidationError("Each organism must define numeric A and B target fractions.")
+            for mix in ("a", "b"):
+                try:
+                    fraction = float(mixes[mix])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise serializers.ValidationError(f"{organism} must define numeric {mix.upper()} fraction.") from exc
+                if not math.isfinite(fraction) or fraction < 0:
+                    raise serializers.ValidationError("HYE target fractions must be finite and non-negative.")
+                totals[mix] += fraction
+        if any(abs(total - 1.0) > 0.02 for total in totals.values()):
+            raise serializers.ValidationError("HYE A and B target fractions must each sum to 1.0 (±0.02).")
+        return value
+
+
 class WorklistEntrySerializer(BaseSerializer):
     class Meta(BaseSerializer.Meta):
         model = WorklistEntry
@@ -627,6 +696,29 @@ class WorklistEntrySerializer(BaseSerializer):
 class ProcessingPipelineSerializer(BaseSerializer):
     class Meta(BaseSerializer.Meta):
         model = ProcessingPipeline
+
+
+class AnalysisBatchSerializer(BaseSerializer):
+    project_code = serializers.CharField(source="project.code", read_only=True)
+    experiment_name = serializers.CharField(source="experiment.name", read_only=True)
+    pipeline_name = serializers.CharField(source="pipeline.name", read_only=True)
+    pipeline_version = serializers.CharField(source="pipeline.version", read_only=True)
+    job_ids = serializers.SerializerMethodField()
+
+    class Meta(BaseSerializer.Meta):
+        model = AnalysisBatch
+        fields = "__all__"
+        read_only_fields = tuple(field.name for field in AnalysisBatch._meta.fields)
+
+    def get_job_ids(self, obj):
+        return list(obj.jobs.order_by("id").values_list("id", flat=True))
+
+
+class ReferenceAssetSerializer(BaseSerializer):
+    class Meta(BaseSerializer.Meta):
+        model = ReferenceAsset
+        fields = "__all__"
+        read_only_fields = tuple(field.name for field in ReferenceAsset._meta.fields)
 
 
 class DeploymentReleaseSerializer(BaseSerializer):
@@ -711,6 +803,7 @@ class ProcessingNodeSerializer(BaseSerializer):
     health = serializers.SerializerMethodField()
     active_control = serializers.SerializerMethodField()
     seconds_since_heartbeat = serializers.SerializerMethodField()
+    health_guidance = serializers.SerializerMethodField()
 
     class Meta(BaseSerializer.Meta):
         model = ProcessingNode
@@ -719,16 +812,10 @@ class ProcessingNodeSerializer(BaseSerializer):
         return (obj.metadata or {}).get("ip_address") or (obj.metadata or {}).get("remote_addr") or ""
 
     def get_health(self, obj):
-        if obj.status == ProcessingNodeStatus.ERROR:
-            return "red"
-        if not obj.last_heartbeat_at:
-            return "red"
-        age = (timezone.now() - obj.last_heartbeat_at).total_seconds()
-        if age > 180:
-            return "red"
-        if age > 75:
-            return "yellow"
-        return "green"
+        return _processing_node_health(obj)[0]
+
+    def get_health_guidance(self, obj):
+        return _processing_node_health(obj)[1]
 
     def get_active_control(self, obj):
         return (obj.metadata or {}).get("control") or {}
@@ -737,6 +824,27 @@ class ProcessingNodeSerializer(BaseSerializer):
         if not obj.last_heartbeat_at:
             return None
         return int((timezone.now() - obj.last_heartbeat_at).total_seconds())
+
+
+def _processing_node_health(node, now=None):
+    now = now or timezone.now()
+    if node.status in {ProcessingNodeStatus.ERROR, ProcessingNodeStatus.OFFLINE}:
+        return "red", "Red: node is marked offline/error. Check its process/logs, API/token connectivity, and storage mounts; restart after correcting the cause."
+    if not node.last_heartbeat_at:
+        return "red", "Red: no heartbeat has ever been recorded. Start the agent and verify its API URL and token."
+    age = max(0, (now - node.last_heartbeat_at).total_seconds())
+    if age > 180:
+        return "red", "Red: heartbeat is older than 180 seconds. Check the agent process, network/API reachability, and host clock, then restart."
+    if age > 75:
+        return "yellow", "Yellow: heartbeat is 76–180 seconds old. Check agent/network latency; this clears after a heartbeat arrives within 75 seconds."
+    return "green", "Green: heartbeat is current (75 seconds or newer)."
+
+
+def _readiness_guidance(key, check):
+    if key == "database":
+        return "Verify the database service, credentials, network, and migrations, then re-run /readyz."
+    path = check.get("path", "the configured path")
+    return f"Verify {path} is mounted inside the web container and readable; grant write access where required, then re-run /readyz."
 
 
 class ProcessingNodeEventSerializer(BaseSerializer):
@@ -952,12 +1060,54 @@ class SignupSerializer(serializers.Serializer):
     )
 
 
+class AdminUserInviteSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+    email = serializers.EmailField()
+    lab = serializers.PrimaryKeyRelatedField(queryset=Lab.objects.filter(active=True))
+    global_role = serializers.ChoiceField(choices=UserRole.choices, default=UserRole.RESEARCHER)
+    membership_role = serializers.ChoiceField(choices=UserRole.choices, default=UserRole.RESEARCHER)
+
+
+class AdminUserAccessUpdateSerializer(serializers.Serializer):
+    lab_id = serializers.IntegerField(min_value=1)
+    global_role = serializers.ChoiceField(choices=UserRole.choices)
+    membership_role = serializers.ChoiceField(choices=UserRole.choices)
+    membership_active = serializers.BooleanField()
+
+
+class AdminUniversityCreateSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=255)
+    abbreviation = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    website = serializers.URLField(required=False, allow_blank=True)
+
+
+class AdminFacilityCreateSerializer(serializers.Serializer):
+    university = serializers.PrimaryKeyRelatedField(queryset=University.objects.filter(active=True))
+    name = serializers.CharField(max_length=255)
+    slug = serializers.SlugField(max_length=80, required=False, allow_blank=True)
+    contact_email = serializers.EmailField(required=False, allow_blank=True)
+
+
+class AdminLabCreateSerializer(serializers.Serializer):
+    facility = serializers.PrimaryKeyRelatedField(queryset=Facility.objects.filter(active=True))
+    name = serializers.CharField(max_length=255)
+    slug = serializers.SlugField(max_length=80, required=False, allow_blank=True)
+    billing_code = serializers.CharField(max_length=128, required=False, allow_blank=True)
+
+
+class AcceptInvitationSerializer(serializers.Serializer):
+    uid = serializers.CharField(max_length=128)
+    token = serializers.CharField(max_length=256)
+    password = serializers.CharField(min_length=12, write_only=True)
+
+
 class CurrentUserSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     username = serializers.CharField()
-    email = serializers.CharField()
+    email = serializers.CharField(allow_blank=True)
     is_superuser = serializers.BooleanField()
     global_role = serializers.CharField()
+    instance_label = serializers.CharField()
     email_verified_at = serializers.DateTimeField(allow_null=True, required=False)
     labs = serializers.ListField(child=serializers.DictField())
     active_lab_ids = serializers.ListField(child=serializers.IntegerField())
@@ -974,6 +1124,47 @@ def _normalize_qc_program(value: str | None, file_role: str = "") -> str:
     if normalized in {choice for choice, _label in QcProgram.choices}:
         return normalized
     return QcProgram.NONE
+
+
+DEFAULT_HYE_TARGETS = {
+    "Homo sapiens": {"a": 0.65, "b": 0.65},
+    "Saccharomyces cerevisiae": {"a": 0.30, "b": 0.15},
+    "Escherichia coli": {"a": 0.05, "b": 0.20},
+}
+
+
+def hye_target_profile_snapshot(profile=None):
+    profile = profile or HyeTargetProfile.objects.filter(active=True).order_by("name", "-created_at").first()
+    if profile:
+        return {"id": profile.id, "name": profile.name, "version": profile.version, "targets": profile.targets}
+    return {"id": None, "name": "HYE Standard", "version": "1.0", "targets": DEFAULT_HYE_TARGETS}
+
+
+def validate_hye_worklist_pairs(worklist):
+    entries = list(
+        worklist.entries.filter(is_active=True)
+        .filter(Q(file_role=RunFileRole.HYE) | Q(qc_program=QcProgram.HYE))
+        .select_related("run__sample")
+        .order_by("position")
+    )
+    grouped = {}
+    errors = []
+    for entry in entries:
+        label = entry.hye_pair_label.strip()
+        if not label:
+            errors.append(f"{entry.expected_filename}: HYE entry needs a pair label.")
+            continue
+        mix = entry.run.sample.name.strip().upper()
+        if mix not in {"HYE-A", "HYE-B"}:
+            errors.append(f"{label}: sample must be named HYE-A or HYE-B (found {entry.run.sample.name}).")
+            continue
+        grouped.setdefault(label, {"HYE-A": [], "HYE-B": []})[mix].append(entry)
+    for label, mixes in grouped.items():
+        for mix in ("HYE-A", "HYE-B"):
+            count = len(mixes[mix])
+            if count != 1:
+                errors.append(f"{label}: expected exactly one {mix} entry; found {count}.")
+    return errors
 
 
 def _normalize_run_file_role(value: str | None) -> str:
@@ -1033,25 +1224,33 @@ def _normalize_organisms(value) -> list[str]:
     return normalized or ["human"]
 
 
-def _resolve_reference_assets(data: dict) -> dict:
+def _resolve_reference_assets(data: dict, *, user=None, project=None, experiment=None) -> dict:
     organisms = _normalize_organisms(data.get("organisms"))
     preset_version = "2026Q3"
     fasta_upload = (data.get("fasta_upload_name") or "").strip()
     speclib_upload = (data.get("speclib_upload_name") or "").strip()
+    fasta_asset = _find_reference_asset(
+        data.get("fasta_reference_asset_id"), ReferenceAssetType.FASTA, user=user, project=project, experiment=experiment
+    )
+    speclib_asset = _find_reference_asset(
+        data.get("speclib_reference_asset_id"),
+        ReferenceAssetType.SPECTRAL_LIBRARY,
+        user=user,
+        project=project,
+        experiment=experiment,
+    )
 
-    fasta_path = data.get("fasta_path", "")
-    speclib_path = data.get("speclib_path", "")
+    fasta_path = fasta_asset.storage_path if fasta_asset else data.get("fasta_path", "")
+    speclib_path = speclib_asset.storage_path if speclib_asset else data.get("speclib_path", "")
     if not fasta_path:
-        fasta_path = (
+        fasta_path = fasta_asset.storage_path if fasta_asset else (
             f"/data/reference/uploads/{_filename_token(fasta_upload)}.fasta"
-            if fasta_upload
-            else f"/data/reference/managed/{preset_version}/{'_'.join(organisms)}.fasta"
+            if fasta_upload else f"/data/reference/managed/{preset_version}/{'_'.join(organisms)}.fasta"
         )
     if not speclib_path:
-        speclib_path = (
+        speclib_path = speclib_asset.storage_path if speclib_asset else (
             f"/data/reference/uploads/{_filename_token(speclib_upload)}.speclib"
-            if speclib_upload
-            else f"/data/reference/managed/{preset_version}/{'_'.join(organisms)}.speclib"
+            if speclib_upload else f"/data/reference/managed/{preset_version}/{'_'.join(organisms)}.speclib"
         )
 
     return {
@@ -1061,10 +1260,41 @@ def _resolve_reference_assets(data: dict) -> dict:
         "fasta_path": fasta_path,
         "speclib_path": speclib_path,
         "uploads": {
-            "fasta": fasta_upload,
-            "speclib": speclib_upload,
+            "fasta": fasta_asset.filename if fasta_asset else fasta_upload,
+            "speclib": speclib_asset.filename if speclib_asset else speclib_upload,
         },
+        "fasta_asset": _reference_asset_snapshot(fasta_asset),
+        "speclib_asset": _reference_asset_snapshot(speclib_asset),
         "components": [REFERENCE_PRESETS[organism] for organism in organisms],
+    }
+
+
+def _find_reference_asset(asset_id, asset_type, *, user=None, project=None, experiment=None):
+    if not asset_id:
+        return None
+    asset = ReferenceAsset.objects.filter(pk=asset_id, asset_type=asset_type, active=True).first()
+    if not asset:
+        raise ValidationError({"reference_assets": f"The selected {asset_type} asset does not exist or is inactive."})
+    if asset.project_id and (not project or asset.project_id != project.id):
+        raise PermissionDenied("This reference asset belongs to a different project.")
+    if not asset.project_id and asset.uploaded_by_id != getattr(user, "id", None):
+        raise PermissionDenied("Only the uploader can attach an unassigned reference asset.")
+    if asset.experiment_id and (not experiment or asset.experiment_id != experiment.id):
+        raise PermissionDenied("This reference asset belongs to a different experiment.")
+    return asset
+
+
+def _reference_asset_snapshot(asset):
+    if not asset:
+        return {}
+    return {
+        "id": asset.id,
+        "filename": asset.filename,
+        "path": asset.storage_path,
+        "checksum_sha256": asset.checksum_sha256,
+        "size_bytes": asset.size_bytes,
+        "asset_type": asset.asset_type,
+        "scope": asset.scope,
     }
 
 
@@ -1194,6 +1424,7 @@ def _managed_storage_roots() -> tuple[Path, ...]:
     return (
         Path(settings.RESULTS_ROOT).resolve(),
         Path(settings.RAW_FILE_STORAGE_ROOT).resolve(),
+        Path(settings.PROCESSOR_SHARED_STORAGE_ROOT).resolve(),
         Path(settings.MEDIA_ROOT).resolve(),
     )
 
@@ -1720,6 +1951,13 @@ def _deployment_setting() -> DeploymentSetting:
     return deployment_setting
 
 
+def _instance_display_label() -> str:
+    metadata = DeploymentSetting.objects.filter(scope="site").values_list("metadata", flat=True).first() or {}
+    identity = metadata.get("instance_identity", {}) if isinstance(metadata, dict) else {}
+    label = identity.get("primary_lab_name", "") if isinstance(identity, dict) else ""
+    return str(label or "").strip()[:80] or "Research workspace"
+
+
 def _record_file_match_exception(raw_file: RawFile, *, reason: str, project=None, experiment=None, metadata=None):
     exception, created = FileMatchException.objects.get_or_create(
         raw_file=raw_file,
@@ -1807,6 +2045,10 @@ def _node_can_run_job(node: ProcessingNode, job: ProcessingJob) -> bool:
         return True
     if required_engine not in _engine_aliases(node.node_type):
         return False
+    required_backend = str((job.metadata or {}).get("execution_backend") or "local").strip().lower()
+    node_backend = str((node.settings or {}).get("execution_backend") or "local").strip().lower()
+    if required_backend != node_backend:
+        return False
     if required_engine in {"diann", "dia-nn"} and not _diann_input_ready(job):
         return False
     required_version = _required_engine_version_for_job(job)
@@ -1845,9 +2087,28 @@ def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
             "status": derivative.status,
             "path": derivative.path,
             "format": derivative.format,
+            "size_bytes": derivative.size_bytes,
+            "checksum_sha256": derivative.checksum_sha256,
         }
         for derivative in job.raw_file.derivatives.order_by("derivative_type", "-updated_at")
     ]
+    pipeline_parameters = job.pipeline.parameters
+    job_metadata = dict(job.metadata or {})
+    if (
+        worklist_entry
+        and _required_engine_for_job(job) in {"diann", "dia-nn"}
+        and isinstance((worklist_entry.worklist.metadata or {}).get("processing_plan"), dict)
+    ):
+        pipeline_parameters = worklist_entry.worklist.metadata["processing_plan"]
+    if job.analysis_batch_id:
+        batch_metadata = job.analysis_batch.metadata or {}
+        pipeline_parameters = job.analysis_batch.parameters_snapshot or pipeline_parameters
+        if (job.metadata or {}).get("job_kind") == "experiment_rollup":
+            pipeline_parameters = batch_metadata.get("rollup_parameters") or pipeline_parameters
+            resolved_inputs, resolved_checksums = _analysis_batch_diann_inputs(job.analysis_batch)
+            pipeline_parameters = {**pipeline_parameters, "input_files": resolved_inputs}
+            job_metadata["input_files"] = resolved_inputs
+            job_metadata["input_file_checksums"] = resolved_checksums
     return {
         "id": job.id,
         "status": job.status,
@@ -1857,7 +2118,7 @@ def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
         "max_attempts": job.max_attempts,
         "created_at": job.created_at,
         "metadata": {
-            **(job.metadata or {}),
+            **job_metadata,
             "required_engine": _required_engine_for_job(job),
             "required_engine_version": _required_engine_version_for_job(job),
         },
@@ -1887,13 +2148,37 @@ def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
             "name": job.pipeline.name,
             "version": job.pipeline.version,
             "container_image": job.pipeline.container_image,
-            "parameters": job.pipeline.parameters,
+            "parameters": pipeline_parameters,
         },
         "node": {
             "id": job.node_id,
             "name": job.node.name if job.node_id else None,
         },
     }
+
+
+def _analysis_batch_diann_inputs(batch: AnalysisBatch) -> tuple[list[str], list[str]]:
+    raw_files = {
+        raw.id: raw
+        for raw in RawFile.objects.filter(id__in=batch.raw_file_ids).prefetch_related("derivatives")
+    }
+    paths = []
+    checksums = []
+    for raw_id in batch.raw_file_ids:
+        raw_file = raw_files.get(raw_id)
+        if not raw_file:
+            continue
+        derivative = (
+            raw_file.derivatives.filter(
+                derivative_type__in=(RawFileDerivativeType.MZML, RawFileDerivativeType.MZMLB),
+                status=DerivativeStatus.READY,
+            )
+            .order_by("-updated_at", "-id")
+            .first()
+        )
+        paths.append(derivative.path if derivative else raw_file.storage_path)
+        checksums.append(derivative.checksum_sha256 if derivative else raw_file.checksum_sha256)
+    return paths, checksums
 
 
 class AgentApiView(APIView):
@@ -2316,6 +2601,9 @@ class ProcessingJobStartView(AgentApiView):
         job.error_message = ""
         job.lease_expires_at = timezone.now() + timedelta(seconds=settings.MSCONNECT_PROCESSING_LEASE_SECONDS)
         job.save(update_fields=["status", "started_at", "finished_at", "error_message", "lease_expires_at", "updated_at"])
+        if job.analysis_batch_id and job.analysis_batch.status == AnalysisBatchStatus.QUEUED:
+            job.analysis_batch.status = AnalysisBatchStatus.RUNNING
+            job.analysis_batch.save(update_fields=["status", "updated_at"])
 
         node.status = ProcessingNodeStatus.BUSY
         node.last_heartbeat_at = timezone.now()
@@ -2364,13 +2652,15 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
         if job.status not in {ProcessingStatus.ASSIGNED, ProcessingStatus.RUNNING}:
             raise ValidationError({"status": "Only assigned or running jobs can be completed."})
 
+        is_experiment_rollup = (job.metadata or {}).get("job_kind") == "experiment_rollup"
+
         protein_table = _resolve_results_path(request.data.get("protein_table_path"))
         peptide_table = _resolve_results_path(request.data.get("peptide_table_path"))
         log_path = _resolve_results_path(request.data.get("log_path"))
         delimiter = request.data.get("delimiter") or None
 
         result_summary = None
-        if protein_table or peptide_table:
+        if (protein_table or peptide_table) and not is_experiment_rollup:
             try:
                 result_summary = import_result_tables(
                     job=job,
@@ -2436,7 +2726,7 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
             and str(artifact.path).lower().endswith(".parquet")
             and Path(artifact.path).exists()
         ]
-        if diann_reports:
+        if diann_reports and not is_experiment_rollup:
             try:
                 diann_summary = import_diann_report(job=job, report_path=diann_reports[0])
             except ResultTableImportError as exc:
@@ -2473,7 +2763,16 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
                 experiment_metadata["diann"] = diann_metadata
                 experiment.metadata = experiment_metadata
                 experiment.save(update_fields=["metadata", "updated_at"])
-                policy = (job.pipeline.parameters or {}).get("speclib_policy") or {}
+                if job.analysis_batch_id:
+                    job_parameters = job.analysis_batch.parameters_snapshot or job.pipeline.parameters or {}
+                else:
+                    worklist_entry = getattr(job.run, "worklist_entry", None)
+                    job_parameters = (
+                        (worklist_entry.worklist.metadata or {}).get("processing_plan")
+                        if worklist_entry
+                        else None
+                    ) or job.pipeline.parameters or {}
+                policy = job_parameters.get("speclib_policy") or {}
                 if policy.get("scope") == "project":
                     project = experiment.project
                     project_metadata = dict(project.metadata or {})
@@ -2484,7 +2783,7 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
                     project.metadata = project_metadata
                     project.save(update_fields=["metadata", "updated_at"])
 
-        if result_summary or protein_table or peptide_table:
+        if (result_summary or protein_table or peptide_table) and not is_experiment_rollup:
             record_pipeline_event(
                 event_type="results_parsed",
                 project=job.run.sample.experiment.project,
@@ -2532,7 +2831,9 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
             ]
         )
 
-        if is_spectra_conversion_job(job):
+        if is_experiment_rollup:
+            pass
+        elif is_spectra_conversion_job(job):
             # Conversion is an intermediate derivative. It must not close the
             # run or make an experiment appear complete before analysis.
             if job.raw_file.status not in {RawFileStatus.FAILED, RawFileStatus.PROCESSED}:
@@ -2564,6 +2865,17 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
             },
         )
 
+        if job.analysis_batch_id:
+            batch = job.analysis_batch
+            if is_experiment_rollup:
+                batch.status = AnalysisBatchStatus.COMPLETE
+                batch.finished_at = timezone.now()
+                batch.error_message = ""
+                batch.save(update_fields=["status", "finished_at", "error_message", "updated_at"])
+            elif batch.status == AnalysisBatchStatus.QUEUED:
+                batch.status = AnalysisBatchStatus.RUNNING
+                batch.save(update_fields=["status", "updated_at"])
+
         node.status = ProcessingNodeStatus.IDLE
         node.last_heartbeat_at = timezone.now()
         node.save(update_fields=["status", "last_heartbeat_at", "updated_at"])
@@ -2594,6 +2906,47 @@ class ProcessingJobFailView(ProcessingJobStartView):
             job.log_path = str(log_path)
         job.save(update_fields=["status", "finished_at", "error_message", "log_path", "stats", "lease_token", "lease_expires_at", "updated_at"])
 
+        if job.analysis_batch_id:
+            batch = job.analysis_batch
+            batch.status = AnalysisBatchStatus.FAILED
+            batch.error_message = error_message
+            batch.finished_at = timezone.now()
+            batch.save(update_fields=["status", "error_message", "finished_at", "updated_at"])
+            batch.jobs.exclude(pk=job.pk).filter(status=ProcessingStatus.QUEUED).update(
+                status=ProcessingStatus.FAILED,
+                error_message=f"Analysis batch stopped because job {job.id} failed.",
+                finished_at=timezone.now(),
+                updated_at=timezone.now(),
+            )
+            recompute_experiment_and_project_status(
+                batch.experiment,
+                payload={"analysis_batch_id": batch.id, "failed_job_id": job.id},
+            )
+        elif is_spectra_conversion_job(job):
+            batch_ids = set()
+            for dependent in ProcessingJob.objects.filter(
+                analysis_batch__isnull=False,
+                status=ProcessingStatus.QUEUED,
+            ).only("analysis_batch_id", "metadata"):
+                dependencies = (dependent.metadata or {}).get("depends_on_job_ids") or []
+                if job.id in dependencies or str(job.id) in {str(value) for value in dependencies}:
+                    batch_ids.add(dependent.analysis_batch_id)
+            for batch in AnalysisBatch.objects.filter(id__in=batch_ids):
+                batch.status = AnalysisBatchStatus.FAILED
+                batch.error_message = f"Required spectra conversion job {job.id} failed: {error_message}"
+                batch.finished_at = timezone.now()
+                batch.save(update_fields=["status", "error_message", "finished_at", "updated_at"])
+                batch.jobs.filter(status=ProcessingStatus.QUEUED).update(
+                    status=ProcessingStatus.FAILED,
+                    error_message=f"Analysis batch stopped because prerequisite conversion job {job.id} failed.",
+                    finished_at=timezone.now(),
+                    updated_at=timezone.now(),
+                )
+                recompute_experiment_and_project_status(
+                    batch.experiment,
+                    payload={"analysis_batch_id": batch.id, "failed_conversion_job_id": job.id},
+                )
+
         node.status = (
             ProcessingNodeStatus.ERROR if _boolish(request.data.get("node_error")) else ProcessingNodeStatus.IDLE
         )
@@ -2610,6 +2963,8 @@ class AuthenticatedModelViewSet(viewsets.ModelViewSet):
     ordering_fields = ("id", "created_at", "updated_at")
     ordering = ("id",)
     scope_lab_lookup = None
+    scope_project_lookup = None
+    write_scope_project_path = None
     write_scope_lab_path = None
     write_scope_facility_path = None
     write_requires_admin = False
@@ -2620,6 +2975,14 @@ class AuthenticatedModelViewSet(viewsets.ModelViewSet):
 
         if is_admin(user):
             return base_queryset
+
+        if self.scope_project_lookup:
+            project_ids = accessible_project_ids(user)
+            if not project_ids:
+                return base_queryset.none()
+            if self.scope_project_lookup == "__self__":
+                return base_queryset.filter(pk__in=project_ids)
+            return base_queryset.filter(**{f"{self.scope_project_lookup}__id__in": project_ids}).distinct()
 
         if self.scope_lab_lookup is None:
             return base_queryset
@@ -2638,9 +3001,28 @@ class AuthenticatedModelViewSet(viewsets.ModelViewSet):
         self._enforce_write_scope(serializer)
         serializer.save()
 
+    def perform_destroy(self, instance):
+        if self.scope_project_lookup and not is_admin(self.request.user):
+            project = self._project_for_instance(instance)
+            if project is None or project.owner_id != self.request.user.pk:
+                raise PermissionDenied("Shared project access is read-only.")
+        instance.delete()
+
     def _enforce_write_scope(self, serializer):
         user = self.request.user
         if is_admin(user):
+            return
+
+        if self.scope_project_lookup:
+            if serializer is None or serializer.instance is not None:
+                project = self._project_for_instance(serializer.instance if serializer else None)
+            else:
+                project_id = self._resolve_scope_pk(serializer, self.write_scope_project_path) if self.write_scope_project_path else None
+                project = Project.objects.filter(pk=project_id).first() if project_id else None
+            if project is None or project.owner_id != user.pk:
+                raise PermissionDenied("Only the project owner can change project data or sharing.")
+            return
+        if serializer is None:
             return
 
         lab_ids = set(active_lab_ids(user))
@@ -2690,6 +3072,21 @@ class AuthenticatedModelViewSet(viewsets.ModelViewSet):
             return value
         return None
 
+    def _project_for_instance(self, instance):
+        if instance is None:
+            return None
+        if self.scope_project_lookup == "__self__":
+            return instance
+        current = instance
+        path = self.write_scope_project_path or ""
+        if not path:
+            return None
+        for part in path.split("."):
+            current = getattr(current, part, None)
+            if current is None:
+                return None
+        return current if isinstance(current, Project) else None
+
 
 class AnalysisPresetViewSet(AuthenticatedModelViewSet):
     queryset = AnalysisPreset.objects.all()
@@ -2710,6 +3107,8 @@ class SampleManifestViewSet(AuthenticatedModelViewSet):
     queryset = SampleManifest.objects.select_related("experiment", "experiment__project", "analysis_preset", "uploaded_by")
     serializer_class = SampleManifestSerializer
     scope_lab_lookup = "experiment__project__lab_id"
+    scope_project_lookup = "experiment__project"
+    write_scope_project_path = "experiment.project"
     write_scope_lab_path = "experiment.project.lab"
     search_fields = ("name", "source_filename", "experiment__name", "experiment__project__code")
     ordering_fields = ("name", "status", "created_at", "updated_at")
@@ -2722,8 +3121,11 @@ class SampleManifestViewSet(AuthenticatedModelViewSet):
         if not isinstance(rows, list) or not rows:
             raise ValidationError({"rows": "At least one manifest row is required."})
         experiment = get_object_or_404(Experiment.objects.select_related("project__lab"), pk=experiment_id)
-        if not is_admin(request.user) and experiment.project.lab_id not in set(active_lab_ids(request.user)):
-            raise PermissionDenied("This manifest targets a project outside your lab scope.")
+        if not is_admin(request.user) and (
+            experiment.project_id not in set(accessible_project_ids(request.user))
+            or experiment.project.owner_id != request.user.pk
+        ):
+            raise PermissionDenied("Only the project owner can create project manifests.")
         preset = None
         preset_id = request.data.get("analysis_preset")
         if preset_id:
@@ -2821,15 +3223,18 @@ class FileMatchExceptionViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset()
         if not is_admin(self.request.user):
-            lab_ids = active_lab_ids(self.request.user)
+            project_ids = accessible_project_ids(self.request.user)
             queryset = queryset.filter(
-                Q(project__lab_id__in=lab_ids)
-                | Q(raw_file__run__sample__experiment__project__lab_id__in=lab_ids)
+                Q(project_id__in=project_ids)
+                | Q(raw_file__run__sample__experiment__project_id__in=project_ids)
             ).distinct()
         project = self.request.query_params.get("project")
+        experiment = self.request.query_params.get("experiment")
         status_filter = self.request.query_params.get("status")
         if project:
             queryset = queryset.filter(project_id=project)
+        if experiment:
+            queryset = queryset.filter(experiment_id=experiment)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         return queryset
@@ -2838,8 +3243,11 @@ class FileMatchExceptionViewSet(viewsets.ReadOnlyModelViewSet):
     def resolve(self, request, pk=None):
         exception = self.get_object()
         run = get_object_or_404(Run.objects.select_related("sample__experiment__project"), pk=request.data.get("run"))
-        if not is_admin(request.user) and run.sample.experiment.project.lab_id not in set(active_lab_ids(request.user)):
-            raise PermissionDenied("This run is outside your lab scope.")
+        if not is_admin(request.user) and (
+            run.sample.experiment.project.owner_id != request.user.pk
+            or exception.project_id not in set(accessible_project_ids(request.user))
+        ):
+            raise PermissionDenied("Only the project owner can resolve file matches.")
         diann_validation_errors = _validate_diann_pipeline_for_run(run)
         if diann_validation_errors:
             raise ValidationError({"diann_settings": diann_validation_errors})
@@ -2873,11 +3281,6 @@ class FileMatchExceptionViewSet(viewsets.ReadOnlyModelViewSet):
 
 class QcApiMixin:
     qc_programs = {"hye", "prtc"}
-    hye_ideal = {
-        "Homo sapiens": {"a": 0.65, "b": 0.65},
-        "Saccharomyces cerevisiae": {"a": 0.30, "b": 0.15},
-        "Escherichia coli": {"a": 0.05, "b": 0.20},
-    }
     pass_relative_error = 0.20
     warning_relative_error = 0.50
 
@@ -2890,14 +3293,18 @@ class QcApiMixin:
         )
 
         if not is_admin(self.request.user):
-            lab_ids = active_lab_ids(self.request.user)
-            if not lab_ids:
+            project_ids = accessible_project_ids(self.request.user)
+            if not project_ids:
                 return queryset.none()
-            queryset = queryset.filter(experiment__project__lab_id__in=lab_ids)
+            queryset = queryset.filter(experiment__project_id__in=project_ids)
 
         project_filter = self.request.query_params.get("project")
         if project_filter:
             queryset = queryset.filter(experiment__project_id=project_filter)
+
+        experiment_filter = self.request.query_params.get("experiment")
+        if experiment_filter:
+            queryset = queryset.filter(experiment_id=experiment_filter)
 
         worklist_filter = self.request.query_params.get("worklist")
         if worklist_filter:
@@ -3082,12 +3489,17 @@ class QcApiMixin:
             accessions[quant.protein.accession] = quant.value
 
         pairs = []
+        target_profiles = {}
         status_counts = {}
         complete_pair_count = 0
         out_of_spec_pair_count = 0
         machine_map: dict[str, dict] = {}
 
         for worklist in worklists:
+            target_profile = (worklist.metadata or {}).get("hye_target_profile") or hye_target_profile_snapshot()
+            profile_key = f"{target_profile.get('name', 'HYE Standard')}:{target_profile.get('version', '1.0')}"
+            target_profiles[profile_key] = target_profile
+            targets = target_profile.get("targets") or DEFAULT_HYE_TARGETS
             labels = []
             seen_labels = set()
             for entry in worklist.entries.all():
@@ -3132,7 +3544,7 @@ class QcApiMixin:
                 pair_complete = bool(a_job and b_job)
                 shared_total_n = 0
 
-                for organism, target in self.hye_ideal.items():
+                for organism, target in targets.items():
                     a_values = quant_map.get(getattr(a_job, "id", None), {}).get(organism, {})
                     b_values = quant_map.get(getattr(b_job, "id", None), {}).get(organism, {})
                     shared_accessions = sorted(set(a_values).intersection(b_values))
@@ -3215,6 +3627,7 @@ class QcApiMixin:
                         "worklist_id": worklist.id,
                         "worklist_name": worklist.name,
                         "pair_label": label,
+                        "hye_target_profile": target_profile,
                         "machine_key": machine_key,
                         "machine_label": machine_label,
                         "a_machine_key": a_machine["machine_key"],
@@ -3351,6 +3764,7 @@ class QcApiMixin:
                 },
                 "empty_message": "" if pairs else "Seed or acquire HYE A/B QC runs inside a project worklist.",
                 "pairs": pairs,
+                "target_profiles": list(target_profiles.values()),
                 "machine_summaries": machine_summaries,
                 "machine_series": machine_series,
             },
@@ -3378,7 +3792,7 @@ class QcDetailsView(QcApiMixin, APIView):
 class SystemHealthView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
-    stale_seconds = 180
+    stale_seconds = 75
 
     def get(self, request):
         if not is_admin(request.user):
@@ -3386,19 +3800,23 @@ class SystemHealthView(APIView):
 
         now = timezone.now()
         readiness_checks = {
-            "healthz": {"ok": True, "status": "green", "label": "Django", "detail": "healthz is reachable"},
-            "database": _database_check(),
-            "incoming_raw_root": _path_check(settings.INCOMING_RAW_ROOT, require_read=True),
-            "raw_file_storage_root": _path_check(settings.RAW_FILE_STORAGE_ROOT, require_read=True, require_write=True),
-            "results_root": _path_check(settings.RESULTS_ROOT, require_read=True, require_write=True),
-            "media_root": _path_check(settings.MEDIA_ROOT, require_read=True, require_write=True),
+            "healthz": {"ok": True, "status": "green", "label": "Django", "detail": "This authenticated health request reached Django."},
+            **readiness_snapshot(),
         }
         ready_ok = all(check["ok"] for key, check in readiness_checks.items() if key != "healthz")
+        for key, check in readiness_checks.items():
+            if key == "healthz":
+                continue
+            check["label"] = key.replace("_", " ").title()
+            check["status"] = "green" if check["ok"] else "red"
+            check["detail"] = check.get("error") or (check.get("path") or "Check passed")
+            check["guidance"] = "No action required." if check["ok"] else _readiness_guidance(key, check)
         readiness_checks["readyz"] = {
             "ok": ready_ok,
             "status": "green" if ready_ok else "red",
             "label": "Readiness",
             "detail": "All storage and database checks passed" if ready_ok else "One or more readiness checks failed",
+            "guidance": "No action required." if ready_ok else "Use the failing check’s guidance below, then refresh the health page.",
         }
 
         nodes = list(ProcessingNode.objects.all().order_by("node_type", "name"))
@@ -3429,7 +3847,8 @@ class SystemHealthView(APIView):
                     "code": "readiness",
                     "title": "Readiness check failed",
                     "detail": "One or more database or storage roots are not healthy.",
-                    "route": "/admin/",
+                    "route": "/admin/settings",
+                    "guidance": "Open Global settings and correct the failed database or storage configuration, then refresh readiness.",
                 }
             )
         if offline_total:
@@ -3439,7 +3858,8 @@ class SystemHealthView(APIView):
                     "code": "offline-nodes",
                     "title": "Downed nodes detected",
                     "detail": f"{offline_total} node(s) are marked offline.",
-                    "route": "/processing/admin",
+                    "route": "/processing/admin?type=watcher" if any(n.node_type.lower() == "watcher" and _processing_node_health(n, now)[0] == "red" for n in nodes) else "/processing/admin?type=processor",
+                    "guidance": "Check the node process and its last error/logs, API reachability, token, and storage mounts. Restart it, then wait for a fresh heartbeat. If it is intentionally retired, deactivate/remove the node record.",
                 }
             )
         if stale_total:
@@ -3448,18 +3868,20 @@ class SystemHealthView(APIView):
                     "severity": "warning",
                     "code": "stale-nodes",
                     "title": "Stale node heartbeats",
-                    "detail": f"{stale_total} node(s) have not checked in within {self.stale_seconds} seconds.",
-                    "route": "/processing/admin",
+                    "detail": f"{stale_total} node(s) have a delayed heartbeat (older than {self.stale_seconds}s, but not yet red).",
+                    "route": "/processing/admin?type=watcher" if any(n.node_type.lower() == "watcher" and _processing_node_health(n, now)[0] == "yellow" for n in nodes) and not any(n.node_type.lower() != "watcher" and _processing_node_health(n, now)[0] == "yellow" for n in nodes) else "/processing/admin?type=processor",
+                    "guidance": "Yellow clears automatically when the agent posts a heartbeat within 75 seconds. Check its API/network connection, agent process, and system clock; then refresh.",
                 }
             )
         if watcher_group["total"] and watcher_group["connected"] == 0:
             alerts.append(
                 {
-                    "severity": "critical",
+                    "severity": "critical" if watcher_group["offline"] else "warning",
                     "code": "watcher-disconnected",
                     "title": "Watcher disconnected",
-                    "detail": "No watcher nodes are currently connected.",
-                    "route": "/monitoring",
+                    "detail": "No watcher nodes are reporting a current heartbeat.",
+                    "route": "/processing/admin?type=watcher",
+                    "guidance": "Open Watcher administration and confirm the watcher is running, authenticated, and reaching the API. A fresh heartbeat clears this warning.",
                 }
             )
         if nodes and not watcher_group["total"]:
@@ -3469,17 +3891,19 @@ class SystemHealthView(APIView):
                     "code": "watcher-missing",
                     "title": "No watcher nodes registered",
                     "detail": "No watcher containers or agents have reported yet.",
-                    "route": "/monitoring",
+                    "route": "/processing/admin?type=watcher",
+                    "guidance": "Register/start the watcher if this instance should monitor acquisitions. If watcher deployment is not part of this instance, this informational warning can be ignored.",
                 }
             )
         if processor_group["total"] and processor_group["connected"] == 0:
             alerts.append(
                 {
-                    "severity": "critical",
+                    "severity": "critical" if processor_group["offline"] else "warning",
                     "code": "processor-disconnected",
                     "title": "Processor disconnected",
-                    "detail": "No processor nodes are currently connected.",
-                    "route": "/processing/admin",
+                    "detail": "No processor nodes are reporting a current heartbeat.",
+                    "route": "/processing/admin?type=processor",
+                    "guidance": "Check the processor service, token, API endpoint, engine installation, and shared RAW/results storage. Restart after fixing the cause; a fresh heartbeat clears red.",
                 }
             )
         if nodes and not processor_group["total"]:
@@ -3489,7 +3913,8 @@ class SystemHealthView(APIView):
                     "code": "processor-missing",
                     "title": "No processor nodes registered",
                     "detail": "No processor containers or agents have reported yet.",
-                    "route": "/processing/admin",
+                    "route": "/processing/admin?type=processor",
+                    "guidance": "Register/start an expected processor, or remove/deactivate a retired node record.",
                 }
             )
         if failed_jobs:
@@ -3499,7 +3924,8 @@ class SystemHealthView(APIView):
                     "code": "failed-jobs",
                     "title": "Failed processing jobs",
                     "detail": f"{failed_jobs} job(s) need operator review.",
-                    "route": "/monitoring",
+                    "route": "/processing",
+                    "guidance": "Open failed jobs, inspect the error and input files/settings, correct the cause, then retry or mark the job resolved.",
                 }
             )
         if unmatched_raw_files:
@@ -3509,7 +3935,8 @@ class SystemHealthView(APIView):
                     "code": "unmatched-raw-files",
                     "title": "Unmatched raw files",
                     "detail": f"{unmatched_raw_files} raw file(s) have not been matched to a run.",
-                    "route": "/monitoring",
+                    "route": "/watcher",
+                    "guidance": "Match the RAW file to its expected project/run or explicitly resolve/ignore the unmatched-file exception.",
                 }
             )
         if not nodes:
@@ -3519,7 +3946,8 @@ class SystemHealthView(APIView):
                     "code": "no-nodes",
                     "title": "No connected nodes",
                     "detail": "No watcher or processor nodes have reported yet.",
-                    "route": "/processing/admin",
+                    "route": "/processing/admin?type=processor",
+                    "guidance": "Register the processor nodes expected on this instance, or treat this as informational if processing is intentionally external.",
                 }
             )
 
@@ -3570,9 +3998,10 @@ class SystemHealthView(APIView):
                 },
             )
             group["total"] += 1
-            if node.status == ProcessingNodeStatus.OFFLINE:
+            node_health, _guidance = _processing_node_health(node, now=now)
+            if node_health == "red":
                 group["offline"] += 1
-            elif node.last_heartbeat_at and (now - node.last_heartbeat_at).total_seconds() <= self.stale_seconds:
+            elif node_health == "green":
                 group["connected"] += 1
             else:
                 group["stale"] += 1
@@ -3686,6 +4115,7 @@ class CurrentUserView(APIView):
             "email": user.email,
             "is_superuser": bool(user.is_superuser),
             "global_role": profile.global_role if profile else UserRole.RESEARCHER,
+            "instance_label": _instance_display_label(),
             "email_verified_at": getattr(profile, "email_verified_at", None),
             "labs": [
                 {
@@ -3741,26 +4171,23 @@ class SignupView(APIView):
             LabMembership.objects.create(user=user, lab=lab, role=membership_role, active=True)
             user = self._activate_and_sign_in(request, user)
 
-        verification_payload = self._verification_payload(user)
+        verification_payload = self._verification_payload(user, request)
+        email_sent = False
         try:
-            send_mail(
+            email_sent = bool(send_mail(
                 subject="Verify your MSConnect account",
-                message=(
-                    f"Verify your account by visiting: "
-                    f"{request.build_absolute_uri(verification_payload['verify_url'])}\n\n"
-                    f"Your temporary verification code: {verification_payload['token']}"
-                ),
+                message=f"Verify your account by visiting: {verification_payload['verify_url']}\n\n",
                 from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "msconnect@localhost"),
                 recipient_list=[email],
                 fail_silently=settings.MSCONNECT_EMAIL_FAIL_SILENT,
-            )
+            ))
         except Exception:
-            pass
+            email_sent = False
 
         return Response(
             {
                 "user": self._current_user_payload(user),
-                "verification": verification_payload,
+                "verification": {"email_sent": email_sent},
                 "lab_id": lab.id,
                 "lab_code": lab.slug,
             },
@@ -3805,13 +4232,10 @@ class SignupView(APIView):
         login(request, user)
         return user
 
-    def _verification_payload(self, user):
+    def _verification_payload(self, user, request):
         signer = TimestampSigner(salt="signup-verification")
         token = signer.sign(f"{user.pk}:{user.email}")
-        return {
-            "token": token,
-            "verify_url": f"/accounts/verify-email/{token}/",
-        }
+        return {"verify_url": request.build_absolute_uri(f"/app/verify-email/{token}")}
 
     def _current_user_payload(self, user):
         profile = getattr(user, "profile", None)
@@ -3848,19 +4272,369 @@ class VerifySignupEmailView(APIView):
             user_id, email = raw.split(":", 1)
         except SignatureExpired as exc:
             raise ValidationError({"token": "Verification link expired."}) from exc
-        except (BadSignature, ValueError) as exc:
+        except (BadSignature, ValueError, UnicodeDecodeError) as exc:
             raise ValidationError({"token": "Verification token is invalid."}) from exc
 
         user = get_object_or_404(User, pk=user_id)
         if user.email.lower() != email.lower():
             raise ValidationError({"token": "Verification token does not match this account."})
-        profile = getattr(user, "profile", None)
-        if profile and not profile.email_verified_at:
+        if not user.is_active:
+            raise ValidationError({"token": "This account still needs to accept its invitation and set a password."})
+        profile, _created = UserProfile.objects.get_or_create(user=user)
+        if not profile.email_verified_at:
             profile.email_verified_at = timezone.now()
             profile.save(update_fields=["email_verified_at", "updated_at"])
 
         login(request, user)
         return Response({"verified": True, "user_id": user.id})
+
+
+def _admin_user_access_payload(user):
+    profile = getattr(user, "profile", None)
+    memberships = user.lab_memberships.select_related("lab", "lab__facility").order_by("lab__name")
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "is_active": user.is_active,
+        "is_superuser": user.is_superuser,
+        "global_role": profile.global_role if profile else UserRole.RESEARCHER,
+        "email_verified_at": profile.email_verified_at if profile else None,
+        "memberships": [
+            {
+                "id": membership.id,
+                "lab_id": membership.lab_id,
+                "lab_name": membership.lab.name,
+                "facility_name": membership.lab.facility.name,
+                "role": membership.role,
+                "active": membership.active,
+            }
+            for membership in memberships
+        ],
+    }
+
+
+def _verification_url(request, user):
+    token = TimestampSigner(salt="signup-verification").sign(f"{user.pk}:{user.email}")
+    return request.build_absolute_uri(f"/app/verify-email/{token}")
+
+
+def _invitation_url(request, user):
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+    token = default_token_generator.make_token(user)
+    return request.build_absolute_uri(f"/app/accept-invite/{uid}/{token}")
+
+
+def _send_account_email(user, *, subject, url):
+    try:
+        return bool(send_mail(
+            subject=subject,
+            message=f"Continue to MSConnect: {url}\n\nIf you were not expecting this message, you can ignore it.",
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "msconnect@localhost"),
+            recipient_list=[user.email],
+            fail_silently=settings.MSCONNECT_EMAIL_FAIL_SILENT,
+        ))
+    except Exception:
+        return False
+
+
+class AdminUserAccessView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can manage user access.")
+        users = User.objects.select_related("profile").prefetch_related("lab_memberships__lab__facility").order_by("username")
+        labs = Lab.objects.filter(active=True).select_related("facility").order_by("facility__name", "name")
+        return Response({
+            "users": [_admin_user_access_payload(user) for user in users],
+            "labs": [{"id": lab.id, "name": lab.name, "facility_name": lab.facility.name} for lab in labs],
+        })
+
+    def post(self, request):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can create user invitations.")
+        serializer = AdminUserInviteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        username = data["username"].strip()
+        email = data["email"].strip().lower()
+        if User.objects.filter(username__iexact=username).exists():
+            raise ValidationError({"username": "That username is already in use."})
+        if User.objects.filter(email__iexact=email).exists():
+            raise ValidationError({"email": "That email address is already in use."})
+
+        with transaction.atomic():
+            user = User(username=username, email=email, is_active=False)
+            user.set_unusable_password()
+            user.save()
+            UserProfile.objects.create(user=user, global_role=data["global_role"])
+            LabMembership.objects.create(
+                user=user,
+                lab=data["lab"],
+                role=data["membership_role"],
+                active=True,
+            )
+
+        invite_url = _invitation_url(request, user)
+        email_sent = _send_account_email(user, subject="You are invited to MSConnect", url=invite_url)
+        response_data = {"user": _admin_user_access_payload(user), "email_sent": email_sent}
+        if not email_sent:
+            response_data["invite_url"] = invite_url
+        return Response(response_data, status=status.HTTP_201_CREATED)
+
+    def patch(self, request, user_id):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can update user access.")
+        user = get_object_or_404(User.objects.select_related("profile"), pk=user_id)
+        if user.is_superuser:
+            raise PermissionDenied("Django superuser access must be managed outside this screen.")
+        serializer = AdminUserAccessUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        lab = get_object_or_404(Lab, pk=data["lab_id"], active=True)
+        new_global_role = data["global_role"]
+        if user.pk == request.user.pk and (new_global_role != UserRole.ADMIN or not data["membership_active"]):
+            raise ValidationError("You cannot remove your own admin access or deactivate your own lab membership.")
+        profile = getattr(user, "profile", None)
+        if profile and profile.global_role == UserRole.ADMIN and new_global_role != UserRole.ADMIN:
+            other_admin = UserProfile.objects.filter(global_role=UserRole.ADMIN).exclude(user_id=user.id).exists()
+            other_superuser = User.objects.filter(is_superuser=True).exclude(pk=user.id).exists()
+            if not other_admin and not other_superuser:
+                raise ValidationError("The last admin cannot be demoted.")
+
+        with transaction.atomic():
+            profile, _created = UserProfile.objects.get_or_create(user=user)
+            profile.global_role = new_global_role
+            profile.save(update_fields=["global_role", "updated_at"])
+            LabMembership.objects.update_or_create(
+                user=user,
+                lab=lab,
+                defaults={"role": data["membership_role"], "active": data["membership_active"]},
+            )
+        user.refresh_from_db()
+        return Response({"user": _admin_user_access_payload(user)})
+
+
+class AdminUserVerificationView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request, user_id):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can resend account emails.")
+        user = get_object_or_404(User.objects.select_related("profile"), pk=user_id)
+        profile = getattr(user, "profile", None)
+        if user.is_active and profile and profile.email_verified_at:
+            raise ValidationError({"email": "This user's email is already verified."})
+        if user.is_active:
+            url = _verification_url(request, user)
+            subject = "Verify your MSConnect account"
+        else:
+            url = _invitation_url(request, user)
+            subject = "Complete your MSConnect account setup"
+        email_sent = _send_account_email(user, subject=subject, url=url)
+        response_data = {"email_sent": email_sent}
+        if not email_sent:
+            response_data["account_url"] = url
+        return Response(response_data)
+
+
+def _admin_lab_directory_payload():
+    universities = University.objects.order_by("name")
+    facilities = Facility.objects.select_related("university").order_by("university__name", "name")
+    labs = Lab.objects.select_related("facility", "facility__university").annotate(
+        active_member_count=Count("memberships", filter=Q(memberships__active=True))
+    ).order_by("facility__university__name", "facility__name", "name")
+    return {
+        "universities": [
+            {"id": item.id, "name": item.name, "abbreviation": item.abbreviation, "website": item.website, "active": item.active}
+            for item in universities
+        ],
+        "facilities": [
+            {
+                "id": item.id,
+                "name": item.name,
+                "slug": item.slug,
+                "university_id": item.university_id,
+                "university_name": item.university.name,
+                "contact_email": item.contact_email,
+                "active": item.active,
+            }
+            for item in facilities
+        ],
+        "labs": [
+            {
+                "id": item.id,
+                "name": item.name,
+                "slug": item.slug,
+                "facility_id": item.facility_id,
+                "facility_name": item.facility.name,
+                "university_name": item.facility.university.name,
+                "billing_code": item.billing_code,
+                "active": item.active,
+                "active_member_count": item.active_member_count,
+            }
+            for item in labs
+        ],
+    }
+
+
+class AdminLabDirectoryView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def _require_admin(self, user):
+        if not is_admin(user):
+            raise PermissionDenied("Only admins can manage universities, facilities, and labs.")
+
+    def get(self, request):
+        self._require_admin(request.user)
+        return Response(_admin_lab_directory_payload())
+
+    def post(self, request):
+        self._require_admin(request.user)
+        kind = str(request.data.get("kind") or "").strip().lower()
+        if kind == "university":
+            serializer = AdminUniversityCreateSerializer(data=request.data)
+        elif kind == "facility":
+            serializer = AdminFacilityCreateSerializer(data=request.data)
+        elif kind == "lab":
+            serializer = AdminLabCreateSerializer(data=request.data)
+        else:
+            raise ValidationError({"kind": "Choose university, facility, or lab."})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            with transaction.atomic():
+                if kind == "university":
+                    created = University.objects.create(**data)
+                    payload = {"id": created.id, "name": created.name, "abbreviation": created.abbreviation, "website": created.website, "active": created.active}
+                else:
+                    name = data["name"].strip()
+                    slug = (data.get("slug") or slugify(name))[:80]
+                    if not slug:
+                        raise ValidationError({"slug": "Provide a name or a valid slug."})
+                    if kind == "facility":
+                        created = Facility.objects.create(**{**data, "name": name, "slug": slug})
+                        payload = {
+                            "id": created.id,
+                            "name": created.name,
+                            "slug": created.slug,
+                            "university_id": created.university_id,
+                            "university_name": created.university.name,
+                            "contact_email": created.contact_email,
+                            "active": created.active,
+                        }
+                    else:
+                        created = Lab.objects.create(**{**data, "name": name, "slug": slug})
+                        payload = {
+                            "id": created.id,
+                            "name": created.name,
+                            "slug": created.slug,
+                            "facility_id": created.facility_id,
+                            "facility_name": created.facility.name,
+                            "university_name": created.facility.university.name,
+                            "billing_code": created.billing_code,
+                            "active": created.active,
+                            "active_member_count": 0,
+                        }
+        except IntegrityError as exc:
+            raise ValidationError({"name": "A record with this name or slug already exists in that organization."}) from exc
+        return Response({"kind": kind, "record": payload}, status=status.HTTP_201_CREATED)
+
+
+class AdminRuntimeSettingsView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can view global runtime settings.")
+        email_host = str(getattr(settings, "EMAIL_HOST", "") or "")
+        backend = str(getattr(settings, "EMAIL_BACKEND", "") or "")
+        return Response({
+            "instance_profile": str(getattr(settings, "MSCONNECT_INSTANCE_PROFILE", "kelly") or "kelly"),
+            "default_facility_slug": str(getattr(settings, "MSCONNECT_DEFAULT_FACILITY_SLUG", "") or ""),
+            "public_signup_enabled": bool(getattr(settings, "MSCONNECT_PUBLIC_SIGNUP_ENABLED", False)),
+            "email": {
+                "backend": backend,
+                "host": email_host,
+                "port": int(getattr(settings, "EMAIL_PORT", 25)),
+                "from_email": str(getattr(settings, "DEFAULT_FROM_EMAIL", "") or ""),
+                "use_tls": bool(getattr(settings, "EMAIL_USE_TLS", False)),
+                "credentials_configured": bool(getattr(settings, "EMAIL_HOST_USER", "") and getattr(settings, "EMAIL_HOST_PASSWORD", "")),
+                "host_configured": bool(email_host),
+                "fail_silently": bool(getattr(settings, "MSCONNECT_EMAIL_FAIL_SILENT", False)),
+            },
+            "compute": {
+                "slurm": {
+                    "configured": bool(
+                        getattr(settings, "MSCONNECT_SLURM_HOST", "")
+                        and getattr(settings, "MSCONNECT_SLURM_REMOTE_ROOT", "")
+                        and getattr(settings, "MSCONNECT_SLURM_CONTAINER_IMAGE", "")
+                    ),
+                    "host": str(getattr(settings, "MSCONNECT_SLURM_HOST", "") or ""),
+                    "port": int(getattr(settings, "MSCONNECT_SLURM_PORT", 22)),
+                    "user_configured": bool(getattr(settings, "MSCONNECT_SLURM_USER", "")),
+                    "partition_configured": bool(getattr(settings, "MSCONNECT_SLURM_PARTITION", "")),
+                    "account_configured": bool(getattr(settings, "MSCONNECT_SLURM_ACCOUNT", "")),
+                },
+                "cloud": {"available": False, "configured": False, "provider": "No cloud adapter configured"},
+            },
+            "assistant": _admin_assistant_status(),
+        })
+
+
+def _admin_assistant_status():
+    from .project_assistant import configured_models
+
+    models = configured_models()
+    providers = {
+        provider: {"configured": any(model["provider"] == provider for model in models)}
+        for provider in ("openai", "anthropic")
+    }
+    return {"providers": providers, "models": models}
+
+
+class AcceptInvitationView(APIView):
+    permission_classes = (permissions.AllowAny,)
+
+    def post(self, request):
+        serializer = AcceptInvitationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            user_id = force_str(urlsafe_base64_decode(data["uid"]))
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise ValidationError({"invitation": "Invitation link is invalid."}) from exc
+        user = get_object_or_404(User, pk=user_id)
+        if user.is_active or not default_token_generator.check_token(user, data["token"]):
+            raise ValidationError({"invitation": "Invitation link is invalid or has expired. Ask an admin to resend it."})
+        try:
+            validate_password(data["password"], user=user)
+        except DjangoValidationError as exc:
+            raise ValidationError({"password": list(exc.messages)}) from exc
+        user.set_password(data["password"])
+        user.is_active = True
+        user.save(update_fields=["password", "is_active"])
+        profile, _created = UserProfile.objects.get_or_create(user=user)
+        profile.email_verified_at = timezone.now()
+        profile.save(update_fields=["email_verified_at", "updated_at"])
+        login(request, user)
+        return Response({"verified": True, "user_id": user.id})
+
+
+class ResendMyVerificationView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request):
+        profile = getattr(request.user, "profile", None)
+        if profile and profile.email_verified_at:
+            return Response({"email_sent": False, "already_verified": True})
+        if not request.user.email:
+            raise ValidationError({"email": "Add an email address before requesting verification."})
+        url = _verification_url(request, request.user)
+        if not _send_account_email(request.user, subject="Verify your MSConnect account", url=url):
+            return Response({"detail": "Email could not be sent. Ask an admin to check the SMTP settings."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({"email_sent": True})
 
 
 class UniversityViewSet(AuthenticatedModelViewSet):
@@ -3910,6 +4684,7 @@ class LabMembershipViewSet(AuthenticatedModelViewSet):
 class InstrumentViewSet(AuthenticatedModelViewSet):
     queryset = Instrument.objects.select_related("facility")
     serializer_class = InstrumentSerializer
+    write_requires_admin = True
     scope_lab_lookup = "facility__labs__id"
     write_scope_facility_path = "facility"
     search_fields = ("nickname", "manufacturer", "model", "serial_number", "facility__name")
@@ -3919,6 +4694,7 @@ class InstrumentViewSet(AuthenticatedModelViewSet):
 class InstrumentConfigurationViewSet(AuthenticatedModelViewSet):
     queryset = InstrumentConfiguration.objects.select_related("facility", "lc_instrument", "ms_instrument")
     serializer_class = InstrumentConfigurationSerializer
+    write_requires_admin = True
     scope_lab_lookup = "facility__labs__id"
     write_scope_facility_path = "facility"
     search_fields = ("name", "method_name", "column_description", "ion_source", "facility__name")
@@ -3926,9 +4702,10 @@ class InstrumentConfigurationViewSet(AuthenticatedModelViewSet):
 
 
 class ProjectViewSet(AuthenticatedModelViewSet):
-    queryset = Project.objects.select_related("lab", "pi")
+    queryset = Project.objects.select_related("lab", "pi", "owner")
     serializer_class = ProjectSerializer
     scope_lab_lookup = "lab_id"
+    scope_project_lookup = "__self__"
     write_scope_lab_path = "lab"
     search_fields = ("code", "title", "description", "lab__name", "pi__username")
     ordering_fields = ("code", "title", "status", "created_at", "updated_at")
@@ -3943,6 +4720,11 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         if lab_filter:
             queryset = queryset.filter(lab_id=lab_filter)
         return queryset
+
+    def check_object_permissions(self, request, obj):
+        super().check_object_permissions(request, obj)
+        if request.method not in permissions.SAFE_METHODS and not is_admin(request.user) and obj.owner_id != request.user.pk:
+            raise PermissionDenied("Shared project access is read-only.")
 
     @action(detail=True, methods=["post"], url_path="generate-worklist")
     def generate_worklist(self, request, pk=None):
@@ -3963,6 +4745,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         try:
             generated = generate_vendor_worklists(input_path, output_directory)
             rows = generated_worklist_rows(generated)
+            validate_generated_hye_pairs(rows)
         except WorklistGenerationError as exc:
             raise ValidationError({"workbook": str(exc)}) from exc
 
@@ -4017,6 +4800,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 title=data["title"],
                 code=code,
                 pi=getattr(lab, "pi", None) or request.user,
+                owner=request.user,
                 description="Quick-start project. Import or generate a worklist to establish run ground truth.",
             )
             experiment = Experiment.objects.create(
@@ -4033,6 +4817,52 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             },
             status=status.HTTP_201_CREATED,
         )
+
+    @action(detail=True, methods=["get", "post"], url_path="members")
+    def members(self, request, pk=None):
+        project = self.get_object()
+        if request.method == "GET":
+            memberships = ProjectMembership.objects.filter(project=project, active=True).select_related("user")
+            available_users = User.objects.filter(
+                is_active=True,
+                lab_memberships__lab_id=project.lab_id,
+                lab_memberships__active=True,
+            ).exclude(pk=project.owner_id).exclude(
+                project_memberships__project=project,
+                project_memberships__active=True,
+            ).order_by("username").distinct()
+            return Response({
+                "members": ProjectMembershipSerializer(memberships, many=True).data,
+                "available_users": [
+                    {"id": user.id, "username": user.username, "display_name": user.get_full_name() or user.username}
+                    for user in available_users
+                ],
+            })
+        if not is_admin(request.user) and project.owner_id != request.user.pk:
+            raise PermissionDenied("Only the project owner can share this project.")
+        user_id = _int_or_none(request.data.get("user"))
+        if not user_id:
+            raise ValidationError({"user": "Select a user to share this project with."})
+        target = get_object_or_404(User.objects.filter(is_active=True), pk=user_id)
+        if not LabMembership.objects.filter(
+            user=target, lab_id=project.lab_id, active=True
+        ).exists():
+            raise PermissionDenied("Project viewers must be active members of the same lab.")
+        if target.pk == project.owner_id:
+            raise ValidationError({"user": "The project owner already has access."})
+        membership, _created = ProjectMembership.objects.update_or_create(
+            project=project, user=target, defaults={"active": True}
+        )
+        return Response(ProjectMembershipSerializer(membership).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["delete"], url_path=r"members/(?P<user_id>[^/.]+)")
+    def remove_member(self, request, pk=None, user_id=None):
+        project = self.get_object()
+        if not is_admin(request.user) and project.owner_id != request.user.pk:
+            raise PermissionDenied("Only the project owner can change project sharing.")
+        membership = get_object_or_404(ProjectMembership, project=project, user_id=user_id)
+        membership.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["get"])
     def summary(self, request, pk=None):
@@ -4205,7 +5035,8 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         incoming = request.data.get("settings", request.data.get("experimental_tags", {}))
         if not isinstance(incoming, dict):
             raise ValidationError({"settings": "Settings must be a JSON object."})
-        current = normalize_diann_settings(pipeline.parameters or {})
+        project_parameters = (worklist.metadata or {}).get("processing_plan") or pipeline.parameters or {}
+        current = normalize_diann_settings(project_parameters)
         proposed = normalize_diann_settings(incoming)
         merged = {
             **{key: value for key, value in current.items() if key != "tags"},
@@ -4223,13 +5054,16 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         if validation_errors:
             raise ValidationError({"settings": validation_errors})
         pipeline.parameters = {
-            **(pipeline.parameters or {}),
+            **project_parameters,
             **{key: value for key, value in merged.items() if key not in {"tags", "settings", "options"}},
             "settings": merged,
             "tags": merged["tags"],
             "options": _diann_command_options(merged),
         }
         pipeline.save(update_fields=["parameters", "updated_at"])
+        worklist_metadata = dict(worklist.metadata or {})
+        worklist_metadata["processing_plan"] = pipeline.parameters
+        worklist.save(update_fields=["metadata", "updated_at"])
         record_pipeline_event(
             event_type=PipelineEventType.SETTINGS_UPDATED,
             project=project,
@@ -4239,6 +5073,29 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             payload={"pipeline_id": pipeline.id, "experimental_tags": merged["tags"]["experimental"]},
         )
         return Response(self._build_diann_preflight(project, experiment=experiment))
+
+    @action(detail=True, methods=["post"], url_path="reanalyze")
+    def reanalyze(self, request, pk=None):
+        project = self.get_object()
+        experiment = _resolve_experiment_for_project(
+            project_id=project.id,
+            experiment_id=_int_or_none(request.data.get("experiment")),
+        )
+        if request.data.get("experiment") and experiment is None:
+            raise ValidationError({"experiment": "Experiment does not belong to this project."})
+        executor = str(request.data.get("executor") or AnalysisExecutor.SLURM).strip().lower()
+        pipeline_id = _int_or_none(request.data.get("pipeline_id"))
+        try:
+            batches = queue_project_analysis_batches(
+                project=project,
+                user=request.user,
+                experiment=experiment,
+                pipeline_id=pipeline_id,
+                executor=executor,
+            )
+        except ValueError as exc:
+            raise ValidationError({"analysis": str(exc)}) from exc
+        return Response(AnalysisBatchSerializer(batches, many=True).data, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=["post"], url_path="import-worklist")
     def import_worklist(self, request, pk=None):
@@ -4276,6 +5133,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                         "processing_pipeline_id": pipeline.id,
                         "processing_plan": pipeline.parameters,
                         "watcher_matching": "expected_filename",
+                        "hye_target_profile": hye_target_profile_snapshot(data.get("hye_target_profile")),
                     },
                 },
             )
@@ -4291,6 +5149,16 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 "processing_pipeline_id": pipeline.id,
                 "processing_plan": pipeline.parameters,
                 "watcher_matching": "expected_filename",
+                "hye_target_profile": (worklist.metadata or {}).get("hye_target_profile") or hye_target_profile_snapshot(data.get("hye_target_profile")),
+                "source_files": {
+                    "ms": data.get("ms_filename", ""),
+                    "lc": data.get("lc_filename", ""),
+                },
+                "lc_worklist": {
+                    "filename": data.get("lc_filename", ""),
+                    "row_count": len(data.get("lc_rows", [])),
+                    "rows": data.get("lc_rows", []),
+                } if data.get("lc_rows") else None,
             }
             worklist.save(update_fields=["status", "revision", "generated_by", "metadata", "updated_at"])
 
@@ -4307,6 +5175,8 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     "setup_source": "worklist_import",
                     "condition": row.get("condition", ""),
                     "qc_program": row.get("qc_program", ""),
+                    "file_role": row["file_role"],
+                    "hye_pair_label": row.get("hye_pair_label", ""),
                     "synthetic_peptides_present": row.get("qc_program") == QcProgram.PRTC,
                     "plate_id": row.get("plate", ""),
                     **_well_coordinates(row.get("well", "")),
@@ -4332,6 +5202,9 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     run.status = row.get("status", run.status)
                     run.file_role = row["file_role"]
                     run.qc_program = row.get("qc_program", "")
+                    run.expected_filename = row["expected_filename"]
+                    run.worklist_position = row["position"]
+                    run.hye_pair_label = row.get("hye_pair_label", "")
                     run.metadata = {**(run.metadata or {}), **metadata, "expected_filename": row["expected_filename"]}
                     run.save(
                         update_fields=[
@@ -4340,6 +5213,9 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                             "status",
                             "file_role",
                             "qc_program",
+                            "expected_filename",
+                            "worklist_position",
+                            "hye_pair_label",
                             "metadata",
                             "updated_at",
                         ]
@@ -4508,6 +5384,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 title=data["title"],
                 code=data["code"],
                 pi=getattr(lab, "pi", None) or request.user,
+                owner=request.user,
                 description=(
                     "Pre-acquisition project generated from MSConnect setup. "
                     "Expected filenames are available before LC-MS acquisition."
@@ -4525,7 +5402,9 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     "plate_type": data["plate_type"],
                 },
             )
-            pipeline = self._create_or_update_diann_pipeline(data)
+            pipeline = self._create_or_update_diann_pipeline(
+                data, user=request.user, project=project, experiment=experiment
+            )
             worklist = AcquisitionWorklist.objects.create(
                 experiment=experiment,
                 name=data["worklist_name"],
@@ -4538,6 +5417,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     "processing_pipeline_id": pipeline.id,
                     "processing_plan": pipeline.parameters,
                     "hye_interval": data["hye_interval"],
+                    "hye_target_profile": hye_target_profile_snapshot(data.get("hye_target_profile")),
                     "plate_type": data["plate_type"],
                     "watcher_matching": "expected_filename",
                     "export_targets": ["thermo_ms_sequence", "lc_injection_sequence"],
@@ -4585,7 +5465,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 {"instrument_configuration": "Configuration must belong to the selected lab facility."}
             )
 
-        parameters = self._build_diann_pipeline_parameters(data)
+        parameters = self._build_diann_pipeline_parameters(data, user=request.user)
         validation_errors = validate_diann_pipeline_settings(parameters, allow_performance_tags=True)
         normalized = normalize_diann_settings(parameters)
         tags = normalized.get("tags") or {}
@@ -4608,6 +5488,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 "healthy_count": data["healthy_count"],
                 "diseased_count": data["diseased_count"],
                 "hye_interval": data["hye_interval"],
+                "hye_target_profile": hye_target_profile_snapshot(data.get("hye_target_profile")),
                 "planned_runs": planned_runs,
                 "processing_preset": data["processing_preset"],
                 "diann_version": data["diann_version"],
@@ -4642,8 +5523,19 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             candidate = f"{base}-{index}"
         return candidate
 
-    def _build_diann_pipeline_parameters(self, data):
-        reference_assets = _resolve_reference_assets(data)
+    def _build_diann_pipeline_parameters(self, data, *, user=None, project=None, experiment=None):
+        reference_assets = _resolve_reference_assets(data, user=user, project=project, experiment=experiment)
+        if project:
+            requested_scope = str(data.get("speclib_scope") or "experiment")
+            for asset in (
+                _find_reference_asset(data.get("fasta_reference_asset_id"), ReferenceAssetType.FASTA, user=user, project=project, experiment=experiment),
+                _find_reference_asset(data.get("speclib_reference_asset_id"), ReferenceAssetType.SPECTRAL_LIBRARY, user=user, project=project, experiment=experiment),
+            ):
+                if asset and not asset.project_id:
+                    asset.project = project
+                    asset.scope = requested_scope
+                    asset.experiment = experiment if requested_scope == "experiment" else None
+                    asset.save(update_fields=["project", "experiment", "scope", "updated_at"])
         preset_name = _normalize_diann_preset_name(data.get("processing_preset", ""))
         preset_settings = normalize_diann_settings(_diann_settings_for_preset(preset_name))
         user_settings = normalize_diann_settings(_ensure_dict(data.get("diann_settings"), field_name="diann_settings"))
@@ -4681,7 +5573,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         if speclib_mode == "reuse":
             library_source = "preferred_speclib_path"
             fasta_path = ""
-            library_path = ""
+            library_path = str((reference_assets.get("speclib_asset") or {}).get("path") or "")
             out_library = ""
             generate_speclib = False
             fasta_search = False
@@ -4705,6 +5597,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             "adapter": "diann",
             "required_engine": "diann",
             "required_engine_version": data.get("diann_version", ""),
+            "requires_mzml_input": True,
             "executable": "diann",
             "version_command": ["diann"],
             "report": str(effective_settings.get("report") or "diann-first-pass.parquet"),
@@ -4736,8 +5629,8 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             parameters["temp"] = temp_value
         return resolve_pipeline_parameters(parameters, engine="diann")
 
-    def _create_or_update_diann_pipeline(self, data):
-        parameters = self._build_diann_pipeline_parameters(data)
+    def _create_or_update_diann_pipeline(self, data, *, user=None, project=None, experiment=None):
+        parameters = self._build_diann_pipeline_parameters(data, user=user, project=project, experiment=experiment)
         pipeline, _created = ProcessingPipeline.objects.update_or_create(
             name="DIA-NN",
             version=data["diann_version"],
@@ -4767,7 +5660,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 pipeline = ProcessingPipeline.objects.filter(pk=pipeline_id).first()
 
         if pipeline:
-            parameters = pipeline.parameters or {}
+            parameters = (worklist.metadata or {}).get("processing_plan") or pipeline.parameters or {}
             processing_preset = str(parameters.get("processing_preset") or "")
             diann_version = pipeline.version
             speclib_mode = _diann_speclib_mode(processing_preset)
@@ -5151,6 +6044,8 @@ class ExperimentViewSet(AuthenticatedModelViewSet):
     queryset = Experiment.objects.select_related("project", "created_by")
     serializer_class = ExperimentSerializer
     scope_lab_lookup = "project__lab_id"
+    scope_project_lookup = "project"
+    write_scope_project_path = "project"
     write_scope_lab_path = "project.lab"
     search_fields = ("name", "hypothesis", "project__code", "project__title")
     ordering_fields = ("name", "started_on", "ended_on", "created_at", "updated_at")
@@ -5167,6 +6062,8 @@ class SampleViewSet(AuthenticatedModelViewSet):
     queryset = Sample.objects.select_related("experiment", "submitted_by")
     serializer_class = SampleSerializer
     scope_lab_lookup = "experiment__project__lab_id"
+    scope_project_lookup = "experiment__project"
+    write_scope_project_path = "experiment.project"
     write_scope_lab_path = "experiment.project.lab"
     search_fields = ("name", "external_id", "species", "matrix", "digestion_protocol", "experiment__name")
     ordering_fields = ("name", "external_id", "species", "matrix", "created_at", "updated_at")
@@ -5186,6 +6083,8 @@ class RunViewSet(AuthenticatedModelViewSet):
     queryset = Run.objects.select_related("sample", "configuration", "acquired_by")
     serializer_class = RunSerializer
     scope_lab_lookup = "sample__experiment__project__lab_id"
+    scope_project_lookup = "sample__experiment__project"
+    write_scope_project_path = "sample.experiment.project"
     write_scope_lab_path = "sample.experiment.project.lab"
     search_fields = ("run_name", "expected_filename", "hye_pair_label", "sample__name", "sample__external_id")
     ordering_fields = (
@@ -5272,6 +6171,8 @@ class RawFileViewSet(AuthenticatedModelViewSet):
     queryset = RawFile.objects.select_related("run")
     serializer_class = RawFileSerializer
     scope_lab_lookup = "run__sample__experiment__project__lab_id"
+    scope_project_lookup = "run__sample__experiment__project"
+    write_scope_project_path = "run.sample.experiment.project"
     write_scope_lab_path = "run.sample.experiment.project.lab"
     search_fields = ("filename", "source_path", "storage_path", "checksum_sha256", "failure_reason", "run__run_name")
     ordering_fields = (
@@ -5290,6 +6191,9 @@ class RawFileViewSet(AuthenticatedModelViewSet):
         project_filter = self.request.query_params.get("project")
         if project_filter:
             queryset = queryset.filter(run__sample__experiment__project_id=project_filter)
+        experiment_filter = self.request.query_params.get("experiment")
+        if experiment_filter:
+            queryset = queryset.filter(run__sample__experiment_id=experiment_filter)
         run_filter = self.request.query_params.get("run")
         if run_filter:
             queryset = queryset.filter(run_id=run_filter)
@@ -5387,6 +6291,8 @@ class RawFileArchiveViewSet(AuthenticatedModelViewSet):
     )
     serializer_class = RawFileArchiveSerializer
     scope_lab_lookup = "raw_file__run__sample__experiment__project__lab_id"
+    scope_project_lookup = "raw_file__run__sample__experiment__project"
+    write_scope_project_path = "raw_file.run.sample.experiment.project"
     write_scope_lab_path = "raw_file.run.sample.experiment.project.lab"
     search_fields = ("raw_file__filename", "archive_path", "original_storage_path", "checksum_sha256")
     ordering_fields = ("status", "compression", "size_bytes", "archived_at", "restored_at", "created_at", "updated_at")
@@ -5413,6 +6319,8 @@ class RawFileArchiveCopyViewSet(AuthenticatedModelViewSet):
     )
     serializer_class = RawFileArchiveCopySerializer
     scope_lab_lookup = "archive__raw_file__run__sample__experiment__project__lab_id"
+    scope_project_lookup = "archive__raw_file__run__sample__experiment__project"
+    write_scope_project_path = "archive.raw_file.run.sample.experiment.project"
     write_scope_lab_path = "archive.raw_file.run.sample.experiment.project.lab"
     search_fields = ("archive__raw_file__filename", "path", "storage_root", "checksum_sha256")
     ordering_fields = ("status", "copy_role", "size_bytes", "verified_at", "created_at", "updated_at")
@@ -5435,6 +6343,8 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
     queryset = DirectUploadSession.objects.select_related("project", "run", "completed_raw_file")
     serializer_class = DirectUploadSessionSerializer
     scope_lab_lookup = "project__lab_id"
+    scope_project_lookup = "project"
+    write_scope_project_path = "project"
     write_scope_lab_path = "project.lab"
     allow_watcher_agent = True
     search_fields = ("filename", "storage_key", "checksum_sha256", "project__code", "run__run_name")
@@ -5459,12 +6369,10 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         except Project.DoesNotExist as exc:
             raise ValidationError({"project": "Project does not exist."}) from exc
 
-        if (
-            not getattr(request.user, "agent_role", None)
-            and not is_admin(request.user)
-            and project.lab_id not in set(active_lab_ids(request.user))
+        if not getattr(request.user, "agent_role", None) and not is_admin(request.user) and (
+            project.id not in set(accessible_project_ids(request.user)) or project.owner_id != request.user.pk
         ):
-            raise PermissionDenied("This upload targets a project outside your lab scope.")
+            raise PermissionDenied("Only the project owner can upload files to this project.")
 
         filename = PurePath(str(request.data.get("filename", ""))).name
         if not filename:
@@ -5532,14 +6440,12 @@ class DirectUploadSessionViewSet(AuthenticatedModelViewSet):
         if delivery_mode not in {"direct", "watcher"}:
             raise ValidationError({"delivery_mode": "delivery_mode must be direct or watcher."})
 
-        run_id = request.data.get("run") or None
         if run_id and not Run.objects.filter(pk=run_id, sample__experiment__project=project).exists():
             raise ValidationError({"run": "Run must belong to the selected project."})
         if not run_id and intended_filename:
             matched_run = _resolve_run_for_expected_filename(project_id=project.id, filename=intended_filename)
             if matched_run:
                 run_id = matched_run.id
-        incoming_metadata = _ensure_dict(request.data.get("metadata"), field_name="metadata")
         if not run_id and incoming_metadata.get("mode") == "adhoc" and incoming_metadata.get("experiment_id"):
             experiment = Experiment.objects.filter(pk=incoming_metadata["experiment_id"], project=project).first()
             if not experiment:
@@ -5824,6 +6730,8 @@ class RawFileDerivativeViewSet(AuthenticatedModelViewSet):
     )
     serializer_class = RawFileDerivativeSerializer
     scope_lab_lookup = "raw_file__run__sample__experiment__project__lab_id"
+    scope_project_lookup = "raw_file__run__sample__experiment__project"
+    write_scope_project_path = "raw_file.run.sample.experiment.project"
     write_scope_lab_path = "raw_file.run.sample.experiment.project.lab"
     search_fields = ("raw_file__filename", "path", "checksum_sha256", "format")
     ordering_fields = ("derivative_type", "status", "format", "size_bytes", "created_at", "updated_at")
@@ -5861,6 +6769,8 @@ class ProcessingJobArtifactViewSet(AuthenticatedModelViewSet):
     )
     serializer_class = ProcessingJobArtifactSerializer
     scope_lab_lookup = "job__run__sample__experiment__project__lab_id"
+    scope_project_lookup = "job__run__sample__experiment__project"
+    write_scope_project_path = "job.run.sample.experiment.project"
     write_scope_lab_path = "job.run.sample.experiment.project.lab"
     search_fields = ("job__run__run_name", "job__raw_file__filename", "path", "checksum_sha256", "format")
     ordering_fields = ("artifact_type", "format", "size_bytes", "retained", "created_at", "updated_at")
@@ -5899,6 +6809,8 @@ class AcquisitionWorklistViewSet(AuthenticatedModelViewSet):
     queryset = AcquisitionWorklist.objects.select_related("experiment", "configuration", "generated_by")
     serializer_class = AcquisitionWorklistSerializer
     scope_lab_lookup = "experiment__project__lab_id"
+    scope_project_lookup = "experiment__project"
+    write_scope_project_path = "experiment.project"
     write_scope_lab_path = "experiment.project.lab"
     search_fields = ("name", "notes", "experiment__name", "experiment__project__code")
     ordering_fields = ("name", "status", "created_at", "updated_at")
@@ -5923,10 +6835,17 @@ class AcquisitionWorklistViewSet(AuthenticatedModelViewSet):
             raise ValidationError({"status": "Only an unfrozen draft or ready worklist can be frozen."})
         if not worklist.entries.filter(is_active=True).exists():
             raise ValidationError({"entries": "A worklist must contain at least one active entry."})
+        pair_errors = validate_hye_worklist_pairs(worklist)
+        if pair_errors:
+            raise ValidationError({"hye_pairs": pair_errors})
+        if worklist.entries.filter(is_active=True).filter(Q(file_role=RunFileRole.HYE) | Q(qc_program=QcProgram.HYE)).exists():
+            metadata = {**(worklist.metadata or {})}
+            metadata["hye_target_profile"] = metadata.get("hye_target_profile") or hye_target_profile_snapshot()
+            worklist.metadata = metadata
         worklist.status = WorklistStatus.READY
         worklist.frozen_at = timezone.now()
         worklist.frozen_by = request.user
-        worklist.save(update_fields=["status", "frozen_at", "frozen_by", "updated_at"])
+        worklist.save(update_fields=["status", "frozen_at", "frozen_by", "metadata", "updated_at"])
         return Response(self.get_serializer(worklist).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["get"], url_path="export")
@@ -5961,10 +6880,169 @@ class AcquisitionWorklistViewSet(AuthenticatedModelViewSet):
         return FileResponse(path.open("rb"), as_attachment=True, filename=path.name, content_type="text/csv")
 
 
+class HyeTargetProfileViewSet(AuthenticatedModelViewSet):
+    queryset = HyeTargetProfile.objects.all()
+    serializer_class = HyeTargetProfileSerializer
+    write_requires_admin = True
+    search_fields = ("name", "version")
+    ordering_fields = ("name", "version", "created_at", "updated_at")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        active = self.request.query_params.get("active")
+        if active is not None:
+            queryset = queryset.filter(active=active.lower() in {"true", "1", "yes"})
+        return queryset
+
+
+class ReferenceAssetViewSet(AuthenticatedModelViewSet):
+    queryset = ReferenceAsset.objects.select_related("project", "experiment", "uploaded_by")
+    serializer_class = ReferenceAssetSerializer
+    parser_classes = (MultiPartParser, FormParser)
+    http_method_names = ("get", "head", "options", "post")
+    search_fields = ("filename", "checksum_sha256", "asset_type", "project__code", "experiment__name")
+    ordering_fields = ("filename", "asset_type", "created_at", "updated_at", "size_bytes")
+
+    def get_queryset(self):
+        queryset = self.queryset.filter(active=True)
+        if is_admin(self.request.user):
+            return queryset
+        project_ids = accessible_project_ids(self.request.user)
+        return queryset.filter(
+            Q(uploaded_by=self.request.user, project__isnull=True)
+            | Q(project_id__in=project_ids)
+            | Q(experiment__project_id__in=project_ids)
+        ).distinct()
+
+    def create(self, request, *args, **kwargs):
+        raise MethodNotAllowed("POST", detail="Upload reference assets through /reference-assets/upload/.")
+
+    @action(detail=False, methods=["post"], url_path="upload", parser_classes=(MultiPartParser, FormParser))
+    def upload(self, request):
+        uploaded = request.FILES.get("file")
+        if uploaded is None:
+            raise ValidationError({"file": "Provide the FASTA or spectral-library file in the 'file' field."})
+        asset_type = str(request.data.get("asset_type") or "").strip().lower()
+        if asset_type not in {ReferenceAssetType.FASTA, ReferenceAssetType.SPECTRAL_LIBRARY}:
+            raise ValidationError({"asset_type": "asset_type must be 'fasta' or 'spectral_library'."})
+        filename = re.split(r"[/\\]", str(uploaded.name or ""))[-1]
+        suffix = Path(filename).suffix.lower()
+        allowed = {".fasta", ".fa", ".faa", ".fna"} if asset_type == ReferenceAssetType.FASTA else {".speclib", ".parquet", ".tsv", ".lib"}
+        if suffix not in allowed:
+            raise ValidationError({"file": f"Unsupported {asset_type} filename extension: {suffix or '(none)'}."})
+        size_limit = int(getattr(settings, "MSCONNECT_REFERENCE_MAX_UPLOAD_BYTES", 25 * 1024**3))
+        if uploaded.size <= 0 or uploaded.size > size_limit:
+            raise ValidationError({"file": f"File size must be between 1 byte and {size_limit} bytes."})
+
+        project_id = _int_or_none(request.data.get("project"))
+        experiment_id = _int_or_none(request.data.get("experiment"))
+        scope = str(request.data.get("scope") or "experiment").strip().lower()
+        if scope not in {"experiment", "project"}:
+            raise ValidationError({"scope": "scope must be 'experiment' or 'project'."})
+        project = Project.objects.filter(pk=project_id).first() if project_id else None
+        experiment = Experiment.objects.select_related("project").filter(pk=experiment_id).first() if experiment_id else None
+        if project_id and project is None:
+            raise ValidationError({"project": "Project does not exist."})
+        if experiment_id and experiment is None:
+            raise ValidationError({"experiment": "Experiment does not exist."})
+        if experiment:
+            if project and experiment.project_id != project.id:
+                raise ValidationError({"experiment": "Experiment does not belong to the selected project."})
+            project = project or experiment.project
+        if scope == "experiment" and (project or experiment) and experiment is None:
+            raise ValidationError({"experiment": "Experiment-scoped assets require an experiment."})
+        if project and not is_admin(request.user) and (
+            project.id not in set(accessible_project_ids(request.user)) or project.owner_id != request.user.pk
+        ):
+            raise PermissionDenied("Only the project owner can upload reference assets.")
+
+        root = Path(settings.PROCESSOR_SHARED_STORAGE_ROOT).resolve() / "reference-assets" / asset_type
+        root.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+        temp_name = None
+        total_size = 0
+        try:
+            with tempfile.NamedTemporaryFile(prefix=".upload-", dir=root, delete=False) as temporary:
+                temp_name = temporary.name
+                for chunk in uploaded.chunks():
+                    total_size += len(chunk)
+                    if total_size > size_limit:
+                        raise ValidationError({"file": f"File exceeds the {size_limit}-byte upload limit."})
+                    digest.update(chunk)
+                    temporary.write(chunk)
+            checksum = digest.hexdigest()
+            destination_dir = root / checksum[:2]
+            destination_dir.mkdir(parents=True, exist_ok=True)
+            safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._") or "reference"
+            destination = destination_dir / f"{checksum}_{safe_filename}"
+            if destination.exists():
+                existing = ReferenceAsset.objects.filter(storage_path=str(destination)).first()
+                if (
+                    existing
+                    and existing.uploaded_by_id == request.user.id
+                    and existing.project_id == (project.id if project else None)
+                    and existing.experiment_id == (experiment.id if scope == "experiment" and experiment else None)
+                    and existing.scope == scope
+                ):
+                    os.unlink(temp_name)
+                    temp_name = None
+                    return Response(self.get_serializer(existing).data, status=status.HTTP_200_OK)
+                destination = destination_dir / f"{checksum}_{uuid.uuid4().hex}_{safe_filename}"
+            os.replace(temp_name, destination)
+            asset = ReferenceAsset.objects.create(
+                asset_type=asset_type,
+                filename=filename,
+                storage_path=str(destination),
+                checksum_sha256=checksum,
+                size_bytes=total_size,
+                uploaded_by=request.user,
+                project=project,
+                experiment=experiment if scope == "experiment" else None,
+                scope=scope,
+                metadata={"content_type": uploaded.content_type or "application/octet-stream"},
+            )
+        except Exception:
+            if temp_name and os.path.exists(temp_name):
+                os.unlink(temp_name)
+            raise
+        return Response(self.get_serializer(asset).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get"], url_path="download")
+    def download(self, request, pk=None):
+        asset = self.get_object()
+        return _managed_file_response(asset.storage_path, filename=asset.filename)
+
+
+class AnalysisBatchViewSet(AuthenticatedModelViewSet):
+    queryset = AnalysisBatch.objects.select_related("project", "experiment", "pipeline", "created_by")
+    serializer_class = AnalysisBatchSerializer
+    scope_lab_lookup = "project__lab_id"
+    scope_project_lookup = "project"
+    write_scope_project_path = "project"
+    search_fields = ("project__code", "experiment__name", "pipeline__name", "error_message")
+    ordering_fields = ("status", "executor", "created_at", "updated_at", "finished_at")
+    http_method_names = ("get", "head", "options")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        project_id = self.request.query_params.get("project")
+        experiment_id = self.request.query_params.get("experiment")
+        status_filter = self.request.query_params.get("status")
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        if experiment_id:
+            queryset = queryset.filter(experiment_id=experiment_id)
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        return queryset
+
+
 class WorklistEntryViewSet(AuthenticatedModelViewSet):
     queryset = WorklistEntry.objects.select_related("worklist", "run", "run__sample")
     serializer_class = WorklistEntrySerializer
     scope_lab_lookup = "worklist__experiment__project__lab_id"
+    scope_project_lookup = "worklist__experiment__project"
+    write_scope_project_path = "worklist.experiment.project"
     write_scope_lab_path = "worklist.experiment.project.lab"
     search_fields = (
         "expected_filename",
@@ -5987,6 +7065,12 @@ class WorklistEntryViewSet(AuthenticatedModelViewSet):
         file_role_filter = self.request.query_params.get("file_role")
         if file_role_filter:
             queryset = queryset.filter(file_role=file_role_filter)
+        qc_program_filter = self.request.query_params.get("qc_program")
+        if qc_program_filter:
+            queryset = queryset.filter(qc_program=qc_program_filter)
+        pair_filter = self.request.query_params.get("hye_pair_label")
+        if pair_filter:
+            queryset = queryset.filter(hye_pair_label=pair_filter)
         return queryset
 
 
@@ -6002,7 +7086,7 @@ class PipelineEventViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset()
         if not is_admin(self.request.user):
-            queryset = queryset.filter(project__lab_id__in=active_lab_ids(self.request.user))
+            queryset = queryset.filter(project_id__in=accessible_project_ids(self.request.user))
         project = self.request.query_params.get("project")
         experiment = self.request.query_params.get("experiment")
         event_type = self.request.query_params.get("event_type")
@@ -6207,9 +7291,18 @@ class AcquisitionAgentViewSet(AuthenticatedModelViewSet):
 class AcquisitionRouteViewSet(AuthenticatedModelViewSet):
     queryset = AcquisitionRoute.objects.select_related("agent", "project", "worklist", "experiment", "processing_pipeline")
     serializer_class = AcquisitionRouteSerializer
+    scope_project_lookup = "project"
+    write_scope_project_path = "project"
     write_requires_admin = True
     search_fields = ("name", "agent__name", "project__code", "source_prefix")
     ordering_fields = ("name", "agent__name", "project__code", "updated_at")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        project_id = self.request.query_params.get("project")
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        return queryset
 
     @action(detail=True, methods=["post"])
     def finish(self, request, pk=None):
@@ -6340,6 +7433,8 @@ class ProcessingJobViewSet(AuthenticatedModelViewSet):
     )
     serializer_class = ProcessingJobSerializer
     scope_lab_lookup = "run__sample__experiment__project__lab_id"
+    scope_project_lookup = "run__sample__experiment__project"
+    write_scope_project_path = "run.sample.experiment.project"
     write_scope_lab_path = "run.sample.experiment.project.lab"
     search_fields = (
         "run__run_name",
@@ -6427,6 +7522,8 @@ class ProteinIdentificationViewSet(AuthenticatedModelViewSet):
     queryset = ProteinIdentification.objects.select_related("job", "protein")
     serializer_class = ProteinIdentificationSerializer
     scope_lab_lookup = "job__run__sample__experiment__project__lab_id"
+    scope_project_lookup = "job__run__sample__experiment__project"
+    write_scope_project_path = "job.run.sample.experiment.project"
     write_scope_lab_path = "job.run.sample.experiment.project.lab"
 
 
@@ -6434,6 +7531,8 @@ class PeptideIdentificationViewSet(AuthenticatedModelViewSet):
     queryset = PeptideIdentification.objects.select_related("job", "peptide")
     serializer_class = PeptideIdentificationSerializer
     scope_lab_lookup = "job__run__sample__experiment__project__lab_id"
+    scope_project_lookup = "job__run__sample__experiment__project"
+    write_scope_project_path = "job.run.sample.experiment.project"
     write_scope_lab_path = "job.run.sample.experiment.project.lab"
 
 
@@ -6441,6 +7540,8 @@ class ProteinQuantViewSet(AuthenticatedModelViewSet):
     queryset = ProteinQuant.objects.select_related("job", "protein")
     serializer_class = ProteinQuantSerializer
     scope_lab_lookup = "job__run__sample__experiment__project__lab_id"
+    scope_project_lookup = "job__run__sample__experiment__project"
+    write_scope_project_path = "job.run.sample.experiment.project"
     write_scope_lab_path = "job.run.sample.experiment.project.lab"
 
 
@@ -6448,4 +7549,6 @@ class PeptideQuantViewSet(AuthenticatedModelViewSet):
     queryset = PeptideQuant.objects.select_related("job", "peptide")
     serializer_class = PeptideQuantSerializer
     scope_lab_lookup = "job__run__sample__experiment__project__lab_id"
+    scope_project_lookup = "job__run__sample__experiment__project"
+    write_scope_project_path = "job.run.sample.experiment.project"
     write_scope_lab_path = "job.run.sample.experiment.project.lab"

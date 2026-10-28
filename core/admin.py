@@ -14,6 +14,7 @@ from .models import (
     IngestionFailure,
     Instrument,
     InstrumentConfiguration,
+    HyeTargetProfile,
     Lab,
     LabMembership,
     Peptide,
@@ -55,6 +56,13 @@ class AcquisitionRouteAdmin(admin.ModelAdmin):
     list_display = ("name", "agent", "project", "mode", "source_prefix", "spool_folder", "status")
     search_fields = ("name", "agent__name", "project__code", "source_prefix")
     list_filter = ("mode", "status", "agent")
+
+
+@admin.register(HyeTargetProfile)
+class HyeTargetProfileAdmin(admin.ModelAdmin):
+    list_display = ("name", "version", "active", "updated_at")
+    search_fields = ("name", "version")
+    list_filter = ("active",)
 
 
 @admin.register(University)

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.core.signing import TimestampSigner
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -32,6 +33,7 @@ from core.models import (
     ProcessingPipeline,
     ProcessingStatus,
     Project,
+    ProjectMembership,
     ProteinQuant,
     QcProgram,
     RawFile,
@@ -103,13 +105,182 @@ class ApiPermissionTests(TestCase):
         LabMembership.objects.create(user=self.collaborator, lab=self.lab_a, role=UserRole.COLLABORATOR)
         LabMembership.objects.create(user=self.external, lab=self.lab_b, role=UserRole.RESEARCHER)
 
-        self.project_a = Project.objects.create(lab=self.lab_a, title="Project A", code="P-A", pi=self.pi_user)
-        self.project_b = Project.objects.create(lab=self.lab_b, title="Project B", code="P-B", pi=self.external)
+        self.project_a = Project.objects.create(lab=self.lab_a, title="Project A", code="P-A", pi=self.pi_user, owner=self.researcher)
+        self.project_b = Project.objects.create(lab=self.lab_b, title="Project B", code="P-B", pi=self.external, owner=self.external)
+        ProjectMembership.objects.create(project=self.project_a, user=self.collaborator)
 
     def _create_user(self, username, role):
         user = User.objects.create_user(username=username, password="password123")
         UserProfile.objects.create(user=user, global_role=role)
         return user
+
+    def test_current_user_allows_accounts_without_email(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.get("/api/auth/me/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["username"], self.admin.username)
+        self.assertEqual(response.data["email"], "")
+        self.assertEqual(response.data["global_role"], UserRole.ADMIN)
+
+    def test_admin_can_invite_user_and_recipient_activates_with_verified_email(self):
+        self.client.force_authenticate(user=self.admin)
+        with patch("core.api.send_mail", return_value=0):
+            response = self.client.post(
+                "/api/admin/user-access/",
+                {
+                    "username": "new-researcher",
+                    "email": "new-researcher@example.org",
+                    "lab": self.lab_a.id,
+                    "global_role": UserRole.RESEARCHER,
+                    "membership_role": UserRole.RESEARCHER,
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertFalse(response.data["user"]["is_active"])
+        self.assertFalse(response.data["email_sent"])
+        invited = User.objects.get(username="new-researcher")
+        self.assertFalse(invited.has_usable_password())
+        self.assertTrue(LabMembership.objects.filter(user=invited, lab=self.lab_a, active=True).exists())
+
+        parts = response.data["invite_url"].rstrip("/").split("/")
+        uid, token = parts[-2:]
+        activation = self.client.post(
+            "/api/auth/accept-invitation/",
+            {"uid": uid, "token": token, "password": "M5connect!SecurePass2026"},
+            format="json",
+        )
+        self.assertEqual(activation.status_code, 200, activation.data)
+        invited.refresh_from_db()
+        self.assertTrue(invited.is_active)
+        self.assertTrue(invited.check_password("M5connect!SecurePass2026"))
+        self.assertIsNotNone(invited.profile.email_verified_at)
+
+    def test_only_admin_can_list_or_create_account_access(self):
+        self.client.force_authenticate(user=self.researcher)
+        listing = self.client.get("/api/admin/user-access/")
+        creation = self.client.post(
+            "/api/admin/user-access/",
+            {"username": "nope", "email": "nope@example.org", "lab": self.lab_a.id},
+            format="json",
+        )
+        self.assertEqual(listing.status_code, 403)
+        self.assertEqual(creation.status_code, 403)
+
+    def test_admin_can_grant_application_admin_and_lab_membership_roles(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.patch(
+            f"/api/admin/user-access/{self.researcher.id}/",
+            {
+                "lab_id": self.lab_b.id,
+                "global_role": UserRole.ADMIN,
+                "membership_role": UserRole.PI,
+                "membership_active": True,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.researcher.profile.refresh_from_db()
+        self.assertEqual(self.researcher.profile.global_role, UserRole.ADMIN)
+        membership = LabMembership.objects.get(user=self.researcher, lab=self.lab_b)
+        self.assertEqual(membership.role, UserRole.PI)
+        self.assertTrue(membership.active)
+
+    def test_admin_can_resend_email_verification(self):
+        self.client.force_authenticate(user=self.admin)
+        self.researcher.email = "researcher@example.org"
+        self.researcher.save(update_fields=["email"])
+        with patch("core.api.send_mail", return_value=1) as send_mail_mock:
+            response = self.client.post(f"/api/admin/user-access/{self.researcher.id}/resend-email/", {}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["email_sent"])
+        self.assertIn("/app/verify-email/", send_mail_mock.call_args.kwargs["message"])
+
+    def test_email_verification_link_marks_account_verified(self):
+        self.researcher.email = "researcher@example.org"
+        self.researcher.save(update_fields=["email"])
+        token = TimestampSigner(salt="signup-verification").sign(f"{self.researcher.id}:{self.researcher.email}")
+        response = self.client.get(f"/accounts/verify-email/{token}/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["verified"])
+        self.researcher.profile.refresh_from_db()
+        self.assertIsNotNone(self.researcher.profile.email_verified_at)
+
+    def test_admin_can_create_university_facility_and_lab(self):
+        self.client.force_authenticate(user=self.admin)
+        university_response = self.client.post(
+            "/api/admin/lab-directory/",
+            {"kind": "university", "name": "Example University", "abbreviation": "EU"},
+            format="json",
+        )
+        self.assertEqual(university_response.status_code, 201, university_response.data)
+        university_id = university_response.data["record"]["id"]
+
+        facility_response = self.client.post(
+            "/api/admin/lab-directory/",
+            {"kind": "facility", "university": university_id, "name": "Mass Spec Core"},
+            format="json",
+        )
+        self.assertEqual(facility_response.status_code, 201, facility_response.data)
+        facility_id = facility_response.data["record"]["id"]
+
+        lab_response = self.client.post(
+            "/api/admin/lab-directory/",
+            {"kind": "lab", "facility": facility_id, "name": "Proteomics Lab"},
+            format="json",
+        )
+        self.assertEqual(lab_response.status_code, 201, lab_response.data)
+        self.assertEqual(lab_response.data["record"]["slug"], "proteomics-lab")
+
+    def test_lab_directory_and_runtime_settings_are_admin_only(self):
+        self.client.force_authenticate(user=self.researcher)
+        labs = self.client.get("/api/admin/lab-directory/")
+        runtime = self.client.get("/api/admin/runtime-settings/")
+        self.assertEqual(labs.status_code, 403)
+        self.assertEqual(runtime.status_code, 403)
+
+        self.client.force_authenticate(user=self.admin)
+        with override_settings(EMAIL_HOST_USER="mail-user", EMAIL_HOST_PASSWORD="do-not-return-this"):
+            runtime = self.client.get("/api/admin/runtime-settings/")
+        self.assertEqual(runtime.status_code, 200)
+        self.assertTrue(runtime.data["email"]["credentials_configured"])
+        self.assertNotIn("EMAIL_HOST_PASSWORD", str(runtime.data))
+        self.assertNotIn("do-not-return-this", str(runtime.data))
+
+    @override_settings(
+        MSCONNECT_ASSISTANT_OPENAI_API_KEY="test-key",
+        MSCONNECT_ASSISTANT_OPENAI_MODELS=("gpt-test",),
+        MSCONNECT_ASSISTANT_ANTHROPIC_API_KEY="",
+    )
+    def test_project_assistant_enforces_model_allowlist_and_private_threads(self):
+        self.client.force_authenticate(user=self.researcher)
+        assistant_url = f"/api/projects/{self.project_a.id}/assistant/"
+        catalog = self.client.get(assistant_url)
+        self.assertEqual(catalog.status_code, 200)
+        self.assertEqual(catalog.data["models"], [{"provider": "openai", "model": "gpt-test"}])
+
+        created = self.client.post(
+            assistant_url,
+            {"provider": "openai", "model": "gpt-test"},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201)
+        thread_url = f"{assistant_url}threads/{created.data['id']}/"
+
+        self.client.force_authenticate(user=self.collaborator)
+        self.assertEqual(self.client.get(assistant_url).data["threads"], [])
+        self.assertEqual(self.client.get(thread_url).status_code, 404)
+
+        self.client.force_authenticate(user=self.researcher)
+        rejected = self.client.post(
+            assistant_url,
+            {"provider": "openai", "model": "not-allowed"},
+            format="json",
+        )
+        self.assertEqual(rejected.status_code, 400)
 
     def test_researcher_only_sees_projects_for_member_labs(self):
         self.client.force_authenticate(user=self.researcher)
@@ -123,6 +294,30 @@ class ApiPermissionTests(TestCase):
         response = self.client.get("/api/projects/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual({item["id"] for item in response.data}, {self.project_a.id})
+
+    def test_owner_can_add_read_only_same_lab_project_viewer(self):
+        self.client.force_authenticate(user=self.researcher)
+        add_response = self.client.post(
+            f"/api/projects/{self.project_a.id}/members/",
+            {"user": self.pi_user.id},
+            format="json",
+        )
+        self.assertEqual(add_response.status_code, 201, add_response.data)
+        self.client.force_authenticate(user=self.pi_user)
+        self.assertEqual(self.client.get("/api/projects/").data[0]["id"], self.project_a.id)
+        denied = self.client.patch(f"/api/projects/{self.project_a.id}/", {"title": "Not editable"}, format="json")
+        self.assertEqual(denied.status_code, 403)
+
+    def test_project_shares_do_not_grant_other_projects_or_cross_lab_users(self):
+        self.client.force_authenticate(user=self.researcher)
+        denied = self.client.post(
+            f"/api/projects/{self.project_a.id}/members/",
+            {"user": self.external.id},
+            format="json",
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.client.force_authenticate(user=self.collaborator)
+        self.assertEqual(self.client.get(f"/api/projects/{self.project_b.id}/").status_code, 404)
 
         create_response = self.client.post(
             "/api/projects/",
@@ -445,6 +640,47 @@ class ApiPermissionTests(TestCase):
             )
             self.assertEqual(generated_lc.status_code, 200)
             self.assertIn("run_001.raw", b"".join(generated_lc.streaming_content).decode())
+
+    def test_imported_hye_worklist_persists_queryable_pairs_and_profile_snapshot(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.post(
+            f"/api/projects/{self.project_a.id}/import-worklist/",
+            data={
+                "worklist_name": "Tagged HYE worklist",
+                "rows": [
+                    {"position": 1, "sample_name": "HYE-A", "run_name": "HYE-A-01", "expected_filename": "hye_a.raw", "file_role": "hye", "qc_program": "hye", "hye_pair_label": "HYE-01"},
+                    {"position": 2, "sample_name": "HYE-B", "run_name": "HYE-B-01", "expected_filename": "hye_b.raw", "file_role": "hye", "qc_program": "hye", "hye_pair_label": "HYE-01"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        worklist = AcquisitionWorklist.objects.get(pk=response.data["worklist"]["id"])
+        self.assertEqual(worklist.metadata["hye_target_profile"]["name"], "HYE Standard")
+        self.assertEqual(worklist.metadata["hye_target_profile"]["targets"]["Homo sapiens"], {"a": 0.65, "b": 0.65})
+        entries = list(worklist.entries.order_by("position"))
+        self.assertEqual([(entry.qc_program, entry.hye_pair_label) for entry in entries], [("hye", "HYE-01"), ("hye", "HYE-01")])
+        self.assertEqual(entries[0].metadata["file_role"], "hye")
+        freeze = self.client.post(f"/api/acquisition-worklists/{worklist.id}/freeze/", format="json")
+        self.assertEqual(freeze.status_code, 200, freeze.data)
+
+    def test_freeze_rejects_incomplete_hye_pair(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.post(
+            f"/api/projects/{self.project_a.id}/import-worklist/",
+            data={
+                "worklist_name": "Incomplete HYE worklist",
+                "rows": [
+                    {"position": 1, "sample_name": "HYE-A", "expected_filename": "hye_a.raw", "file_role": "hye", "qc_program": "hye", "hye_pair_label": "HYE-01"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        worklist_id = response.data["worklist"]["id"]
+        freeze = self.client.post(f"/api/acquisition-worklists/{worklist_id}/freeze/", format="json")
+        self.assertEqual(freeze.status_code, 400)
+        self.assertIn("hye_pairs", freeze.data)
 
     def test_researcher_status_returns_single_page_run_rows(self):
         self.client.force_authenticate(user=self.researcher)
@@ -788,6 +1024,23 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(patch_response.data["targeted_skyline_pipeline_name"], "Skyline Targeted")
         self.assertEqual(DeploymentSetting.objects.get(scope="site").prtc_skyline_pipeline_id, skyline_pipeline.id)
         self.assertEqual(DeploymentSetting.objects.get(scope="site").targeted_skyline_pipeline_id, targeted_pipeline.id)
+
+    def test_admin_primary_lab_label_is_publicly_visible_without_exposing_settings(self):
+        self.client.force_authenticate(user=self.admin)
+
+        update_response = self.client.patch(
+            "/api/deployment-settings/",
+            data={"metadata": {"instance_identity": {"primary_lab_name": "Kelly Lab"}}},
+            format="json",
+        )
+
+        self.assertEqual(update_response.status_code, 200)
+        self.client.force_authenticate(user=self.researcher)
+        user_response = self.client.get("/api/auth/me/")
+
+        self.assertEqual(user_response.status_code, 200)
+        self.assertEqual(user_response.data["instance_label"], "Kelly Lab")
+        self.assertNotIn("metadata", user_response.data)
 
     def test_manifest_creates_planned_runs_and_analysis_preset_is_visible(self):
         self.client.force_authenticate(user=self.researcher)
@@ -1449,6 +1702,54 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(collaborator.profile.global_role, UserRole.COLLABORATOR)
         self.assertTrue(LabMembership.objects.filter(user=collaborator, active=True).exists())
 
+    def test_qc_can_be_scoped_to_one_experiment(self):
+        experiments = [
+            Experiment.objects.create(project=self.project_a, name=f"QC experiment {index}")
+            for index in (1, 2)
+        ]
+        worklists = []
+        for index, experiment in enumerate(experiments, start=1):
+            worklist = AcquisitionWorklist.objects.create(experiment=experiment, name=f"HYE worklist {index}")
+            worklists.append(worklist)
+            for position, mix in enumerate(("A", "B"), start=1):
+                sample = Sample.objects.create(experiment=experiment, name=f"HYE-{mix}")
+                run = Run.objects.create(
+                    sample=sample,
+                    run_name=f"QC-{index}-{mix}",
+                    expected_filename=f"QC-{index}-{mix}.raw",
+                    file_role=RunFileRole.HYE,
+                    qc_program=QcProgram.HYE,
+                    hye_pair_label=f"HYE-{index:02d}",
+                )
+                WorklistEntry.objects.create(
+                    worklist=worklist,
+                    run=run,
+                    position=position,
+                    file_role=RunFileRole.HYE,
+                    qc_program=QcProgram.HYE,
+                    expected_filename=run.expected_filename,
+                    hye_pair_label=run.hye_pair_label,
+                )
+
+        self.client.force_authenticate(user=self.researcher)
+        scoped_overview = self.client.get(
+            f"/api/qc/overview/?program=hye&project={self.project_a.id}&experiment={experiments[0].id}"
+        )
+        scoped_details = self.client.get(
+            f"/api/qc/details/?program=hye&project={self.project_a.id}&experiment={experiments[0].id}"
+        )
+        self.assertEqual(scoped_overview.status_code, 200)
+        self.assertEqual(scoped_overview.data["qc_injection_count"], 2)
+        self.assertEqual(scoped_details.status_code, 200)
+        self.assertEqual([pair["pair_label"] for pair in scoped_details.data["pairs"]], ["HYE-01"])
+
+        self.client.force_authenticate(user=self.collaborator)
+        shared_viewer_qc = self.client.get(
+            f"/api/qc/overview/?program=hye&project={self.project_a.id}&experiment={experiments[0].id}"
+        )
+        self.assertEqual(shared_viewer_qc.status_code, 200)
+        self.assertEqual(shared_viewer_qc.data["qc_injection_count"], 2)
+
     def test_qc_overview_respects_lab_scope(self):
         call_command("seed_demo_showcase", verbosity=0)
         project = Project.objects.get(code="COHORT-DIA-100")
@@ -1458,6 +1759,34 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["qc_injection_count"], 0)
         self.assertEqual(response.data["complete_pair_count"], 0)
+
+    def test_qc_does_not_grant_project_access_to_every_member_of_a_lab(self):
+        experiment = Experiment.objects.create(project=self.project_a, name="Private project experiment")
+        worklist = AcquisitionWorklist.objects.create(experiment=experiment, name="Private QC list")
+        for index, mix in enumerate(("A", "B"), start=1):
+            sample = Sample.objects.create(experiment=experiment, name=f"Private HYE-{mix}")
+            run = Run.objects.create(
+                sample=sample,
+                run_name=f"PRIVATE-{mix}",
+                expected_filename=f"PRIVATE-{mix}.raw",
+                file_role=RunFileRole.HYE,
+                qc_program=QcProgram.HYE,
+                hye_pair_label="HYE-01",
+            )
+            WorklistEntry.objects.create(
+                worklist=worklist,
+                run=run,
+                position=index,
+                file_role=RunFileRole.HYE,
+                qc_program=QcProgram.HYE,
+                expected_filename=run.expected_filename,
+                hye_pair_label=run.hye_pair_label,
+            )
+
+        self.client.force_authenticate(user=self.pi_user)
+        response = self.client.get(f"/api/qc/overview/?program=hye&project={self.project_a.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["qc_injection_count"], 0)
 
     def test_qc_prtc_returns_skyline_job_stats(self):
         experiment = Experiment.objects.create(project=self.project_a, name="PRTC Exp")
