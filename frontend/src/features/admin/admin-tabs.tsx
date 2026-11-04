@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 const sections = [
   { to: "/admin/users", label: "Users" },
   { to: "/admin/labs", label: "Labs" },
+  { to: "/admin/lc-ms", label: "LC-MS setups" },
   { to: "/admin/settings", label: "Global settings" },
   { to: "/processing/admin?type=processor", label: "Nodes & compute" },
   { to: "/admin/assistant", label: "AI agent" },

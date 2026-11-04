@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { URL } from "node:url";
 
-import { applyWorklistAnnotations, parseWorklistAnnotationText, parseWorklistText } from "./worklist-import.ts";
+import { parseWorklistText, validateWorklistTags } from "./worklist-import.ts";
 
 test("imports the redacted real-format MS example and tags HYE pairs", () => {
   const example = readFileSync(new URL("../../../public/worklist-examples/example-ms-worklist.csv", import.meta.url), "utf8");
@@ -24,78 +24,70 @@ test("rejects worklists with missing required columns or duplicate positions", (
   assert.throws(() => parseWorklistText("position,sample_name,expected_filename\n1,A,a.raw\n1,B,b.raw\n"), /positions must be unique/);
 });
 
-test("accepts the generator's bracket marker before the vendor header", () => {
-  const rows = parseWorklistText("Bracket Type=4,,,,,\nSample Type,File Name,Path,Instrument Method,Position,Inj Vol\nSample,run_01,ExampleData,Method,A1,2\n");
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].expected_filename, "run_01");
-  assert.equal(rows[0].position, 1);
-  assert.equal(rows[0].metadata?.source_format, "vendor_ms_worklist");
-});
-
-test("finds vendor headers after multiple preamble rows", () => {
-  const rows = parseWorklistText(
+test("accepts a bracket marker and finds vendor headers after preamble rows", () => {
+  const examples = [
+    "Bracket Type=4,,,,,\nSample Type,File Name,Path,Instrument Method,Position,Inj Vol\nSample,run_01,ExampleData,Method,A1,2\n",
     "0,,,,,\nExample sequence,,,,,\nSample Type,File Name,Path,Instrument Method,Position,Inj Vol\nUnknown,run_01,ExampleData,Method,A1,2\n",
-  );
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].expected_filename, "run_01");
-  assert.equal(rows[0].position, 1);
+  ];
+  for (const example of examples) {
+    const rows = parseWorklistText(example);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].expected_filename, "run_01");
+    assert.equal(rows[0].position, 1);
+    assert.equal(rows[0].metadata?.source_format, "vendor_ms_worklist");
+  }
 });
 
-test("requires explicit role annotations for vendor rows marked Unknown", () => {
-  const rows = parseWorklistText(
+test("unknown vendor rows are tagged in the worklist preview before import", () => {
+  const [row] = parseWorklistText(
     "Sample Type,File Name,Path,Instrument Method,Position,Inj Vol\nUnknown,run_01,ExampleData,Method,A1,2\n",
   );
-  assert.throws(() => applyWorklistAnnotations(rows, null), /unknown vendor sample type/);
+  assert.equal(validateWorklistTags([row]), "run_01: select the sample role in the worklist preview.");
+  const tagged = {
+    ...row,
+    metadata: { ...row.metadata, role_confirmed: true, sample_type: "Plasma" },
+  };
+  assert.equal(validateWorklistTags([tagged]), "");
 });
 
-test("requires blank subtype and QC stage/material for vendor controls", () => {
+test("blank and QC roles require their metadata in the worklist preview", () => {
   const rows = parseWorklistText(
     "Sample Type,File Name,Path,Instrument Method,Position,Inj Vol\nBlank,blank_01,ExampleData,Method,A1,2\nQC,qc_01,ExampleData,Method,A2,2\n",
   );
-  assert.throws(() => applyWorklistAnnotations(rows, null), /needs a blank_type/i);
-  const annotations = parseWorklistAnnotationText(
-    "expected_filename,sample_name,file_role,blank_type,qc_stage,qc_material\n" +
-      "blank_01,Blank-01,true_blank,solvent,,,\n" +
-      "qc_01,Prep-QC-01,qc,,sample_preparation,Pooled digest\n",
-  );
-  assert.deepEqual(applyWorklistAnnotations(rows, annotations).map((row) => row.file_role), ["true_blank", "qc"]);
+  assert.match(validateWorklistTags(rows), /blank type/i);
+  rows[0].metadata.blank_type = "solvent";
+  assert.match(validateWorklistTags(rows), /QC stage and material/i);
+  rows[1].metadata.qc_stage = "sample_preparation";
+  rows[1].metadata.qc_material = "Pooled digest";
+  assert.equal(validateWorklistTags(rows), "");
 });
 
-test("applies sample, blank, prep-QC, and HYE annotations by filename", () => {
-  const worklist = parseWorklistText(
-    "Sample Type,File Name,Path,Instrument Method,Position,Inj Vol\nUnknown,sample_01,ExampleData,Method,A1,2\nUnknown,blank_01,ExampleData,Method,A2,2\nUnknown,qc_01,ExampleData,Method,A3,2\nUnknown,hye_a,ExampleData,Method,A4,2\nUnknown,hye_b,ExampleData,Method,A5,2\n",
+test("in-app role edits support samples, blanks, prep QC, and filename-tagged HYE pairs", () => {
+  const rows = parseWorklistText(
+    "Sample Type,File Name,Path,Instrument Method,Position,Inj Vol\nUnknown,sample_01,ExampleData,Method,A1,2\nUnknown,blank_01,ExampleData,Method,A2,2\nUnknown,qc_01,ExampleData,Method,A3,2\nUnknown,demo_HYE_A_01,ExampleData,Method,A4,2\nUnknown,demo_HYE_B_01,ExampleData,Method,A5,2\n",
   );
-  const annotations = parseWorklistAnnotationText(
-    "expected_filename,sample_name,file_role,qc_program,hye_pair_label,condition,sample_type,blank_type,qc_stage,qc_material\n" +
-      "sample_01,Sample-01,sample,,,Control,Plasma,,,,\n" +
-      "blank_01,Blank-01,true_blank,,,,,solvent,,,,\n" +
-      "qc_01,Prep-QC-01,qc,,,,Pooled digest,,sample_preparation,Pooled digest\n" +
-      "hye_a,HYE-A,hye,hye,HYE-01,,HYE reference material,,,\n" +
-      "hye_b,HYE-B,hye,hye,HYE-01,,HYE reference material,,,\n",
-  );
-  const tagged = applyWorklistAnnotations(worklist, annotations);
+  rows[0].metadata.role_confirmed = true;
+  rows[0].metadata.sample_type = "Plasma";
+  rows[0].condition = "Control";
+  rows[1].file_role = "true_blank";
+  rows[1].sample_name = "Blank-01";
+  rows[1].metadata.role_confirmed = true;
+  rows[1].metadata.blank_type = "solvent";
+  rows[2].file_role = "qc";
+  rows[2].sample_name = "Prep-QC-01";
+  rows[2].metadata.role_confirmed = true;
+  rows[2].metadata.qc_stage = "sample_preparation";
+  rows[2].metadata.qc_material = "Pooled digest";
 
-  assert.deepEqual(tagged.map((row) => row.file_role), ["sample", "true_blank", "qc", "hye", "hye"]);
-  assert.equal(tagged[0].condition, "Control");
-  assert.equal(tagged[1].metadata?.blank_type, "solvent");
-  assert.equal(tagged[2].metadata?.qc_stage, "sample_preparation");
-  assert.equal(tagged[2].metadata?.vendor_sample_type, "Unknown");
-  assert.equal(tagged[3].qc_program, "hye");
+  assert.deepEqual(rows.map((row) => row.file_role), ["sample", "true_blank", "qc", "hye", "hye"]);
+  assert.equal(validateWorklistTags(rows), "");
+  assert.equal(rows[0].metadata.sample_type, "Plasma");
+  assert.equal(rows[1].metadata.blank_type, "solvent");
+  assert.equal(rows[2].metadata.qc_stage, "sample_preparation");
+  assert.equal(rows[3].qc_program, "hye");
 });
 
-test("rejects incomplete and duplicate annotation maps", () => {
-  const worklist = parseWorklistText(
-    "sample_name,expected_filename,file_role\nSample-01,sample_01,sample\n",
-  );
-  const incomplete = parseWorklistAnnotationText("expected_filename,sample_name,file_role\nsample_02,Sample-02,sample\n");
-  assert.throws(() => applyWorklistAnnotations(worklist, incomplete), /not found in the MS worklist/);
-  assert.throws(
-    () => parseWorklistAnnotationText("expected_filename,sample_name,file_role\nsample_01,Sample-01,sample\nsample_01,Sample-02,sample\n"),
-    /must be unique/,
-  );
-});
-
-test("imports LC vendor worklists as LC while preserving vendor sample roles", () => {
+test("imports LC vendor worklists and recognizes HYE rows", () => {
   const example = readFileSync(new URL("../../../public/worklist-examples/example-lc-worklist-format.csv", import.meta.url), "utf8");
   const rows = parseWorklistText(example, "lc");
   assert.equal(rows.length, 3);
@@ -106,15 +98,16 @@ test("imports LC vendor worklists as LC while preserving vendor sample roles", (
   assert.equal(rows[1].sample_name, "HYE-A");
 });
 
-test("all anonymized paired sequence examples have matching MS, LC, and role metadata", () => {
+test("anonymized MS and LC sequence examples have matching runs and metadata references", () => {
   for (const stem of ["hye", "blank", "preamble"]) {
     const ms = readFileSync(new URL(`../../../public/worklist-examples/example-sequence-${stem}-ms.csv`, import.meta.url), "utf8");
     const lc = readFileSync(new URL(`../../../public/worklist-examples/example-sequence-${stem}-lc.csv`, import.meta.url), "utf8");
     const tags = readFileSync(new URL(`../../../public/worklist-examples/example-sequence-${stem}-tags.csv`, import.meta.url), "utf8");
-    const msRows = applyWorklistAnnotations(parseWorklistText(ms, "ms"), parseWorklistAnnotationText(tags));
-    const lcRows = applyWorklistAnnotations(parseWorklistText(lc, "lc"), parseWorklistAnnotationText(tags), { requireFullMatch: false });
+    const msRows = parseWorklistText(ms, "ms");
+    const lcRows = parseWorklistText(lc, "lc");
 
     assert.deepEqual(msRows.map((row) => row.expected_filename), lcRows.map((row) => row.expected_filename));
-    assert.ok(msRows.every((row) => row.metadata?.annotation_source === "worklist_annotation_csv"));
+    assert.match(tags, /expected_filename,sample_name,file_role/);
+    assert.match(tags, /sample_type|blank_type|qc_stage/);
   }
 });

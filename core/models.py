@@ -21,6 +21,14 @@ class UserRole(models.TextChoices):
     COLLABORATOR = "collaborator", "Collaborator"
 
 
+class LabMembershipRole(models.TextChoices):
+    ADMIN = "admin", "Admin"
+    PI = "pi", "PI"
+    FACILITY_MANAGER = "facility_manager", "Facility manager"
+    RESEARCHER = "researcher", "Researcher"
+    COLLABORATOR = "collaborator", "Collaborator"
+
+
 class ProjectStatus(models.TextChoices):
     ACTIVE = "active", "Active"
     PAUSED = "paused", "Paused"
@@ -303,7 +311,7 @@ class UserProfile(TimestampedModel):
 class LabMembership(TimestampedModel):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="lab_memberships")
     lab = models.ForeignKey(Lab, on_delete=models.CASCADE, related_name="memberships")
-    role = models.CharField(max_length=32, choices=UserRole.choices, default=UserRole.RESEARCHER)
+    role = models.CharField(max_length=32, choices=LabMembershipRole.choices, default=LabMembershipRole.RESEARCHER)
     active = models.BooleanField(default=True)
 
     class Meta:
@@ -371,6 +379,8 @@ class InstrumentConfiguration(TimestampedModel):
             instrument = getattr(self, field_name)
             if instrument and instrument.instrument_type not in (expected_type, InstrumentType.LCMS):
                 raise ValidationError({field_name: f"Expected {expected_type.label} or LC-MS instrument."})
+            if instrument and instrument.facility_id != self.facility_id:
+                raise ValidationError({field_name: "Instrument must belong to the selected facility."})
 
     def __str__(self) -> str:
         return self.name
@@ -1339,6 +1349,13 @@ class AcquisitionAgent(TimestampedModel):
 
     name = models.CharField(max_length=128, unique=True)
     token_label = models.CharField(max_length=128, unique=True)
+    ms_instrument = models.ForeignKey(
+        Instrument,
+        on_delete=models.PROTECT,
+        related_name="acquisition_agents",
+        blank=True,
+        null=True,
+    )
     source_root = models.TextField(blank=True)
     proposed_source_root = models.TextField(blank=True)
     source_root_status = models.CharField(

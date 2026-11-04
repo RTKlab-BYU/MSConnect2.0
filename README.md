@@ -498,3 +498,17 @@ Then run:
 docker compose pull
 docker compose up -d
 ```
+
+## HYE Standard
+
+MSConnect uses this fixed HYE composition standard for QC ratios. `A` and `B`
+are the two HYE mixtures; `B/A` is the expected abundance ratio for each
+organism. Worklists and HYE QC results should use the standard profile recorded
+with the acquisition. Changes to these reference values require a new, named
+standard version so historical worklists retain their original QC basis.
+
+| Organism | A fraction | B fraction | Ideal B/A |
+| --- | ---: | ---: | ---: |
+| Homo sapiens | 0.65 | 0.65 | 1.00 |
+| Saccharomyces cerevisiae | 0.30 | 0.15 | 0.50 |
+| Escherichia coli | 0.05 | 0.20 | 4.00 |

@@ -13,8 +13,8 @@ const AdminUserAccessPage = lazy(() => import("@/features/admin/user-access-page
 const AdminLabsPage = lazy(() => import("@/features/admin/labs-page"));
 const AdminGlobalSettingsPage = lazy(() => import("@/features/admin/global-settings-page"));
 const AdminAssistantPage = lazy(() => import("@/features/admin/assistant-admin-page"));
+const InstrumentConfigurationsPage = lazy(() => import("@/features/admin/instrument-configurations-page"));
 const ProjectsPage = lazy(() => import("@/features/projects/projects-page"));
-const WorklistGeneratorPage = lazy(() => import("@/features/worklist-generator/worklist-generator-page"));
 const ProjectWorkspacePage = lazy(() => import("@/features/projects/project-workspace-page"));
 const SampleReportPage = lazy(() => import("@/features/projects/sample-report-page"));
 const SubmissionWizardPage = lazy(() => import("@/features/intake/submission-wizard-page"));
@@ -104,6 +104,14 @@ export const router = createBrowserRouter(
           ),
         },
         {
+          path: "admin/lc-ms",
+          element: (
+            <RoleGuard allow={["admin"]} allowFacilityManager>
+              <Suspense fallback={<RouteFallback label="Loading LC-MS configurations" />}><InstrumentConfigurationsPage /></Suspense>
+            </RoleGuard>
+          ),
+        },
+        {
           path: "admin/settings",
           element: (
             <RoleGuard allow={["admin"]}>
@@ -139,11 +147,7 @@ export const router = createBrowserRouter(
         },
         {
           path: "worklist-generator",
-          element: (
-            <Suspense fallback={<RouteFallback label="Loading Worklist Generator" />}>
-              <WorklistGeneratorPage />
-            </Suspense>
-          ),
+          element: <Navigate to="/projects" replace />,
         },
         {
           path: "qc",

@@ -76,7 +76,7 @@ export type CurrentUser = {
     id: EntityId;
     name: string;
     slug: string;
-    role: "admin" | "pi" | "researcher" | "collaborator";
+    role: "admin" | "pi" | "facility_manager" | "researcher" | "collaborator";
     facility_name: string;
     university_name: string;
   }>;
@@ -84,12 +84,13 @@ export type CurrentUser = {
 };
 
 export type AppRole = CurrentUser["global_role"];
+export type MembershipRole = "admin" | "pi" | "facility_manager" | "researcher" | "collaborator";
 export type AdminUserMembership = {
   id: number;
   lab_id: number;
   lab_name: string;
   facility_name: string;
-  role: AppRole;
+  role: MembershipRole;
   active: boolean;
 };
 export type AdminUserRecord = {
@@ -382,6 +383,45 @@ export type InstrumentConfiguration = {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+};
+
+export type Instrument = {
+  id: EntityId;
+  facility: EntityId;
+  nickname: string;
+  instrument_type: "lc" | "ms" | "lcms" | "other";
+  manufacturer: string;
+  model: string;
+  serial_number: string;
+  active: boolean;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AcquisitionAgent = {
+  id: EntityId;
+  name: string;
+  token_label: string;
+  ms_instrument: EntityId | null;
+  ms_instrument_name: string | null;
+  source_root: string;
+  proposed_source_root: string;
+  source_root_status: string;
+  config_version: number;
+  active: boolean;
+  last_seen_at: string | null;
+  last_validation: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+};
+
+export type Facility = {
+  id: EntityId;
+  name: string;
+  slug: string;
+  university: EntityId;
+  contact_email: string;
+  active: boolean;
 };
 
 export type ProjectSummary = {

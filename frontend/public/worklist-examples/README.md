@@ -1,15 +1,13 @@
-# Anonymized sequence worklist examples
+# Anonymized sequence examples
 
-The paired MS and LC files use the vendor sequence columns. Their file names, paths, methods, positions, and sample identifiers are demo values. The bracketed and preamble examples are curated from distinct export layouts. The prep-QC rows are synthetic demonstrations, not role assignments inferred from source path codes.
+The MS and LC files show three instrument sequence layouts. Names, paths, methods, positions, and identifiers are demo values. Prep-QC rows are synthetic examples.
 
-Upload the MS sequence, its matching LC sequence, and the matching `-tags.csv` file together. The annotation file joins on the exact `File Name` value (written as `expected_filename`). Rows whose vendor `Sample Type` is `Unknown` need an explicit role.
+Upload the MS sequence to the project worklist importer. The LC sequence is retained with the experiment for acquisition reference. Tag roles and sample metadata directly in the MS preview; MSConnect saves those values with the sample, run, and worklist. The `-tags.csv` files are read-only examples of the intended classifications and are not an upload step.
 
 ## Tagging guide
 
-- `file_role=sample` means a biological or experimental specimen. Put the group in `condition`; use `sample_type` for its material description.
-- Use `file_role=blank` or `true_blank` for the appropriate blank category and describe its lab-specific meaning in `blank_type`. Do not infer this distinction from a file name or path alone.
-- Use `file_role=qc` with `qc_stage` and `qc_material`; `sample_preparation` and `instrument` are shown in the synthetic example.
-- HYE injections use `file_role=hye`, `qc_program=hye`, sample names `HYE-A` and `HYE-B`, and one shared `hye_pair_label`.
-- `subject_id` values in these examples are pseudonymous placeholders. Avoid patient names or other direct identifiers.
-
-`condition`, `sample_type`, `blank_type`, `qc_stage`, `qc_material`, `prep_batch`, `replicate`, `subject_id`, and `notes` are captured as sample/run metadata; the structured role and HYE fields populate MSConnect's existing worklist tags.
+- Choose `sample` for an experimental specimen, then enter its sample type and condition. Optional subject, matrix, species, digestion, enrichment, batch, replicate, and notes fields are stored as metadata.
+- Choose `blank` or `true_blank` and provide `blank_type` to distinguish solvent, process, extraction, and other lab-defined blanks. Do not infer the distinction from a file name or path.
+- Choose `qc` and provide both `qc_stage` and `qc_material`, such as `sample_preparation` and `Pooled digest`.
+- HYE controls are recognized from paired A/B names. Confirm the names and shared pair label in the preview.
+- `subject_id` values in the examples are pseudonymous placeholders. Use study IDs rather than direct identifiers.

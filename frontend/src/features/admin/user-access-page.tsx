@@ -5,24 +5,28 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { fetchAdminUserAccess, inviteAdminUser, queryKeys, resendAdminUserEmail, updateAdminUserAccess } from "@/lib/api/queries";
-import type { AdminUserRecord, AppRole } from "@/lib/api/types";
+import type { AdminUserRecord, AppRole, MembershipRole } from "@/lib/api/types";
 import { AdminTabs } from "@/features/admin/admin-tabs";
 import { Link } from "react-router-dom";
 
-const roles: Array<{ value: AppRole; label: string }> = [
+const appRoles: Array<{ value: AppRole; label: string }> = [
   { value: "admin", label: "Administrator" },
   { value: "pi", label: "PI" },
   { value: "researcher", label: "Researcher" },
   { value: "collaborator", label: "Collaborator" },
 ];
+const membershipRoles: Array<{ value: MembershipRole; label: string }> = [
+  ...appRoles,
+  { value: "facility_manager", label: "Facility manager" },
+];
 const noLabs: Array<{ id: number; name: string; facility_name: string }> = [];
 
-function RoleSelect({ label, value, onChange }: { label: string; value: AppRole; onChange: (value: AppRole) => void }) {
+function RoleSelect<T extends AppRole | MembershipRole>({ label, value, onChange, options }: { label: string; value: T; onChange: (value: T) => void; options: Array<{ value: T; label: string }> }) {
   return (
     <label className="grid gap-1.5 text-sm font-medium">
       {label}
-      <select className="h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={value} onChange={(event) => onChange(event.target.value as AppRole)}>
-        {roles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
+      <select className="h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={value} onChange={(event) => onChange(event.target.value as T)}>
+        {options.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
       </select>
     </label>
   );
@@ -41,11 +45,11 @@ export default function AdminUserAccessPage() {
   const [email, setEmail] = useState("");
   const [inviteLab, setInviteLab] = useState("");
   const [inviteGlobalRole, setInviteGlobalRole] = useState<AppRole>("researcher");
-  const [inviteMembershipRole, setInviteMembershipRole] = useState<AppRole>("researcher");
+  const [inviteMembershipRole, setInviteMembershipRole] = useState<MembershipRole>("researcher");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [labId, setLabId] = useState("");
   const [globalRole, setGlobalRole] = useState<AppRole>("researcher");
-  const [membershipRole, setMembershipRole] = useState<AppRole>("researcher");
+  const [membershipRole, setMembershipRole] = useState<MembershipRole>("researcher");
   const [membershipActive, setMembershipActive] = useState(true);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -140,8 +144,8 @@ export default function AdminUserAccessPage() {
               <label className="grid gap-1.5 text-sm font-medium">Username<Input autoComplete="off" required value={username} onChange={(event) => setUsername(event.target.value)} /></label>
               <label className="grid gap-1.5 text-sm font-medium">Email<Input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
               <label className="grid gap-1.5 text-sm font-medium">Lab<select className="h-10 rounded-md border border-input bg-background px-3 text-sm" required value={inviteLab} onChange={(event) => setInviteLab(event.target.value)}>{labs.map((lab) => <option key={lab.id} value={lab.id}>{lab.name} · {lab.facility_name}</option>)}</select></label>
-              <RoleSelect label="Application-wide role" value={inviteGlobalRole} onChange={setInviteGlobalRole} />
-              <RoleSelect label="Role in this lab" value={inviteMembershipRole} onChange={setInviteMembershipRole} />
+              <RoleSelect label="Application-wide role" value={inviteGlobalRole} onChange={setInviteGlobalRole} options={appRoles} />
+              <RoleSelect label="Role in this lab" value={inviteMembershipRole} onChange={setInviteMembershipRole} options={membershipRoles} />
               <div className="flex items-end"><Button type="submit" disabled={inviteMutation.isPending || !inviteLab}>{inviteMutation.isPending ? "Creating invitation…" : "Create invitation"}</Button></div>
             </form>
           )}
@@ -175,9 +179,9 @@ export default function AdminUserAccessPage() {
             ) : (
               <div className="grid gap-4">
                 <div className="text-sm"><div className="font-medium">{accountState(selected)}</div><div className="text-muted-foreground">{selected.email}</div></div>
-                <RoleSelect label="Application-wide role" value={globalRole} onChange={setGlobalRole} />
+                <RoleSelect label="Application-wide role" value={globalRole} onChange={setGlobalRole} options={appRoles} />
                 <label className="grid gap-1.5 text-sm font-medium">Lab membership<select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={labId} onChange={(event) => setLabId(event.target.value)}>{labs.map((lab) => <option key={lab.id} value={lab.id}>{lab.name} · {lab.facility_name}</option>)}</select></label>
-                <RoleSelect label="Role in selected lab" value={membershipRole} onChange={setMembershipRole} />
+                <RoleSelect label="Role in selected lab" value={membershipRole} onChange={setMembershipRole} options={membershipRoles} />
                 <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={membershipActive} onChange={(event) => setMembershipActive(event.target.checked)} /> Membership active</label>
                 {labId && !selectedLabMembership ? <p className="text-xs text-muted-foreground">Saving will add this user to the selected lab.</p> : null}
                 <div className="flex flex-wrap gap-2">

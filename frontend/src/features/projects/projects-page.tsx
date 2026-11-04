@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
   createPreAcquisitionSetup,
+  fetchCurrentUser,
   fetchInstrumentConfigurations,
   fetchProjects,
   previewPreAcquisitionSetup,
@@ -137,6 +138,9 @@ export default function ProjectsPage() {
     queryKey: queryKeys.instrumentConfigurations({ page: 1, page_size: 100 }),
     queryFn: () => fetchInstrumentConfigurations({ page: 1, page_size: 100 }),
   });
+  const currentUserQuery = useQuery({ queryKey: queryKeys.currentUser(), queryFn: fetchCurrentUser });
+  const activeConfigurations = (configurationQuery.data?.results ?? []).filter((configuration) => configuration.active && configuration.lc_instrument && configuration.ms_instrument && configuration.method_name.trim());
+  const canManageConfigurations = currentUserQuery.data?.global_role === "admin" || currentUserQuery.data?.is_superuser || currentUserQuery.data?.labs.some((lab) => lab.role === "facility_manager" || lab.role === "admin");
 
   const samples = useMemo(() => assignWells(parseSampleText(sampleText), plateType), [sampleText, plateType]);
   const conditionCounts = useMemo(() => countConditions(samples), [samples]);
@@ -327,17 +331,17 @@ export default function ProjectsPage() {
 
   return (
     <div className="grid gap-4">
-      <Breadcrumbs items={[{ label: "Projects" }]} />
+      <Breadcrumbs items={[{ label: "Projects", ...(dialogOpen ? { href: "/projects" } : {}) }, ...(dialogOpen ? [{ label: "Advanced setup" }] : [])]} />
       <PageHero
-        eyebrow="Project operations"
-        title="Projects"
-        description="Start pre-acquisition projects, register samples, generate worklists, and give watcher agents expected filenames before LC-MS acquisition."
+        eyebrow={dialogOpen ? "Acquisition setup" : "Project operations"}
+        title={dialogOpen ? "Advanced setup" : "Projects"}
+        description={dialogOpen ? "Build the experiment, sample metadata, acquisition worklist, and processing setup together." : "Create projects, register samples, and track expected LC-MS runs before acquisition."}
         actions={
+          dialogOpen ? (
+            <Button type="button" variant="secondary" onClick={() => setDialogOpen(false)}>Back to projects</Button>
+          ) : (
           <>
             <StatusBadge status="active" />
-            <Button asChild variant="secondary">
-              <Link to="/worklist-generator">Worklist Generator</Link>
-            </Button>
             <Dialog open={quickStartOpen} onOpenChange={closeQuickStart}>
               <DialogTrigger asChild>
                 <Button>
@@ -365,19 +369,18 @@ export default function ProjectsPage() {
                 </form>
               </DialogContent>
             </Dialog>
-            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-              <DialogTrigger asChild>
-                <Button variant="secondary">
-                  Advanced setup
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="max-h-[92vh] max-w-5xl overflow-auto rounded-xl p-6">
-                <DialogHeader>
-                  <DialogTitle className="text-2xl font-black tracking-tight">Pre-acquisition setup</DialogTitle>
-                  <DialogDescription>
-                    Capture only what is needed to create samples, plate positions, planned runs, expected filenames, and the DIA-NN processing plan.
-                  </DialogDescription>
-                </DialogHeader>
+            <Button type="button" variant="secondary" onClick={() => { setSetupError(""); setDialogOpen(true); }}>Advanced setup</Button>
+          </>
+          )
+        }
+      />
+
+      {dialogOpen ? (
+        <section className="grid min-w-0 gap-5 rounded-xl border bg-card p-4 sm:p-6">
+          <div className="grid gap-1">
+            <h2 className="text-xl font-bold">Build an experiment worklist</h2>
+            <p className="text-sm text-muted-foreground">Enter sample and acquisition details once. MSConnect stores the experiment, metadata, planned runs, and worklist together.</p>
+          </div>
                 <form className="grid gap-5" onSubmit={submitSetup}>
                   <WizardProgress step={step} />
 
@@ -449,20 +452,21 @@ export default function ProjectsPage() {
                     <section className="grid gap-4">
                       <div className="grid gap-3 md:grid-cols-2">
                         <label className="grid gap-1 text-sm font-bold">
-                          LC-MS configuration
+                          Managed LC-MS configuration
                           <Select value={instrumentConfiguration} onValueChange={setInstrumentConfiguration}>
                             <SelectTrigger>
                               <SelectValue placeholder="Select configuration" />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="none">No saved configuration yet</SelectItem>
-                              {(configurationQuery.data?.results ?? []).map((configuration) => (
+                              {activeConfigurations.map((configuration) => (
                                 <SelectItem key={configuration.id} value={String(configuration.id)}>
-                                  {configuration.name}
+                                  {configuration.name}{configuration.method_name ? ` · ${configuration.method_name}` : ""}
                                 </SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
+                          <span className="text-xs font-normal text-muted-foreground">Facility admins and managers maintain LC methods and the associated MS configuration.</span>
+                          {canManageConfigurations ? <Link className="text-xs font-semibold text-primary underline underline-offset-2" to="/admin/lc-ms">Manage LC-MS setups</Link> : null}
                         </label>
                         <label className="grid gap-1 text-sm font-bold">
                           DIA-NN preset
@@ -487,6 +491,11 @@ export default function ProjectsPage() {
                           </p>
                         </label>
                       </div>
+                      {activeConfigurations.length === 0 ? (
+                        <div role="status" className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm">
+                          No active LC-MS configurations are available for this facility. Ask a facility manager to add the LC method and MS setup before creating an acquisition worklist.
+                        </div>
+                      ) : null}
                       <div className="grid gap-3 rounded-lg bg-muted p-4 md:grid-cols-[1fr_180px]">
                         <label className="grid gap-1 text-sm font-bold">
                           Spectral-library scope
@@ -730,7 +739,7 @@ export default function ProjectsPage() {
                       {step === 0 ? "Cancel" : "Back"}
                     </Button>
                     {step < wizardSteps.length - 1 ? (
-                      <Button type="button" onClick={() => setStep((current) => current + 1)}>
+                      <Button type="button" disabled={step === 3 && (!activeConfigurations.some((configuration) => String(configuration.id) === instrumentConfiguration) || configurationQuery.isLoading)} onClick={() => setStep((current) => current + 1)}>
                         Next
                         <ChevronRight className="h-4 w-4" />
                       </Button>
@@ -741,12 +750,9 @@ export default function ProjectsPage() {
                     )}
                   </div>
                 </form>
-              </DialogContent>
-            </Dialog>
-          </>
-        }
-      />
-
+        </section>
+      ) : null}
+      {!dialogOpen ? <>
       <Card>
         <CardHeader>
           <CardTitle>Find a project</CardTitle>
@@ -775,6 +781,7 @@ export default function ProjectsPage() {
       </Card>
 
       <DataTable columns={projectColumns} data={projectQuery.data?.results ?? []} emptyLabel={projectQuery.isLoading ? "Loading projects..." : "No projects found."} />
+      </> : null}
     </div>
   );
 }

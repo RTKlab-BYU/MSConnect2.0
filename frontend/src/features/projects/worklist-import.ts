@@ -4,17 +4,6 @@ export const roleOptions = ["sample", "qc", "hye", "prtc", "library", "blank", "
 
 export type InstrumentWorklistKind = "lc" | "ms";
 
-export type WorklistAnnotation = {
-  expected_filename: string;
-  sample_name: string;
-  file_role: WorklistImportRow["file_role"];
-  qc_program?: WorklistImportRow["qc_program"];
-  hye_pair_label?: string;
-  condition?: string;
-  notes?: string;
-  metadata: Record<string, unknown>;
-};
-
 export function parseWorklistText(text: string, instrumentKind: InstrumentWorklistKind = "ms"): WorklistImportRow[] {
   const lines = text.split(/\r?\n/).filter((line) => line.trim());
   if (lines.length < 2) throw new Error("The worklist must include a header row and at least one injection.");
@@ -85,6 +74,8 @@ export function parseWorklistText(text: string, instrumentKind: InstrumentWorkli
         source_format: vendorFormat ? `vendor_${instrumentKind}_worklist` : "csv_import",
         instrument_worklist_type: instrumentKind,
         source_filename: sourceFilename,
+        role_tagging_required: vendorFormat && !hye && !roleOptions.includes(vendorSampleType as WorklistImportRow["file_role"]),
+        role_confirmed: !vendorFormat || Boolean(hye) || roleOptions.includes(vendorSampleType as WorklistImportRow["file_role"]),
       },
     };
   });
@@ -97,146 +88,31 @@ export function parseWorklistText(text: string, instrumentKind: InstrumentWorkli
   return parsed;
 }
 
-export function parseWorklistAnnotationText(text: string): WorklistAnnotation[] {
-  const lines = text.split(/\r?\n/).filter((line) => line.trim());
-  if (lines.length < 2) throw new Error("The annotation file needs a header and at least one tagged injection.");
-  const delimiter = lines[0].includes("\t") ? "\t" : ",";
-  const normalizeHeader = (header: string) => header.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  const headers = parseDelimitedLine(lines[0], delimiter).map(normalizeHeader);
-  const requiredHeaders = ["expected_filename", "sample_name", "file_role"];
-  const missingHeaders = requiredHeaders.filter((header) => !headers.includes(header));
-  if (missingHeaders.length) throw new Error(`Annotation file is missing required columns: ${missingHeaders.join(", ")}.`);
-
-  const metadataHeaders = [
-    "sample_type",
-    "blank_type",
-    "qc_stage",
-    "qc_material",
-    "prep_batch",
-    "replicate",
-    "subject_id",
-    "matrix",
-    "species",
-    "digestion_protocol",
-    "enrichment_protocol",
-  ];
-  const rows = lines.slice(1).map((line, index) => {
-    const values = parseDelimitedLine(line, delimiter).map((value) => value.trim());
-    const value = (header: string) => {
-      const column = headers.indexOf(header);
-      return column >= 0 ? values[column] ?? "" : "";
-    };
-    const rowNumber = index + 2;
-    const expectedFilename = value("expected_filename");
-    const sampleName = value("sample_name");
-    if (!expectedFilename) throw new Error(`Annotation row ${rowNumber} is missing expected_filename.`);
-    if (!sampleName) throw new Error(`Annotation row ${rowNumber} is missing sample_name.`);
-    const role = value("file_role").toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
-    if (!roleOptions.includes(role as WorklistImportRow["file_role"])) {
-      throw new Error(`Annotation row ${rowNumber} has unsupported file_role “${role}”.`);
+export function validateWorklistTags(rows: WorklistImportRow[]) {
+  for (const row of rows) {
+    const metadata = row.metadata ?? {};
+    if (metadata.role_tagging_required && metadata.role_confirmed !== true) {
+      return `${row.expected_filename}: select the sample role in the worklist preview.`;
     }
-    const fileRole = role as WorklistImportRow["file_role"];
-    const qcProgramValue = value("qc_program").toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
-    if (qcProgramValue && qcProgramValue !== "hye" && qcProgramValue !== "prtc") {
-      throw new Error(`Annotation row ${rowNumber} has unsupported qc_program “${qcProgramValue}”.`);
+    if (metadata.role_tagging_required && row.file_role === "sample") {
+      const sampleType = String(metadata.sample_type ?? "").trim();
+      if (!sampleType || sampleType.toLowerCase() === "unknown") {
+        return `${row.expected_filename}: enter its sample type before importing.`;
+      }
     }
-    const qcProgram = (qcProgramValue || (fileRole === "hye" ? "hye" : fileRole === "prtc" ? "prtc" : "")) as WorklistImportRow["qc_program"];
-    if ((qcProgram === "hye" && fileRole !== "hye") || (qcProgram === "prtc" && fileRole !== "prtc")) {
-      throw new Error(`Annotation row ${rowNumber}: HYE and PRTC programs must use their matching file_role.`);
+    if ((row.file_role === "blank" || row.file_role === "true_blank") && !String(metadata.blank_type ?? "").trim()) {
+      return `${row.expected_filename}: enter a blank type before importing.`;
     }
-
-    const metadata = Object.fromEntries(metadataHeaders.map((header) => [header, value(header)]).filter(([, item]) => item));
-    if ((fileRole === "blank" || fileRole === "true_blank") && !metadata.blank_type) {
-      throw new Error(`Annotation row ${rowNumber}: blank_type is required for blank injections.`);
+    if (row.file_role === "qc" && (!String(metadata.qc_stage ?? "").trim() || !String(metadata.qc_material ?? "").trim())) {
+      return `${row.expected_filename}: enter a QC stage and material before importing.`;
     }
-    if (fileRole === "qc" && (!metadata.qc_stage || !metadata.qc_material)) {
-      throw new Error(`Annotation row ${rowNumber}: qc_stage and qc_material are required for QC injections.`);
-    }
-    return {
-      expected_filename: expectedFilename,
-      sample_name: sampleName,
-      file_role: fileRole,
-      qc_program: qcProgram,
-      hye_pair_label: value("hye_pair_label"),
-      condition: value("condition"),
-      notes: value("notes"),
-      metadata,
-    } satisfies WorklistAnnotation;
-  });
-
-  const keys = rows.map((row) => normalizeFilenameKey(row.expected_filename));
-  if (new Set(keys).size !== keys.length) throw new Error("Annotation filenames must be unique.");
-  validateHyePairs(rows);
-  return rows;
-}
-
-export function applyWorklistAnnotations(
-  rows: WorklistImportRow[],
-  annotations: WorklistAnnotation[] | null,
-  options: { requireFullMatch?: boolean } = {},
-): WorklistImportRow[] {
-  const requireFullMatch = options.requireFullMatch ?? true;
-  if (!annotations) {
-    const issue = rows.map(vendorAnnotationIssue).find(Boolean);
-    if (issue) throw new Error(issue);
-    return rows;
   }
-
-  const annotationsByFilename = new Map(annotations.map((annotation) => [normalizeFilenameKey(annotation.expected_filename), annotation]));
-  const rowKeys = new Set(rows.map((row) => normalizeFilenameKey(row.expected_filename)));
-  const extra = annotations.find((annotation) => !rowKeys.has(normalizeFilenameKey(annotation.expected_filename)));
-  if (extra && requireFullMatch) throw new Error(`Annotation filename “${extra.expected_filename}” was not found in the MS worklist.`);
-
-  const annotatedKeys = new Set<string>();
-  const annotatedRows = rows.map((row) => {
-    const key = normalizeFilenameKey(row.expected_filename);
-    const annotation = annotationsByFilename.get(key);
-    if (!annotation) {
-      if (requireFullMatch) throw new Error(`${row.expected_filename} has no annotation. Add one row for every MS injection.`);
-      return row;
-    }
-    annotatedKeys.add(key);
-    return {
-      ...row,
-      sample_name: annotation.sample_name,
-      file_role: annotation.file_role,
-      qc_program: annotation.qc_program ?? "",
-      hye_pair_label: annotation.hye_pair_label ?? "",
-      condition: annotation.condition ?? "",
-      notes: annotation.notes ?? "",
-      metadata: {
-        ...row.metadata,
-        vendor_sample_type: row.metadata?.sample_type ?? "",
-        ...annotation.metadata,
-        annotation_source: "worklist_annotation_csv",
-      },
-    };
-  });
-  if (requireFullMatch && annotations.some((annotation) => !annotatedKeys.has(normalizeFilenameKey(annotation.expected_filename)))) {
-    throw new Error("The annotation CSV contains rows that do not match an MS injection.");
-  }
-  if (requireFullMatch) validateHyePairs(annotatedRows);
-  return annotatedRows;
-}
-
-function vendorAnnotationIssue(row: WorklistImportRow) {
-  const sourceFormat = String(row.metadata?.source_format ?? "");
-  if (!sourceFormat.startsWith("vendor_")) return "";
-  const vendorType = String(row.metadata?.sample_type ?? "").trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
-  if (row.file_role === "sample" && !roleOptions.includes(vendorType as WorklistImportRow["file_role"])) {
-    return `${row.expected_filename} has an unknown vendor sample type. Upload the annotation CSV and assign its role before importing.`;
-  }
-  if ((row.file_role === "blank" || row.file_role === "true_blank") && !row.metadata?.blank_type) {
-    return `${row.expected_filename} is a vendor blank and needs a blank_type in the annotation CSV.`;
-  }
-  if (row.file_role === "qc" && (!row.metadata?.qc_stage || !row.metadata?.qc_material)) {
-    return `${row.expected_filename} is a vendor QC and needs qc_stage and qc_material in the annotation CSV.`;
+  try {
+    validateHyePairs(rows);
+  } catch (error) {
+    return error instanceof Error ? error.message : "HYE controls need a complete A/B pair.";
   }
   return "";
-}
-
-function normalizeFilenameKey(filename: string) {
-  return filename.trim().toLocaleLowerCase();
 }
 
 function validateHyePairs(rows: Array<Pick<WorklistImportRow, "sample_name" | "file_role" | "qc_program" | "hye_pair_label">>) {

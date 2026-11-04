@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
@@ -85,7 +86,6 @@ export default function QcPage() {
 
   const overview = overviewQuery.data;
   const details = detailsQuery.data;
-  const hyeTargetProfiles = details?.target_profiles ?? [];
   const prtcRuns = details?.runs ?? [];
   const machineSummaries = details?.machine_summaries ?? [];
   const machineSeries = details?.machine_series ?? [];
@@ -93,6 +93,20 @@ export default function QcPage() {
   const warningThreshold = details ? Math.round(details.thresholds.warning_relative_error * 100) : 50;
   const healthValues = (details?.pairs ?? []).map((pair) => pair.health_score).filter((value): value is number => value !== null);
   const healthScore = healthValues.length ? Math.round(healthValues.reduce((sum, value) => sum + value, 0) / healthValues.length) : null;
+  const hyeProjects = useMemo(() => {
+    const pairsByProject = new Map<number, NonNullable<typeof details>["pairs"]>();
+    for (const pair of details?.pairs ?? []) {
+      pairsByProject.set(pair.project_id, [...(pairsByProject.get(pair.project_id) ?? []), pair]);
+    }
+    return (projectsQuery.data?.results ?? [])
+      .filter((item) => pairsByProject.has(Number(item.id)))
+      .map((item) => {
+        const pairs = pairsByProject.get(Number(item.id)) ?? [];
+        const completeCount = pairs.filter((pair) => Boolean(pair.completed_at)).length;
+        const latestCompleted = pairs.map((pair) => pair.completed_at).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+        return { project: item, pairs, completeCount, latestCompleted };
+      });
+  }, [details?.pairs, projectsQuery.data?.results]);
 
   return (
     <div className="grid gap-4">
@@ -101,7 +115,7 @@ export default function QcPage() {
       <PageHero
         eyebrow="Assay health"
         title="QC"
-        description={program === "hye" ? "Ratio health across instrument configurations, projects, and individual control runs." : "Continuous Skyline monitoring for the PRTC peptide standard."}
+        description={program === "hye" ? "Projects with HYE controls. Select a project to review its pair summary and sequence files." : "Continuous Skyline monitoring for the PRTC peptide standard."}
         actions={
           <>
             <StatusBadge status="qc" />
@@ -116,7 +130,7 @@ export default function QcPage() {
           <TabsTrigger value="prtc">PRTC</TabsTrigger>
         </TabsList>
 
-        <Card>
+        {program === "prtc" || project !== "all" ? <Card>
           <CardHeader>
             <CardTitle>QC filters</CardTitle>
             <CardDescription>Scope HYE pseudo-project reporting by project or acquisition worklist.</CardDescription>
@@ -178,43 +192,50 @@ export default function QcPage() {
               <div className="rounded-md bg-muted px-4 py-3 text-sm text-muted-foreground">Ratios within {passThreshold}% pass; warning extends to {warningThreshold}%.</div>
             </div>
           </CardContent>
-        </Card>
+        </Card> : null}
 
-        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+        {program === "prtc" || project !== "all" ? <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
           <MetricCard label="QC Injections" value={overview?.qc_injection_count ?? "-"} detail="control runs in scope" />
           <MetricCard label="Complete Pairs" value={overview?.complete_pair_count ?? "-"} detail="A/B pairs with quant output" />
           <MetricCard label="Out of Spec" value={overview?.out_of_spec_pair_count ?? "-"} detail="warning or failed pairs" />
           <MetricCard label="Missing Raw" value={overview?.missing_raw_file_count ?? "-"} detail="expected QC files not uploaded" />
           <MetricCard label="Latest Complete" value={formatDate(overview?.latest_completed_at)} detail="most recent finished pair" />
           <MetricCard label="HYE Health" value={healthScore === null ? "-" : `${healthScore}/100`} detail="ratio and completeness indicator" />
-        </section>
+        </section> : null}
 
         <TabsContent value="hye" className="mt-0 grid gap-4">
-          <section className="grid gap-4 xl:grid-cols-[1fr_360px]">
-            <Card>
-              <CardHeader>
-                <CardTitle>Expected HYE composition</CardTitle>
-                <CardDescription>Profile snapshots attached to the worklists in this QC scope.</CardDescription>
-              </CardHeader>
-              <CardContent className="grid gap-5">
-                {(hyeTargetProfiles.length ? hyeTargetProfiles : [{ id: null, name: "HYE Standard", version: "legacy default", targets: {
-                  "Homo sapiens": { a: 0.65, b: 0.65 },
-                  "Saccharomyces cerevisiae": { a: 0.3, b: 0.15 },
-                  "Escherichia coli": { a: 0.05, b: 0.2 },
-                } }]).map((profile) => (
-                  <div key={`${profile.name}:${profile.version}`}>
-                    <div className="mb-2 text-sm font-bold">{profile.name} · v{profile.version}</div>
-                    <table className="w-full text-sm">
-                      <thead className="text-left text-xs uppercase text-muted-foreground"><tr><th className="border-b border-border/60 py-2">Organism</th><th className="border-b border-border/60 py-2">A</th><th className="border-b border-border/60 py-2">B</th><th className="border-b border-border/60 py-2">Ideal B/A</th></tr></thead>
-                      <tbody>{Object.entries(profile.targets).map(([organism, target]) => <tr key={organism} className="border-b border-border/50 last:border-0"><td className="py-2 font-medium">{organism}</td><td className="py-2 tabular-nums">{target.a.toFixed(2)}</td><td className="py-2 tabular-nums">{target.b.toFixed(2)}</td><td className="py-2 tabular-nums">{target.a ? (target.b / target.a).toFixed(2) : "-"}</td></tr>)}</tbody>
-                    </table>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-
-          </section>
-
+          {project === "all" ? (
+            <section className="grid gap-3">
+              <div className="grid gap-1">
+                <h2 className="text-lg font-semibold">HYE projects</h2>
+                <p className="text-sm text-muted-foreground">Projects with tagged HYE pairs. Open one to review its summary and sequence files.</p>
+              </div>
+              {hyeProjects.length ? hyeProjects.map(({ project: item, pairs, completeCount, latestCompleted }) => (
+                <Link key={item.id} to={`/qc/hye?project=${item.id}`} className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  <Card className="transition-colors hover:border-primary/50">
+                    <CardHeader className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                      <div className="min-w-0">
+                        <CardTitle className="break-words">{item.code} · {item.title}</CardTitle>
+                        <CardDescription className="mt-1">Latest HYE result: {formatDate(latestCompleted)}</CardDescription>
+                      </div>
+                      <div className="flex flex-wrap gap-2 text-sm">
+                        <StatusBadge status={completeCount === pairs.length ? "complete" : "warning"} />
+                        <span className="rounded-md bg-muted px-3 py-1.5">{pairs.length} {pairs.length === 1 ? "pair" : "pairs"}</span>
+                        <span className="rounded-md bg-muted px-3 py-1.5">{completeCount} complete</span>
+                      </div>
+                    </CardHeader>
+                  </Card>
+                </Link>
+              )) : (
+                <Card><CardHeader><CardTitle>No HYE projects yet</CardTitle><CardDescription>{details?.empty_message || "Projects will appear after worklists with HYE samples are imported."}</CardDescription></CardHeader></Card>
+              )}
+            </section>
+          ) : (
+            <>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Button asChild variant="secondary" size="sm"><Link to="/qc/hye">All HYE projects</Link></Button>
+            <span className="text-sm text-muted-foreground">HYE pair summaries and sequence files for the selected project.</span>
+          </div>
           {machineSummaries.length ? (
             <section className="grid gap-4">
               {machineSummaries.map((machine) => (
@@ -364,6 +385,8 @@ export default function QcPage() {
                 <CardDescription>{details?.empty_message || "Loading HYE QC metrics..."}</CardDescription>
               </CardHeader>
             </Card>
+          )}
+            </>
           )}
         </TabsContent>
 

@@ -1,7 +1,7 @@
 from django.db.models import Q
 from rest_framework import permissions
 
-from .models import Project, UserRole
+from .models import LabMembership, LabMembershipRole, Project, UserRole
 
 
 def is_admin(user) -> bool:
@@ -57,7 +57,36 @@ class RoleScopedWritePermission(permissions.BasePermission):
         if getattr(view, "write_requires_admin", False):
             return is_admin(request.user)
 
+        if getattr(view, "write_requires_facility_manager", False):
+            if is_admin(request.user):
+                return True
+            if request.method == "POST":
+                facility_id = request.data.get("facility")
+                return _manages_facility(request.user, facility_id)
+            return True
+
         return user_role(request.user) != UserRole.COLLABORATOR
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in permissions.SAFE_METHODS or not getattr(view, "write_requires_facility_manager", False):
+            return True
+        if is_admin(request.user):
+            return True
+        old_facility_id = getattr(obj, "facility_id", None)
+        target_facility_id = request.data.get("facility", old_facility_id)
+        return _manages_facility(request.user, old_facility_id) and _manages_facility(request.user, target_facility_id)
+
+
+def _manages_facility(user, facility_id) -> bool:
+    if not facility_id:
+        return False
+    return LabMembership.objects.filter(
+        user=user,
+        active=True,
+        role__in=(LabMembershipRole.FACILITY_MANAGER, LabMembershipRole.ADMIN),
+        lab__active=True,
+        lab__facility_id=facility_id,
+    ).exists()
 
 
 class AgentRolePermission(permissions.BasePermission):

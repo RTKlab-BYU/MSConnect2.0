@@ -96,6 +96,7 @@ from .models import (
     IntakeRequestStatus,
     Lab,
     LabMembership,
+    LabMembershipRole,
     MatchExceptionStatus,
     Peptide,
     PeptideIdentification,
@@ -192,6 +193,24 @@ class InstrumentConfigurationSerializer(BaseSerializer):
     class Meta(BaseSerializer.Meta):
         model = InstrumentConfiguration
 
+    def validate(self, attrs):
+        facility = attrs.get("facility", getattr(self.instance, "facility", None))
+        active = attrs.get("active", getattr(self.instance, "active", True))
+        method_name = attrs.get("method_name", getattr(self.instance, "method_name", ""))
+        for field_name, expected_type in (("lc_instrument", "lc"), ("ms_instrument", "ms")):
+            instrument = attrs.get(field_name, getattr(self.instance, field_name, None))
+            if instrument and instrument.instrument_type not in (expected_type, "lcms"):
+                raise serializers.ValidationError({field_name: f"Expected {expected_type.upper()} or LC-MS instrument."})
+            if instrument and facility and instrument.facility_id != facility.id:
+                raise serializers.ValidationError({field_name: "Instrument must belong to the selected facility."})
+            if active and instrument and not instrument.active:
+                raise serializers.ValidationError({field_name: "Active LC-MS setups must use active instruments."})
+            if active and not instrument:
+                raise serializers.ValidationError({field_name: "Active LC-MS setups must identify both instruments."})
+        if active and not method_name.strip():
+            raise serializers.ValidationError({"method_name": "Active LC-MS setups need a named acquisition method."})
+        return attrs
+
 
 class ProjectSerializer(BaseSerializer):
     class Meta(BaseSerializer.Meta):
@@ -253,7 +272,7 @@ class ProjectPreAcquisitionSetupSerializer(serializers.Serializer):
     experiment_name = serializers.CharField(max_length=255, default="Discovery DIA")
     worklist_name = serializers.CharField(max_length=255, default="Plate 1 DIA acquisition order")
     instrument_configuration = serializers.PrimaryKeyRelatedField(
-        queryset=InstrumentConfiguration.objects.all(),
+        queryset=InstrumentConfiguration.objects.filter(active=True),
         required=False,
         allow_null=True,
     )
@@ -594,9 +613,37 @@ class DirectUploadSessionSerializer(BaseSerializer):
 
 
 class AcquisitionAgentSerializer(BaseSerializer):
+    ms_instrument_name = serializers.CharField(source="ms_instrument.nickname", read_only=True, allow_null=True)
+
     class Meta(BaseSerializer.Meta):
         model = AcquisitionAgent
         read_only_fields = ("config_version", "last_seen_at", "last_validation")
+
+    def validate(self, attrs):
+        instrument = attrs.get("ms_instrument", getattr(self.instance, "ms_instrument", None))
+        active = attrs.get("active", getattr(self.instance, "active", True))
+        if active and not instrument:
+            raise serializers.ValidationError({"ms_instrument": "Assign the watcher computer to its fixed MS instrument."})
+        if instrument and instrument.instrument_type not in ("ms", "lcms"):
+            raise serializers.ValidationError({"ms_instrument": "A watcher must be assigned to an MS or LC-MS instrument."})
+        if instrument and not instrument.active:
+            raise serializers.ValidationError({"ms_instrument": "A watcher must be assigned to an active MS instrument."})
+        if instrument and self.instance:
+            facility_ids = set(self.instance.routes.filter(status=AcquisitionRouteStatus.ACTIVE).values_list("project__lab__facility_id", flat=True))
+            if facility_ids and facility_ids != {instrument.facility_id}:
+                raise serializers.ValidationError({"ms_instrument": "The assigned MS must belong to the facility used by this watcher's active routes."})
+            mismatched_worklist_exists = self.instance.routes.filter(
+                status=AcquisitionRouteStatus.ACTIVE,
+                worklist__configuration__isnull=False,
+            ).exclude(worklist__configuration__ms_instrument=instrument).exists()
+            if mismatched_worklist_exists:
+                raise serializers.ValidationError({"ms_instrument": "The assigned MS must match the LC-MS setup on every active routed worklist."})
+        return attrs
+
+    def update(self, instance, validated_data):
+        if validated_data.get("ms_instrument", instance.ms_instrument) != instance.ms_instrument:
+            validated_data["config_version"] = instance.config_version + 1
+        return super().update(instance, validated_data)
 
 
 class AcquisitionRouteSerializer(BaseSerializer):
@@ -625,6 +672,11 @@ class AcquisitionRouteSerializer(BaseSerializer):
         project = attrs.get("project", getattr(self.instance, "project", None))
         worklist = attrs.get("worklist", getattr(self.instance, "worklist", None))
         experiment = attrs.get("experiment", getattr(self.instance, "experiment", None))
+        agent = attrs.get("agent", getattr(self.instance, "agent", None))
+        instrument = getattr(agent, "ms_instrument", None)
+        configuration = getattr(worklist, "configuration", None)
+        if instrument and worklist and (not configuration or configuration.ms_instrument_id != instrument.id):
+            raise serializers.ValidationError({"worklist": "This worklist's LC-MS setup does not match the MS assigned to the watcher."})
         if mode == AcquisitionRouteMode.WORKLIST and not worklist:
             raise serializers.ValidationError({"worklist": "A worklist route requires a worklist."})
         if mode == AcquisitionRouteMode.WORKLIST and project and worklist and worklist.experiment.project_id != project.id:
@@ -1065,13 +1117,13 @@ class AdminUserInviteSerializer(serializers.Serializer):
     email = serializers.EmailField()
     lab = serializers.PrimaryKeyRelatedField(queryset=Lab.objects.filter(active=True))
     global_role = serializers.ChoiceField(choices=UserRole.choices, default=UserRole.RESEARCHER)
-    membership_role = serializers.ChoiceField(choices=UserRole.choices, default=UserRole.RESEARCHER)
+    membership_role = serializers.ChoiceField(choices=LabMembershipRole.choices, default=LabMembershipRole.RESEARCHER)
 
 
 class AdminUserAccessUpdateSerializer(serializers.Serializer):
     lab_id = serializers.IntegerField(min_value=1)
     global_role = serializers.ChoiceField(choices=UserRole.choices)
-    membership_role = serializers.ChoiceField(choices=UserRole.choices)
+    membership_role = serializers.ChoiceField(choices=LabMembershipRole.choices)
     membership_active = serializers.BooleanField()
 
 
@@ -4712,7 +4764,7 @@ class InstrumentViewSet(AuthenticatedModelViewSet):
 class InstrumentConfigurationViewSet(AuthenticatedModelViewSet):
     queryset = InstrumentConfiguration.objects.select_related("facility", "lc_instrument", "ms_instrument")
     serializer_class = InstrumentConfigurationSerializer
-    write_requires_admin = True
+    write_requires_facility_manager = True
     scope_lab_lookup = "facility__labs__id"
     write_scope_facility_path = "facility"
     search_fields = ("name", "method_name", "column_description", "ion_source", "facility__name")
@@ -7281,11 +7333,23 @@ class DeploymentReleaseViewSet(AuthenticatedModelViewSet):
 
 
 class AcquisitionAgentViewSet(AuthenticatedModelViewSet):
-    queryset = AcquisitionAgent.objects.all()
+    queryset = AcquisitionAgent.objects.select_related("ms_instrument")
     serializer_class = AcquisitionAgentSerializer
     write_requires_admin = True
     search_fields = ("name", "token_label", "source_root")
     ordering_fields = ("name", "source_root_status", "last_seen_at", "updated_at")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if is_admin(self.request.user):
+            return queryset
+        lab_ids = active_lab_ids(self.request.user)
+        if not lab_ids:
+            return queryset.none()
+        return queryset.filter(
+            Q(ms_instrument__facility__labs__id__in=lab_ids)
+            | Q(routes__project__lab_id__in=lab_ids)
+        ).distinct()
 
     @action(detail=True, methods=["post"], url_path="propose-source-root")
     def propose_source_root(self, request, pk=None):

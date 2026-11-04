@@ -2,12 +2,14 @@ import { deleteResource, downloadResource, getResource, paginatedResource, patch
 import type {
   AcquisitionWorklist,
   AcquisitionRoute,
+  AcquisitionAgent,
   AccountEmailResult,
   AdminUserAccessIndex,
   AdminUserRecord,
   AdminLabDirectory,
   AdminRuntimeSettings,
   AppRole,
+  MembershipRole,
   AnalysisBatch,
   AnalysisPreset,
   ChromatogramsResponse,
@@ -16,10 +18,12 @@ import type {
   DeploymentRelease,
   DiannPreflightResponse,
   Experiment,
+  Facility,
   FindingsWorkspaceResponse,
   DirectUploadSession,
   FileMatchException,
   InstrumentConfiguration,
+  Instrument,
   Paginated,
   PipelineEvent,
   IntakeMetrics,
@@ -91,6 +95,9 @@ export const queryKeys = {
   deploymentSettings: () => ["deployment-settings"] as const,
   deploymentReleases: (params?: ListParams) => ["deployment-releases", params] as const,
   instrumentConfigurations: (params?: ListParams) => ["instrument-configurations", params] as const,
+  instruments: (params?: ListParams) => ["instruments", params] as const,
+  acquisitionAgents: (params?: ListParams) => ["acquisition-agents", params] as const,
+  facilities: (params?: ListParams) => ["facilities", params] as const,
   systemHealth: () => ["system-health"] as const,
   samples: (params: ListParams) => ["samples", params] as const,
   runs: (params: ListParams) => ["runs", params] as const,
@@ -128,7 +135,7 @@ export function inviteAdminUser(payload: {
   email: string;
   lab: number;
   global_role: AppRole;
-  membership_role: AppRole;
+  membership_role: MembershipRole;
 }): Promise<{ user: AdminUserRecord; email_sent: boolean; invite_url?: string }> {
   return postResource("/admin/user-access/", payload);
 }
@@ -136,7 +143,7 @@ export function inviteAdminUser(payload: {
 export function updateAdminUserAccess(userId: number, payload: {
   lab_id: number;
   global_role: AppRole;
-  membership_role: AppRole;
+  membership_role: MembershipRole;
   membership_active: boolean;
 }): Promise<{ user: AdminUserRecord }> {
   return patchResource(`/admin/user-access/${userId}/`, payload);
@@ -525,6 +532,36 @@ export function sendNotificationTest(): Promise<{ sent: number; detail: string }
 
 export function fetchInstrumentConfigurations(params?: ListParams): Promise<Paginated<InstrumentConfiguration>> {
   return paginatedResource<InstrumentConfiguration>("/instrument-configurations/", { ordering: "name", ...params });
+}
+
+export function fetchFacilities(params?: ListParams): Promise<Paginated<Facility>> {
+  return paginatedResource<Facility>("/facilities/", { ordering: "name", ...params });
+}
+
+export function fetchInstruments(params?: ListParams): Promise<Paginated<Instrument>> {
+  return paginatedResource<Instrument>("/instruments/", { ordering: "nickname", ...params });
+}
+
+export type InstrumentConfigurationPayload = Omit<InstrumentConfiguration, "id" | "created_at" | "updated_at">;
+
+export function createInstrumentConfiguration(payload: InstrumentConfigurationPayload): Promise<InstrumentConfiguration> {
+  return postResource("/instrument-configurations/", payload);
+}
+
+export function updateInstrumentConfiguration(id: number, payload: InstrumentConfigurationPayload): Promise<InstrumentConfiguration> {
+  return patchResource(`/instrument-configurations/${id}/`, payload);
+}
+
+export function createInstrument(payload: Omit<Instrument, "id" | "created_at" | "updated_at">): Promise<Instrument> {
+  return postResource("/instruments/", payload);
+}
+
+export function fetchAcquisitionAgents(params?: ListParams): Promise<Paginated<AcquisitionAgent>> {
+  return paginatedResource<AcquisitionAgent>("/acquisition-agents/", { ordering: "name", ...params });
+}
+
+export function updateAcquisitionAgent(id: number, payload: { ms_instrument: number | null }): Promise<AcquisitionAgent> {
+  return patchResource(`/acquisition-agents/${id}/`, payload);
 }
 
 export function fetchRawFilesOverview(params?: ListParams): Promise<RawFileOverview> {

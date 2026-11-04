@@ -14,12 +14,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { StatusBadge } from "@/components/ui/status-badge";
 import { ProjectAssistantPanel } from "@/features/projects/project-assistant-panel";
 import {
-  applyWorklistAnnotations,
-  parseWorklistAnnotationText,
   parseWorklistText,
   roleOptions,
   type InstrumentWorklistKind,
-  type WorklistAnnotation,
+  validateWorklistTags,
 } from "@/features/projects/worklist-import";
 import {
   fetchCurrentUser,
@@ -94,8 +92,6 @@ export default function ProjectWorkspacePage() {
   const [msWorklistRows, setMsWorklistRows] = useState<WorklistImportRow[]>([]);
   const [lcWorklistFile, setLcWorklistFile] = useState<File | null>(null);
   const [lcWorklistRows, setLcWorklistRows] = useState<WorklistImportRow[]>([]);
-  const [annotationFile, setAnnotationFile] = useState<File | null>(null);
-  const [annotations, setAnnotations] = useState<WorklistAnnotation[] | null>(null);
   const [worklistError, setWorklistError] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
@@ -172,22 +168,7 @@ export default function ProjectWorkspacePage() {
   const selectedRows = runs.filter((row) => selectedRunIds.includes(row.run.id));
   const selectedReadyRows = selectedRows.filter((row) => row.raw_file && !row.processing_job);
   const allSelected = Boolean(runs.length) && selectedRunIds.length === runs.length;
-  const annotatedWorklist = useMemo(() => {
-    if (!msWorklistRows.length) return { msRows: [], lcRows: [], error: "" };
-    try {
-      return {
-        msRows: applyWorklistAnnotations(msWorklistRows, annotations),
-        lcRows: applyWorklistAnnotations(lcWorklistRows, annotations, { requireFullMatch: false }),
-        error: "",
-      };
-    } catch (error) {
-      return {
-        msRows: [],
-        lcRows: [],
-        error: error instanceof Error ? error.message : "The annotation CSV could not be matched to the MS worklist.",
-      };
-    }
-  }, [annotations, lcWorklistRows, msWorklistRows]);
+  const worklistTagError = useMemo(() => validateWorklistTags(msWorklistRows), [msWorklistRows]);
 
   useEffect(() => {
     setRunPage(1);
@@ -216,10 +197,10 @@ export default function ProjectWorkspacePage() {
       importProjectWorklist(projectId, {
         worklist_name: worklistName,
         experiment_name: experiment?.name ?? undefined,
-        rows: annotatedWorklist.msRows,
+        rows: worklistRowsForImport(msWorklistRows),
         ms_filename: msWorklistFile?.name,
         lc_filename: lcWorklistFile?.name,
-        lc_rows: annotatedWorklist.lcRows,
+        lc_rows: worklistRowsForImport(lcWorklistRows),
       }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: statusQueryKey });
@@ -230,8 +211,6 @@ export default function ProjectWorkspacePage() {
       setMsWorklistRows([]);
       setLcWorklistFile(null);
       setLcWorklistRows([]);
-      setAnnotationFile(null);
-      setAnnotations(null);
       setWorklistError("");
     },
     onError: (error) => setWorklistError(error instanceof Error ? error.message : "Could not import worklist."),
@@ -331,24 +310,14 @@ export default function ProjectWorkspacePage() {
       .catch((error) => setWorklistError(error instanceof Error ? error.message : "Could not read worklist file."));
   }
 
-  function onAnnotationFile(file: File | undefined) {
-    setAnnotationFile(file ?? null);
-    setAnnotations(null);
-    setWorklistError("");
-    if (!file) return;
-    file.text()
-      .then((text) => setAnnotations(parseWorklistAnnotationText(text)))
-      .catch((error) => setWorklistError(error instanceof Error ? error.message : "Could not read annotation CSV."));
-  }
-
   function submitWorklist(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!msWorklistRows.length) {
       setWorklistError("Choose a valid MS CSV or TSV worklist. The MS file defines the planned runs.");
       return;
     }
-    if (annotatedWorklist.error) {
-      setWorklistError(annotatedWorklist.error);
+    if (worklistTagError) {
+      setWorklistError(worklistTagError);
       return;
     }
     importMutation.mutate();
@@ -395,7 +364,7 @@ export default function ProjectWorkspacePage() {
       />
       {project ? <ProjectSharingDialog projectId={project.id} open={shareOpen} onOpenChange={setShareOpen} /> : null}
       {quickStartImportError ? <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">Project created, but its worklist could not be imported: {quickStartImportError} Use Import worklist below to retry.</div> : null}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
             {project ? <StatusBadge status={project.status} /> : null}
             {experiment ? (
               <span className="inline-flex h-9 items-center rounded-md bg-muted px-3 text-sm font-semibold text-foreground">
@@ -408,7 +377,7 @@ export default function ProjectWorkspacePage() {
                 value={isExperimentRoute ? String(experimentId) : "project"}
                 onValueChange={(value) => navigate(value === "project" ? `/projects/${projectId}/overview` : `/projects/${projectId}/experiments/${value}/overview`)}
               >
-                <SelectTrigger className="h-9 w-[190px] bg-background"><SelectValue placeholder="Select experiment" /></SelectTrigger>
+                <SelectTrigger className="h-9 w-full max-w-full bg-background sm:w-64"><SelectValue placeholder="Select experiment" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="project">All project runs</SelectItem>
                   {experiments.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}
@@ -416,9 +385,9 @@ export default function ProjectWorkspacePage() {
               </Select>
             ) : null}
             {experiments.length === 1 && !isExperimentRoute ? (
-              <Button asChild variant="ghost">
+              <Button asChild variant="ghost" className="min-w-0 max-w-full">
                 <Link to={`/projects/${projectId}/experiments/${experiments[0].id}/overview`}>
-                  Experiment: {experiments[0].name}
+                  <span className="block max-w-[min(70vw,24rem)] truncate">Open experiment · {experiments[0].name}</span>
                 </Link>
               </Button>
             ) : null}
@@ -439,7 +408,7 @@ export default function ProjectWorkspacePage() {
                 <DialogHeader>
                   <DialogTitle>Import an instrument worklist</DialogTitle>
                   <DialogDescription>
-                    Upload the MS worklist, its matching LC worklist when available, and role metadata for vendor rows marked Unknown. MS rows define planned runs; LC rows are attached for reference.
+                    Upload the MS worklist and its matching LC sequence when available. Review and tag MS rows in the preview; MSConnect stores the resulting samples, roles, and metadata with this experiment.
                     {isExperimentRoute ? " The import will attach to the selected experiment." : " The import will attach to the default experiment for this project."}
                   </DialogDescription>
                 </DialogHeader>
@@ -452,17 +421,6 @@ export default function ProjectWorkspacePage() {
                     <WorklistFilePicker kind="ms" file={msWorklistFile} count={msWorklistRows.length} required onFile={(file) => onWorklistFile(file, "ms")} />
                     <WorklistFilePicker kind="lc" file={lcWorklistFile} count={lcWorklistRows.length} onFile={(file) => onWorklistFile(file, "lc")} />
                   </div>
-                  <label htmlFor="worklist-annotations" className="grid min-w-0 gap-2 rounded-md border border-dashed p-3 text-sm">
-                    <span className="font-semibold">Sample role and metadata CSV <span className="font-normal text-muted-foreground">· required when vendor Sample Type is Unknown</span></span>
-                    <input
-                      id="worklist-annotations"
-                      type="file"
-                      accept=".csv,.tsv,text/csv,text/tab-separated-values"
-                      onChange={(event) => onAnnotationFile(event.target.files?.[0])}
-                      className="min-w-0 text-sm"
-                    />
-                    {annotationFile ? <span className="break-all text-xs text-muted-foreground">Selected: {annotationFile.name}</span> : null}
-                  </label>
                   <details className="rounded-md bg-muted px-3 py-2 text-sm">
                     <summary className="cursor-pointer font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Download anonymized paired examples</summary>
                     <div className="mt-3 grid gap-3 sm:grid-cols-3">
@@ -470,15 +428,19 @@ export default function ProjectWorkspacePage() {
                       <WorklistExampleLinks label="Blanks" stem="blank" />
                       <WorklistExampleLinks label="Preamble and prep QC" stem="preamble" />
                     </div>
-                    <a className="mt-3 inline-block text-xs underline underline-offset-2" href="/worklist-examples/README.md" download>Read the tagging guide</a>
+                    <a className="mt-3 inline-block text-xs underline underline-offset-2" href="/static/app/worklist-examples/README.md" download>Read the tagging guide</a>
                   </details>
-                  <WorklistPreview rows={annotatedWorklist.msRows.length ? annotatedWorklist.msRows : msWorklistRows} />
-                  {worklistError || annotatedWorklist.error ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive" role="alert" aria-live="polite">{worklistError || annotatedWorklist.error}</div> : null}
+                  <p className="text-xs text-muted-foreground">Unknown vendor rows need a role. Blank rows need a blank type; QC rows need a stage and material.</p>
+                  <WorklistPreview
+                    rows={msWorklistRows}
+                    onRowChange={(index, update) => setMsWorklistRows((current) => current.map((row, rowIndex) => rowIndex === index ? update(row) : row))}
+                  />
+                  {worklistError || worklistTagError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive" role="alert" aria-live="polite">{worklistError || worklistTagError}</div> : null}
                   <div className="flex justify-end gap-2 border-t pt-3">
                     <Button type="button" variant="secondary" onClick={() => setWorklistOpen(false)}>
                       Cancel
                     </Button>
-                    <Button type="submit" disabled={importMutation.isPending || !msWorklistRows.length || Boolean(annotatedWorklist.error) || (isExperimentRoute && !experiment)}>
+                    <Button type="submit" disabled={importMutation.isPending || !msWorklistRows.length || Boolean(worklistTagError) || (isExperimentRoute && !experiment)}>
                       {importMutation.isPending ? "Importing..." : "Import worklist"}
                     </Button>
                   </div>
@@ -488,13 +450,13 @@ export default function ProjectWorkspacePage() {
             </> : null}
       </div>
 
-      <nav aria-label="Project lifecycle" className="flex flex-wrap gap-1 rounded-lg bg-muted p-1">
+      <nav aria-label="Project lifecycle" className="flex min-w-0 flex-wrap gap-1 overflow-hidden rounded-lg bg-muted p-1">
         {lifecycleSections.map(([id, label]) => (
           <Link
             key={id}
             to={workspaceSectionPath(projectId, isExperimentRoute ? experimentId : null, id)}
             aria-current={activeSection === id ? "page" : undefined}
-            className={`rounded-md px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${activeSection === id ? "bg-card font-semibold text-foreground shadow-sm" : "text-muted-foreground hover:bg-card/70 hover:text-foreground"}`}
+            className={`max-w-full rounded-md px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${activeSection === id ? "bg-card font-semibold text-foreground shadow-sm" : "text-muted-foreground hover:bg-card/70 hover:text-foreground"}`}
           >{label}</Link>
         ))}
       </nav>
@@ -1360,10 +1322,11 @@ function FindingsWorkflowPanel({
 }
 
 function WorklistExampleLinks({ label, stem }: { label: string; stem: string }) {
+  const root = "/static/app/worklist-examples";
   const files = [
-    [`/worklist-examples/example-sequence-${stem}-ms.csv`, "MS sequence"],
-    [`/worklist-examples/example-sequence-${stem}-lc.csv`, "LC sequence"],
-    [`/worklist-examples/example-sequence-${stem}-tags.csv`, "Role metadata"],
+    [`${root}/example-sequence-${stem}-ms.csv`, "MS sequence"],
+    [`${root}/example-sequence-${stem}-lc.csv`, "LC sequence"],
+    [`${root}/example-sequence-${stem}-tags.csv`, "Tag reference"],
   ] as const;
   return (
     <section className="min-w-0 rounded-md border bg-card p-3">
@@ -1375,13 +1338,19 @@ function WorklistExampleLinks({ label, stem }: { label: string; stem: string }) 
   );
 }
 
-function WorklistPreview({ rows }: { rows: WorklistImportRow[] }) {
+function WorklistPreview({
+  rows,
+  onRowChange,
+}: {
+  rows: WorklistImportRow[];
+  onRowChange: (index: number, update: (row: WorklistImportRow) => WorklistImportRow) => void;
+}) {
   if (!rows.length) {
     return <div className="rounded-md bg-muted p-4 text-sm text-muted-foreground">No rows parsed yet. Expected columns include sample, run, filename, role, condition, well, and position.</div>;
   }
   return (
     <div className="table-scroll max-h-72 rounded-lg border">
-      <table className="w-full min-w-[900px] text-sm">
+      <table className="w-full min-w-[1250px] text-sm">
         <thead className="bg-secondary/65 text-left text-xs uppercase text-muted-foreground">
           <tr>
             <th className="px-3 py-2">Order</th>
@@ -1390,48 +1359,73 @@ function WorklistPreview({ rows }: { rows: WorklistImportRow[] }) {
             <th className="px-3 py-2">Filename</th>
             <th className="px-3 py-2">Role</th>
             <th className="px-3 py-2">Condition</th>
-            <th className="px-3 py-2">Sample or control metadata</th>
+            <th className="px-3 py-2">Metadata stored with the sample or run</th>
           </tr>
         </thead>
         <tbody>
-          {rows.slice(0, 20).map((row) => (
+          {rows.map((row, rowIndex) => {
+            const metadata = row.metadata ?? {};
+            const roleNeedsSelection = Boolean(metadata.role_tagging_required) && metadata.role_confirmed !== true;
+            const updateMetadata = (key: string, value: string) => onRowChange(rowIndex, (current) => ({
+              ...current,
+              ...(key === "notes" ? { notes: value } : {}),
+              metadata: { ...current.metadata, [key]: value },
+            }));
+            return (
             <tr key={`${row.position}-${row.expected_filename}`} className="border-t">
               <td className="px-3 py-2">{row.position}</td>
               <td className="px-3 py-2">{row.run_name || "-"}</td>
-              <td className="px-3 py-2">{row.sample_name}</td>
+              <td className="px-3 py-2">
+                <Input className="w-40" aria-label={`Sample name for ${row.expected_filename}`} value={row.sample_name} onChange={(event) => onRowChange(rowIndex, (current) => ({ ...current, sample_name: event.target.value }))} />
+                {row.file_role === "hye" ? <Input className="mt-1 w-40" aria-label={`HYE pair label for ${row.expected_filename}`} placeholder="HYE pair label" value={row.hye_pair_label ?? ""} onChange={(event) => onRowChange(rowIndex, (current) => ({ ...current, hye_pair_label: event.target.value }))} /> : null}
+              </td>
               <td className="max-w-[260px] break-all px-3 py-2">{row.expected_filename}</td>
-              <td className="px-3 py-2">{displayWorklistRole(row)}</td>
-              <td className="px-3 py-2">{row.condition || "-"}</td>
-              <td className="px-3 py-2">{worklistAnnotationSummary(row)}</td>
+              <td className="px-3 py-2">
+                <Select
+                  value={roleNeedsSelection ? "" : row.file_role}
+                  onValueChange={(value) => onRowChange(rowIndex, (current) => ({
+                    ...current,
+                    file_role: value as WorklistImportRow["file_role"],
+                    qc_program: value === "hye" ? "hye" : value === "prtc" ? "prtc" : "",
+                    metadata: { ...current.metadata, role_confirmed: true },
+                  }))}
+                >
+                  <SelectTrigger aria-label={`Sample role for ${row.expected_filename}`} className="w-36"><SelectValue placeholder="Choose role" /></SelectTrigger>
+                  <SelectContent>{roleOptions.map((role) => <SelectItem key={role} value={role}>{role.replaceAll("_", " ")}</SelectItem>)}</SelectContent>
+                </Select>
+              </td>
+              <td className="px-3 py-2"><Input className="w-32" aria-label={`Condition for ${row.expected_filename}`} value={row.condition ?? ""} onChange={(event) => onRowChange(rowIndex, (current) => ({ ...current, condition: event.target.value }))} /></td>
+              <td className="min-w-[380px] px-3 py-2">
+                <div className="grid gap-1.5">
+                  {row.file_role === "sample" || row.file_role === "library" ? <Input aria-label={`Sample type for ${row.expected_filename}`} placeholder="Sample type" value={String(metadata.sample_type ?? "").toLowerCase() === "unknown" ? "" : String(metadata.sample_type ?? "")} onChange={(event) => updateMetadata("sample_type", event.target.value)} /> : null}
+                  {row.file_role === "blank" || row.file_role === "true_blank" ? <Input aria-label={`Blank type for ${row.expected_filename}`} placeholder="Blank type (solvent, process, etc.)" value={String(metadata.blank_type ?? "")} onChange={(event) => updateMetadata("blank_type", event.target.value)} /> : null}
+                  {row.file_role === "qc" ? <div className="grid gap-1.5 sm:grid-cols-2"><Input aria-label={`QC stage for ${row.expected_filename}`} placeholder="QC stage" value={String(metadata.qc_stage ?? "")} onChange={(event) => updateMetadata("qc_stage", event.target.value)} /><Input aria-label={`QC material for ${row.expected_filename}`} placeholder="QC material" value={String(metadata.qc_material ?? "")} onChange={(event) => updateMetadata("qc_material", event.target.value)} /></div> : null}
+                  {row.file_role === "sample" ? (
+                    <details className="text-xs">
+                      <summary className="cursor-pointer text-muted-foreground">More sample metadata</summary>
+                      <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+                        {["subject_id", "matrix", "species", "digestion_protocol", "enrichment_protocol", "prep_batch", "replicate", "notes"].map((key) => (
+                          <Input key={key} aria-label={`${key.replaceAll("_", " ")} for ${row.expected_filename}`} placeholder={key.replaceAll("_", " ")} value={String(metadata[key] ?? "")} onChange={(event) => updateMetadata(key, event.target.value)} />
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
+                </div>
+              </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
-      {rows.length > 20 ? <div className="border-t px-3 py-2 text-xs text-muted-foreground">{rows.length - 20} more rows will be imported.</div> : null}
     </div>
   );
 }
 
-function worklistAnnotationSummary(row: WorklistImportRow) {
-  const metadata = row.metadata ?? {};
-  if (metadata.qc_stage || metadata.qc_material) {
-    return [metadata.qc_stage, metadata.qc_material].filter(Boolean).join(" · ");
-  }
-  if (metadata.blank_type) return `Blank · ${metadata.blank_type}`;
-  if (metadata.sample_type) return String(metadata.sample_type);
-  return "-";
-}
-
-function displayWorklistRole(row: WorklistImportRow) {
-  const metadata = row.metadata ?? {};
-  const vendorSampleType = String(metadata.vendor_sample_type ?? metadata.sample_type ?? "").trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
-  const hasAnnotation = metadata.annotation_source === "worklist_annotation_csv";
-  const requiresVendorAnnotation = String(metadata.source_format ?? "").startsWith("vendor_") && (
-    (!hasAnnotation && row.file_role === "sample" && !roleOptions.includes(vendorSampleType as typeof roleOptions[number]))
-    || ((row.file_role === "blank" || row.file_role === "true_blank") && !row.metadata?.blank_type)
-    || (row.file_role === "qc" && (!row.metadata?.qc_stage || !row.metadata?.qc_material))
-  );
-  return requiresVendorAnnotation ? "Needs tag" : row.file_role.replaceAll("_", " ");
+function worklistRowsForImport(rows: WorklistImportRow[]) {
+  return rows.map((row) => ({
+    ...row,
+    metadata: Object.fromEntries(Object.entries(row.metadata ?? {}).filter(([key]) => !["role_tagging_required", "role_confirmed"].includes(key))),
+  }));
 }
 
 function WorklistFilePicker({

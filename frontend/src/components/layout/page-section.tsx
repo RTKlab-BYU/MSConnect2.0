@@ -30,9 +30,9 @@ export function MetricCard({ label, value, detail }: { label: string; value: num
   return (
     <Card>
       <CardContent className="p-5">
-        <div className="text-[11px] font-black uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
-        <div className="mt-3 text-3xl font-black tracking-tight">{value}</div>
-        <div className="mt-1 text-sm text-muted-foreground">{detail}</div>
+        <div className="break-words text-[11px] font-black uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
+        <div className="mt-3 min-w-0 break-words text-3xl font-black tracking-tight">{value}</div>
+        <div className="mt-1 break-words text-sm text-muted-foreground">{detail}</div>
       </CardContent>
     </Card>
   );
