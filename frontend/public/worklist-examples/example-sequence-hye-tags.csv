@@ -1,0 +1,6 @@
+expected_filename,sample_name,file_role,qc_program,hye_pair_label,condition,sample_type,blank_type,qc_stage,qc_material,prep_batch,replicate,subject_id,notes
+DEMO_HYE_A_01,HYE-A,hye,hye,HYE-PAIR-01,,HYE reference material,,,,,,,Anonymized example
+DEMO_HYE_B_01,HYE-B,hye,hye,HYE-PAIR-01,,HYE reference material,,,,,,,Anonymized example
+DEMO_SAMPLE_01,Sample-01,sample,,,Condition-A,Example specimen,,,,DEMO-BATCH-01,1,SUBJECT-01,Anonymized example
+DEMO_LIBRARY_01,Reference-Library,library,,,,Reference library,,,,,,,Anonymized example
+DEMO_PREP_QC_01,Prep-QC-01,qc,,,,Pooled digest,,sample_preparation,Pooled digest,DEMO-BATCH-01,,,Synthetic prep-QC example

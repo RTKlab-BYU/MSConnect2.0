@@ -1,0 +1,8 @@
+0,,,,,
+Example sequence,,,,,
+Sample Type,File Name,Path,Instrument Method,Position,Inj Vol
+Unknown,DEMO_SAMPLE_01,ExampleDataMS,Example_MS_Method,A1,2
+Unknown,DEMO_PREP_QC_01,ExampleDataMS,Example_MS_Method,A2,2
+Unknown,DEMO_INSTRUMENT_QC_01,ExampleDataMS,Example_MS_Method,A3,2
+Unknown,DEMO_HYE_A_01,ExampleDataMS,Example_MS_Method,A4,2
+Unknown,DEMO_HYE_B_01,ExampleDataMS,Example_MS_Method,A5,2

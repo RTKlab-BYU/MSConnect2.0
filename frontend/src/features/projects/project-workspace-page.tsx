@@ -13,7 +13,14 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { ProjectAssistantPanel } from "@/features/projects/project-assistant-panel";
-import { parseWorklistText, roleOptions, type InstrumentWorklistKind } from "@/features/projects/worklist-import";
+import {
+  applyWorklistAnnotations,
+  parseWorklistAnnotationText,
+  parseWorklistText,
+  roleOptions,
+  type InstrumentWorklistKind,
+  type WorklistAnnotation,
+} from "@/features/projects/worklist-import";
 import {
   fetchCurrentUser,
   fetchFileMatchExceptions,
@@ -87,6 +94,8 @@ export default function ProjectWorkspacePage() {
   const [msWorklistRows, setMsWorklistRows] = useState<WorklistImportRow[]>([]);
   const [lcWorklistFile, setLcWorklistFile] = useState<File | null>(null);
   const [lcWorklistRows, setLcWorklistRows] = useState<WorklistImportRow[]>([]);
+  const [annotationFile, setAnnotationFile] = useState<File | null>(null);
+  const [annotations, setAnnotations] = useState<WorklistAnnotation[] | null>(null);
   const [worklistError, setWorklistError] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
@@ -163,6 +172,22 @@ export default function ProjectWorkspacePage() {
   const selectedRows = runs.filter((row) => selectedRunIds.includes(row.run.id));
   const selectedReadyRows = selectedRows.filter((row) => row.raw_file && !row.processing_job);
   const allSelected = Boolean(runs.length) && selectedRunIds.length === runs.length;
+  const annotatedWorklist = useMemo(() => {
+    if (!msWorklistRows.length) return { msRows: [], lcRows: [], error: "" };
+    try {
+      return {
+        msRows: applyWorklistAnnotations(msWorklistRows, annotations),
+        lcRows: applyWorklistAnnotations(lcWorklistRows, annotations, { requireFullMatch: false }),
+        error: "",
+      };
+    } catch (error) {
+      return {
+        msRows: [],
+        lcRows: [],
+        error: error instanceof Error ? error.message : "The annotation CSV could not be matched to the MS worklist.",
+      };
+    }
+  }, [annotations, lcWorklistRows, msWorklistRows]);
 
   useEffect(() => {
     setRunPage(1);
@@ -191,10 +216,10 @@ export default function ProjectWorkspacePage() {
       importProjectWorklist(projectId, {
         worklist_name: worklistName,
         experiment_name: experiment?.name ?? undefined,
-        rows: msWorklistRows,
+        rows: annotatedWorklist.msRows,
         ms_filename: msWorklistFile?.name,
         lc_filename: lcWorklistFile?.name,
-        lc_rows: lcWorklistRows,
+        lc_rows: annotatedWorklist.lcRows,
       }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: statusQueryKey });
@@ -205,6 +230,8 @@ export default function ProjectWorkspacePage() {
       setMsWorklistRows([]);
       setLcWorklistFile(null);
       setLcWorklistRows([]);
+      setAnnotationFile(null);
+      setAnnotations(null);
       setWorklistError("");
     },
     onError: (error) => setWorklistError(error instanceof Error ? error.message : "Could not import worklist."),
@@ -304,10 +331,24 @@ export default function ProjectWorkspacePage() {
       .catch((error) => setWorklistError(error instanceof Error ? error.message : "Could not read worklist file."));
   }
 
+  function onAnnotationFile(file: File | undefined) {
+    setAnnotationFile(file ?? null);
+    setAnnotations(null);
+    setWorklistError("");
+    if (!file) return;
+    file.text()
+      .then((text) => setAnnotations(parseWorklistAnnotationText(text)))
+      .catch((error) => setWorklistError(error instanceof Error ? error.message : "Could not read annotation CSV."));
+  }
+
   function submitWorklist(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!msWorklistRows.length) {
       setWorklistError("Choose a valid MS CSV or TSV worklist. The MS file defines the planned runs.");
+      return;
+    }
+    if (annotatedWorklist.error) {
+      setWorklistError(annotatedWorklist.error);
       return;
     }
     importMutation.mutate();
@@ -398,7 +439,7 @@ export default function ProjectWorkspacePage() {
                 <DialogHeader>
                   <DialogTitle>Import an instrument worklist</DialogTitle>
                   <DialogDescription>
-                    Upload the MS worklist, plus its matching LC worklist when available. MS rows define planned runs; LC rows are attached to the worklist for reference.
+                    Upload the MS worklist, its matching LC worklist when available, and role metadata for vendor rows marked Unknown. MS rows define planned runs; LC rows are attached for reference.
                     {isExperimentRoute ? " The import will attach to the selected experiment." : " The import will attach to the default experiment for this project."}
                   </DialogDescription>
                 </DialogHeader>
@@ -411,18 +452,33 @@ export default function ProjectWorkspacePage() {
                     <WorklistFilePicker kind="ms" file={msWorklistFile} count={msWorklistRows.length} required onFile={(file) => onWorklistFile(file, "ms")} />
                     <WorklistFilePicker kind="lc" file={lcWorklistFile} count={lcWorklistRows.length} onFile={(file) => onWorklistFile(file, "lc")} />
                   </div>
-                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-                    <a className="underline underline-offset-2" href="/worklist-examples/example-ms-worklist.csv" download>Example MS worklist</a>
-                    <a className="underline underline-offset-2" href="/worklist-examples/example-lc-worklist-format.csv" download>Example LC worklist</a>
-                    <a className="underline underline-offset-2" href="/worklist-examples/msconnect-import-example.csv" download>Standard MSConnect format</a>
-                  </div>
-                  <WorklistPreview rows={msWorklistRows} />
-                  {worklistError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{worklistError}</div> : null}
+                  <label htmlFor="worklist-annotations" className="grid min-w-0 gap-2 rounded-md border border-dashed p-3 text-sm">
+                    <span className="font-semibold">Sample role and metadata CSV <span className="font-normal text-muted-foreground">· required when vendor Sample Type is Unknown</span></span>
+                    <input
+                      id="worklist-annotations"
+                      type="file"
+                      accept=".csv,.tsv,text/csv,text/tab-separated-values"
+                      onChange={(event) => onAnnotationFile(event.target.files?.[0])}
+                      className="min-w-0 text-sm"
+                    />
+                    {annotationFile ? <span className="break-all text-xs text-muted-foreground">Selected: {annotationFile.name}</span> : null}
+                  </label>
+                  <details className="rounded-md bg-muted px-3 py-2 text-sm">
+                    <summary className="cursor-pointer font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Download anonymized paired examples</summary>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                      <WorklistExampleLinks label="HYE and library" stem="hye" />
+                      <WorklistExampleLinks label="Blanks" stem="blank" />
+                      <WorklistExampleLinks label="Preamble and prep QC" stem="preamble" />
+                    </div>
+                    <a className="mt-3 inline-block text-xs underline underline-offset-2" href="/worklist-examples/README.md" download>Read the tagging guide</a>
+                  </details>
+                  <WorklistPreview rows={annotatedWorklist.msRows.length ? annotatedWorklist.msRows : msWorklistRows} />
+                  {worklistError || annotatedWorklist.error ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive" role="alert" aria-live="polite">{worklistError || annotatedWorklist.error}</div> : null}
                   <div className="flex justify-end gap-2 border-t pt-3">
                     <Button type="button" variant="secondary" onClick={() => setWorklistOpen(false)}>
                       Cancel
                     </Button>
-                    <Button type="submit" disabled={importMutation.isPending || !msWorklistRows.length || (isExperimentRoute && !experiment)}>
+                    <Button type="submit" disabled={importMutation.isPending || !msWorklistRows.length || Boolean(annotatedWorklist.error) || (isExperimentRoute && !experiment)}>
                       {importMutation.isPending ? "Importing..." : "Import worklist"}
                     </Button>
                   </div>
@@ -1303,13 +1359,29 @@ function FindingsWorkflowPanel({
   );
 }
 
+function WorklistExampleLinks({ label, stem }: { label: string; stem: string }) {
+  const files = [
+    [`/worklist-examples/example-sequence-${stem}-ms.csv`, "MS sequence"],
+    [`/worklist-examples/example-sequence-${stem}-lc.csv`, "LC sequence"],
+    [`/worklist-examples/example-sequence-${stem}-tags.csv`, "Role metadata"],
+  ] as const;
+  return (
+    <section className="min-w-0 rounded-md border bg-card p-3">
+      <h3 className="text-sm font-semibold">{label}</h3>
+      <div className="mt-2 grid gap-1 text-xs">
+        {files.map(([href, title]) => <a key={href} className="underline underline-offset-2" href={href} download>{title}</a>)}
+      </div>
+    </section>
+  );
+}
+
 function WorklistPreview({ rows }: { rows: WorklistImportRow[] }) {
   if (!rows.length) {
     return <div className="rounded-md bg-muted p-4 text-sm text-muted-foreground">No rows parsed yet. Expected columns include sample, run, filename, role, condition, well, and position.</div>;
   }
   return (
     <div className="table-scroll max-h-72 rounded-lg border">
-      <table className="w-full min-w-[760px] text-sm">
+      <table className="w-full min-w-[900px] text-sm">
         <thead className="bg-secondary/65 text-left text-xs uppercase text-muted-foreground">
           <tr>
             <th className="px-3 py-2">Order</th>
@@ -1317,7 +1389,8 @@ function WorklistPreview({ rows }: { rows: WorklistImportRow[] }) {
             <th className="px-3 py-2">Sample</th>
             <th className="px-3 py-2">Filename</th>
             <th className="px-3 py-2">Role</th>
-            <th className="px-3 py-2">Well</th>
+            <th className="px-3 py-2">Condition</th>
+            <th className="px-3 py-2">Sample or control metadata</th>
           </tr>
         </thead>
         <tbody>
@@ -1326,9 +1399,10 @@ function WorklistPreview({ rows }: { rows: WorklistImportRow[] }) {
               <td className="px-3 py-2">{row.position}</td>
               <td className="px-3 py-2">{row.run_name || "-"}</td>
               <td className="px-3 py-2">{row.sample_name}</td>
-              <td className="px-3 py-2">{row.expected_filename}</td>
-              <td className="px-3 py-2">{row.file_role}</td>
-              <td className="px-3 py-2">{row.well || "-"}</td>
+              <td className="max-w-[260px] break-all px-3 py-2">{row.expected_filename}</td>
+              <td className="px-3 py-2">{displayWorklistRole(row)}</td>
+              <td className="px-3 py-2">{row.condition || "-"}</td>
+              <td className="px-3 py-2">{worklistAnnotationSummary(row)}</td>
             </tr>
           ))}
         </tbody>
@@ -1336,6 +1410,28 @@ function WorklistPreview({ rows }: { rows: WorklistImportRow[] }) {
       {rows.length > 20 ? <div className="border-t px-3 py-2 text-xs text-muted-foreground">{rows.length - 20} more rows will be imported.</div> : null}
     </div>
   );
+}
+
+function worklistAnnotationSummary(row: WorklistImportRow) {
+  const metadata = row.metadata ?? {};
+  if (metadata.qc_stage || metadata.qc_material) {
+    return [metadata.qc_stage, metadata.qc_material].filter(Boolean).join(" · ");
+  }
+  if (metadata.blank_type) return `Blank · ${metadata.blank_type}`;
+  if (metadata.sample_type) return String(metadata.sample_type);
+  return "-";
+}
+
+function displayWorklistRole(row: WorklistImportRow) {
+  const metadata = row.metadata ?? {};
+  const vendorSampleType = String(metadata.vendor_sample_type ?? metadata.sample_type ?? "").trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+  const hasAnnotation = metadata.annotation_source === "worklist_annotation_csv";
+  const requiresVendorAnnotation = String(metadata.source_format ?? "").startsWith("vendor_") && (
+    (!hasAnnotation && row.file_role === "sample" && !roleOptions.includes(vendorSampleType as typeof roleOptions[number]))
+    || ((row.file_role === "blank" || row.file_role === "true_blank") && !row.metadata?.blank_type)
+    || (row.file_role === "qc" && (!row.metadata?.qc_stage || !row.metadata?.qc_material))
+  );
+  return requiresVendorAnnotation ? "Needs tag" : row.file_role.replaceAll("_", " ");
 }
 
 function WorklistFilePicker({

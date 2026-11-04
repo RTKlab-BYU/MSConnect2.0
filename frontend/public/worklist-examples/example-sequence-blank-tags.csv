@@ -1,0 +1,4 @@
+expected_filename,sample_name,file_role,qc_program,hye_pair_label,condition,sample_type,blank_type,qc_stage,qc_material,prep_batch,replicate,subject_id,notes
+DEMO_PREBLANK_01,Preblank 01,blank,,,,,preblank,,,,,,Source label retained as a generic blank subtype
+DEMO_SAMPLE_01,Sample 01,sample,,,Condition-B,Example specimen,,,,DEMO-BATCH-02,1,SUBJECT-02,Anonymized example
+DEMO_TRUE_BLANK_01,True blank 01,true_blank,,,,,true_blank,,,,,,Source label retained as a generic blank subtype

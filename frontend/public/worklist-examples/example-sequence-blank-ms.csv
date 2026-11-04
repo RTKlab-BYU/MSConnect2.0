@@ -1,0 +1,5 @@
+Bracket Type=4,,,,,
+Sample Type,File Name,Path,Instrument Method,Position,Inj Vol
+Unknown,DEMO_PREBLANK_01,ExampleDataMS,Example_MS_Method,A1,2
+Unknown,DEMO_SAMPLE_01,ExampleDataMS,Example_MS_Method,A2,2
+Unknown,DEMO_TRUE_BLANK_01,ExampleDataMS,Example_MS_Method,A3,2
