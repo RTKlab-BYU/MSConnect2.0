@@ -1,12 +1,9 @@
-import pandas as pd
-import os
-import pathlib
-from pathlib import Path
-import random
-import sys
 import re
-import math
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
+
 
 class ExcelParser:
     def __init__(self, input_filename=None):
@@ -30,9 +27,9 @@ class ExcelParser:
         except ValueError:
             raise
         except FileNotFoundError:
-            raise ValueError(f"File '{filename}' not found. ...")
+            raise ValueError(f"File '{filename}' not found. ...") from None
         except Exception as e:
-            raise ValueError(f"Unexpected error reading Excel file: {e}. ...")
+            raise ValueError(f"Unexpected error reading Excel file: {e}. ...") from None
 
     def condition_dict(self, dataframe, cond_range=None):
         conditions = {}
@@ -68,7 +65,6 @@ class ExcelParser:
         raise ValueError(f"Invalid condition range: {cond_range!r}")
 
     def separate_plates(self, user_df, manager_df):
-        user_name = user_df.columns[1]
         nbcode = user_df.iloc[0,1]
         if manager_df.iloc[0,18] == '1 column':
             lc_column_number = 1
@@ -141,7 +137,7 @@ class ExcelParser:
                     if manager_df.iloc[i, 1] == "TrueBlank":
                         wet_amounts[int(cond_num)] = 10000  # TrueBlanks should be infinite
                 except ValueError:
-                    raise ValueError(f"Wet sample amount must be a whole number or blank. Check column 'Samples/well' for invalid entries.")
+                    raise ValueError("Wet sample amount must be a whole number or blank. Check column 'Samples/well' for invalid entries.") from None
         num_to_run = {}
         for i in range(0, 50):
             if pd.notna(manager_df.iloc[i, 1]):
@@ -153,7 +149,7 @@ class ExcelParser:
                     try:
                         num_to_run[int(cond_num)] = int(amt_to_run)
                     except ValueError:
-                        raise ValueError("Number of samples to run must be either 'all' (no quotes), empty, or a whole number.")
+                        raise ValueError("Number of samples to run must be either 'all' (no quotes), empty, or a whole number.") from None
         return nbcode, lc_column_number, wet_amounts, plates, solvent_vials, num_to_run
 
     def check_plate_colors(self, plates):
@@ -185,9 +181,10 @@ class ExcelParser:
             if pd.notna(manager_df.iloc[i, 13]):
                 inj_vol[i] = int(manager_df.iloc[i, 13])
                 if not (isinstance(inj_vol[i], (int, float)) and float(inj_vol[i]) > 0):
-                    raise ValueError(f"Injection volume must be a positive number. Check column 'Injection volume' for invalid entries.")
+                    raise ValueError("Injection volume must be a positive number. Check column 'Injection volume' for invalid entries.")
                 counter += 1
-            else: inj_vol[i] = 1  # default injection volume is 1 µL if not specified
+            else:
+                inj_vol[i] = 1  # default injection volume is 1 µL if not specified
         inj_vol[100] = 1  # add default injection volume for TrueBlank condition (100) if not already specified
         if counter == 0:
             print("Warning: No injection volume specified. Defaulting to 1 µL.")
@@ -212,10 +209,10 @@ class ExcelParser:
             lc_symbol = ":" if lc_system == "Vanquish Neo" else ""
             ms_type = True if ms_system == "Thermo" else False
 
-        except Exception as e:
+        except Exception:
             raise ValueError("Experiment conditions cannot be run due to missing or invalid configuration. " \
             "Verify that all required experiment fields are correctly filled in the Excel sheet. " \
-            "If there is only one experiment the library values should be the same.")
+            "If there is only one experiment the library values should be the same.") from None
 
         sample_type = "Unknown"  # or "Sample", etc.
         blank_method = "Blank_Method"  # fill in with real method if needed

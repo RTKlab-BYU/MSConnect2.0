@@ -65,7 +65,7 @@ class Output:
                 )
                 raise KeyError(
                     msg,
-                )
+                ) from None
             if self.lc_number == SINGLE_CHANNEL:
                 df.loc[len(df)] = [
                     self.nbcode,
@@ -144,7 +144,7 @@ class Output:
                 )
                 raise ValueError(
                     msg,
-                )
+                ) from None
             try:
                 if csv_file == "MS":
                     data_paths.append(self.conditions[index][2].strip())
@@ -161,7 +161,7 @@ class Output:
                 )
                 raise ValueError(
                     msg,
-                )
+                ) from None
 
         inst_methods = self.create_instrument_methods(
             method_paths,

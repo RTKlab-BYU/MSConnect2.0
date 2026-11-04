@@ -2,8 +2,7 @@ import math
 import random
 import re
 import sys
-from collections import Counter
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import numpy as np
 import pandas as pd
@@ -56,7 +55,7 @@ class Blocker:
             return default
 
     def check_for_trueblank(self, conditions1, conditions2=None):
-        for i, (key_num, v) in enumerate(conditions1.items()):
+        for key_num, v in conditions1.items():
             if v[0] == "TrueBlank":
                 # raise ValueError(f"check key value: {key_num}\n check v: {v}")
                 # changed second return from "i+1" to key_num. This fixes a problem with the trueblank condition if there are gaps between conditions in the excel sheet.
@@ -66,7 +65,7 @@ class Blocker:
                     else (conditions1, conditions2, key_num + 1, True)
                 )
         if conditions2:
-            for i, (key_num, v) in enumerate(conditions2.items()):
+            for i, (_, v) in enumerate(conditions2.items()):
                 if v[0] == "TrueBlank":
                     return conditions1, conditions2, i + 1, True
         conditions1[100] = [
@@ -156,7 +155,7 @@ class Blocker:
                         )
                         raise ValueError(
                             msg,
-                        )
+                        ) from None
                     for _ in range(int(wet_amounts[normalized_value])):
                         if cond_range:
                             if normalized_value in range(
@@ -176,7 +175,7 @@ class Blocker:
                     msg = "ERROR: You may have a sample in your plate that is not labeled in the conditions legend."
                     raise KeyError(
                         msg,
-                    )
+                    ) from None
         return wells_list
 
     def process_solvent_vials(
@@ -209,7 +208,7 @@ class Blocker:
                 )
                 raise ValueError(
                     msg,
-                )
+                ) from None
             try:
                 for _ in range(SOLVENT_VIAL_LIMIT):
                     if cond_range:
@@ -226,7 +225,7 @@ class Blocker:
                 msg = f"ERROR: Solvent vial {vial_num} in plate {plate_name} has a condition ID not found in the conditions legend."
                 raise KeyError(
                     msg,
-                )
+                ) from None
         return wells_list
 
     def compare_wells_and_counts(self, wells_list, conditions, wet_amounts):

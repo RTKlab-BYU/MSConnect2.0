@@ -13,7 +13,6 @@ from openpyxl.styles import Border, Font, Protection, Side
 
 from .engine import run_worklist
 
-
 ALLOWED_SUFFIXES = {".xlsx", ".xlsm"}
 SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
 ASSETS_ROOT = Path(__file__).resolve().parent / "assets"
