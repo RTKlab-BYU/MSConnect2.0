@@ -2,7 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Plus, Search, Wand2 } from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { PageHero } from "@/components/layout/page-section";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
@@ -335,6 +335,9 @@ export default function ProjectsPage() {
         actions={
           <>
             <StatusBadge status="active" />
+            <Button asChild variant="secondary">
+              <Link to="/worklist-generator">Worklist Generator</Link>
+            </Button>
             <Dialog open={quickStartOpen} onOpenChange={closeQuickStart}>
               <DialogTrigger asChild>
                 <Button>
