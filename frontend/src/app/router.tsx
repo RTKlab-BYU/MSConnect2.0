@@ -16,6 +16,7 @@ const AdminAssistantPage = lazy(() => import("@/features/admin/assistant-admin-p
 const InstrumentConfigurationsPage = lazy(() => import("@/features/admin/instrument-configurations-page"));
 const ProjectsPage = lazy(() => import("@/features/projects/projects-page"));
 const ProjectWorkspacePage = lazy(() => import("@/features/projects/project-workspace-page"));
+const WorklistGeneratorPage = lazy(() => import("@/features/worklist-generator/worklist-generator-page"));
 const SampleReportPage = lazy(() => import("@/features/projects/sample-report-page"));
 const SubmissionWizardPage = lazy(() => import("@/features/intake/submission-wizard-page"));
 const SubmissionsPage = lazy(() => import("@/features/intake/submissions-page"));
@@ -147,7 +148,11 @@ export const router = createBrowserRouter(
         },
         {
           path: "worklist-generator",
-          element: <Navigate to="/projects" replace />,
+          element: (
+            <Suspense fallback={<RouteFallback label="Loading worklist generator" />}>
+              <WorklistGeneratorPage />
+            </Suspense>
+          ),
         },
         {
           path: "qc",

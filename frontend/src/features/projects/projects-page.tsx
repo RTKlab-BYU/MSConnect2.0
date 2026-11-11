@@ -12,7 +12,6 @@ import { DataTable } from "@/components/ui/data-table";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { StatusBadge } from "@/components/ui/status-badge";
 import {
   createPreAcquisitionSetup,
   fetchCurrentUser,
@@ -331,17 +330,16 @@ export default function ProjectsPage() {
 
   return (
     <div className="grid gap-4">
-      <Breadcrumbs items={[{ label: "Projects", ...(dialogOpen ? { href: "/projects" } : {}) }, ...(dialogOpen ? [{ label: "Advanced setup" }] : [])]} />
+      <Breadcrumbs items={[{ label: "Projects", ...(dialogOpen ? { href: "/projects" } : {}) }, ...(dialogOpen ? [{ label: "Full setup" }] : [])]} />
       <PageHero
         eyebrow={dialogOpen ? "Acquisition setup" : "Project operations"}
-        title={dialogOpen ? "Advanced setup" : "Projects"}
+        title={dialogOpen ? "Full setup" : "Projects"}
         description={dialogOpen ? "Build the experiment, sample metadata, acquisition worklist, and processing setup together." : "Create projects, register samples, and track expected LC-MS runs before acquisition."}
         actions={
           dialogOpen ? (
             <Button type="button" variant="secondary" onClick={() => setDialogOpen(false)}>Back to projects</Button>
           ) : (
           <>
-            <StatusBadge status="active" />
             <Dialog open={quickStartOpen} onOpenChange={closeQuickStart}>
               <DialogTrigger asChild>
                 <Button>
@@ -369,7 +367,7 @@ export default function ProjectsPage() {
                 </form>
               </DialogContent>
             </Dialog>
-            <Button type="button" variant="secondary" onClick={() => { setSetupError(""); setDialogOpen(true); }}>Advanced setup</Button>
+            <Button asChild variant="secondary"><Link to="/worklist-generator">Full setup</Link></Button>
           </>
           )
         }

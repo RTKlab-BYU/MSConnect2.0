@@ -10,8 +10,8 @@ def main(input_filename):
     blocked_for_output = blocker.block()
 
     output = Output(parsed_for_output, blocked_for_output)
-    ms_pd, lc_pd, ms_filename, lc_filename, filenames, condition_names, rep_numbers = output.putout()
-    return ms_pd, lc_pd, ms_filename, lc_filename, filenames, condition_names, rep_numbers
+    ms_pd, lc_pd, ms_filename, lc_filename, filenames, condition_names, condition_types, rep_numbers = output.putout()
+    return ms_pd, lc_pd, ms_filename, lc_filename, filenames, condition_names, condition_types, rep_numbers
 
 if __name__ == "__main__":
     main()

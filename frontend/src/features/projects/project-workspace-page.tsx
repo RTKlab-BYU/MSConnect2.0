@@ -366,11 +366,6 @@ export default function ProjectWorkspacePage() {
       {quickStartImportError ? <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">Project created, but its worklist could not be imported: {quickStartImportError} Use Import worklist below to retry.</div> : null}
       <div className="flex min-w-0 flex-wrap items-center gap-2">
             {project ? <StatusBadge status={project.status} /> : null}
-            {experiment ? (
-              <span className="inline-flex h-9 items-center rounded-md bg-muted px-3 text-sm font-semibold text-foreground">
-                Experiment selected
-              </span>
-            ) : null}
             <span className={`inline-flex h-9 items-center rounded-sm px-3 text-sm font-semibold ${healthClass}`}>{healthLabel}</span>
             {experiments.length > 1 ? (
               <Select
@@ -397,6 +392,7 @@ export default function ProjectWorkspacePage() {
               </Button>
             ) : null}
             {activeSection === "worklists" ? <>
+            {canManageSharing ? <Button asChild variant="secondary"><Link to={`/worklist-generator?project=${projectId}${isExperimentRoute ? `&experiment=${experimentId}` : ""}`}>Generate worklist</Link></Button> : null}
             {canManageSharing ? <Dialog open={worklistOpen} onOpenChange={setWorklistOpen}>
               <DialogTrigger asChild>
                 <Button>
@@ -462,8 +458,8 @@ export default function ProjectWorkspacePage() {
       </nav>
 
       {activeSection === "overview" ? <>
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-        <MetricCard label={isExperimentRoute ? "Experiment" : "Project Status"} value={isExperimentRoute ? experiment?.name ?? "-" : project?.status ?? "-"} detail={isExperimentRoute ? "single acquisition series" : "research workflow"} />
+      <section className={`grid gap-3 md:grid-cols-2 ${isExperimentRoute ? "xl:grid-cols-5" : "xl:grid-cols-6"}`}>
+        {!isExperimentRoute ? <MetricCard label="Project Status" value={project?.status ?? "-"} detail="research workflow" /> : null}
         <MetricCard label="Runs" value={data?.summary.run_count ?? "-"} detail={isExperimentRoute ? "in this experiment" : "planned/acquired"} />
         <MetricCard label="Raw Files" value={data?.summary.raw_file_count ?? "-"} detail={`${data?.summary.missing_raw_file_count ?? 0} missing`} />
         <MetricCard label="Queue" value={data?.system_health.active_jobs ?? "-"} detail="active jobs" />

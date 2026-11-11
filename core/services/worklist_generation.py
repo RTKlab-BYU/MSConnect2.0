@@ -19,22 +19,65 @@ class GeneratedWorklist:
     filenames: tuple[str, ...]
     condition_names: tuple[str, ...]
     replicate_numbers: tuple[int, ...]
+    condition_types: tuple[str, ...] = ()
 
 
 def generated_worklist_rows(generated: GeneratedWorklist) -> list[dict[str, object]]:
     """Translate the MS CSV into the application's run-ground-truth rows."""
     rows: list[dict[str, object]] = []
+    condition_by_filename = dict(zip(generated.filenames, generated.condition_names, strict=False))
+    type_by_filename = dict(zip(generated.filenames, generated.condition_types, strict=False))
+    replicate_by_filename = dict(zip(generated.filenames, generated.replicate_numbers, strict=False))
     hye_pair_occurrences: dict[tuple[str, str], int] = {}
     with generated.ms_path.open(newline="", encoding="utf-8-sig") as handle:
         records = list(csv.reader(handle))
+    lc_metadata_by_filename: dict[str, dict[str, str]] = {}
+    if generated.lc_path.is_file():
+        with generated.lc_path.open(newline="", encoding="utf-8-sig") as handle:
+            for record in list(csv.reader(handle))[2:]:
+                if len(record) >= 6 and record[1].strip():
+                    lc_metadata_by_filename[record[1].strip()] = {
+                        "lc_data_path": record[2].strip(),
+                        "lc_method": record[3].strip(),
+                        "lc_position": record[4].strip(),
+                        "injection_volume": record[5].strip(),
+                    }
     for position, record in enumerate(records[2:], start=1):
         if len(record) < 6 or not record[1].strip():
             continue
         filename = record[1].strip()
-        condition = generated.condition_names[position - 1] if position <= len(generated.condition_names) else ""
-        replicate = generated.replicate_numbers[position - 1] if position <= len(generated.replicate_numbers) else position
+        condition = str(condition_by_filename.get(filename, ""))
+        well_type = str(type_by_filename.get(filename, "")).strip()
+        normalized_type = re.sub(r"[\s-]+", "_", well_type.lower())
+        replicate = replicate_by_filename.get(filename, position)
+        is_preblank = "_preblank" in filename.lower()
         hye_match = re.search(r"(?:^|[_\-\s])HYE[_\-\s]?([AB])(?:[_\-\s]|$)", filename, re.IGNORECASE)
-        file_role = "hye" if hye_match else "sample"
+        if hye_match or normalized_type == "hye":
+            file_role = "hye"
+        elif normalized_type in {"trueblank", "true_blank"}:
+            file_role = "true_blank"
+        elif normalized_type == "blank" or is_preblank:
+            file_role = "blank"
+        elif normalized_type in {
+            "qc",
+            "wetqc",
+            "wet_qc",
+            "prepqc",
+            "prep_qc",
+            "preparationqc",
+            "preparation_qc",
+            "processqc",
+            "process_qc",
+            "digestionqc",
+            "digestion_qc",
+            "systemvalidation",
+            "system_validation",
+        }:
+            file_role = "qc"
+        elif normalized_type in {"library", "lib"}:
+            file_role = "library"
+        else:
+            file_role = "sample"
         qc_program = "hye" if hye_match else ""
         sample_name = f"HYE-{hye_match.group(1).upper()}" if hye_match else filename
         pair_label = ""
@@ -63,22 +106,69 @@ def generated_worklist_rows(generated: GeneratedWorklist) -> list[dict[str, obje
                 "file_role": file_role,
                 "qc_program": qc_program,
                 "hye_pair_label": pair_label,
+                "notes": "",
                 "condition": condition,
                 "metadata": {
                     "source": "worklist_generation",
-                    "sample_type": record[0].strip(),
+                    "vendor_sample_type": record[0].strip(),
+                    "generator_condition_type": well_type or ("instrument_preblank" if is_preblank else ""),
+                    "sample_type": well_type or ("blank" if is_preblank else record[0].strip()),
                     "ms_path": record[2].strip(),
                     "ms_method": record[3].strip(),
                     "instrument_position": record[4].strip(),
+                    **lc_metadata_by_filename.get(filename, {}),
                     "replicate": replicate,
                     "source_sample_name": filename,
                     "hye_mix": hye_match.group(1).upper() if hye_match else "",
+                    **({"blank_type": "instrument_preblank" if is_preblank else "true_blank" if file_role == "true_blank" else "blank"} if file_role in {"blank", "true_blank"} else {}),
+                    **({"qc_stage": normalized_type, "qc_material": condition} if file_role == "qc" else {}),
+                    "role_tagging_required": file_role == "sample" and normalized_type not in {"sample", "experimental_sample", "specimen"},
+                    "role_confirmed": file_role != "sample" or normalized_type in {"sample", "experimental_sample", "specimen"},
                 },
             }
         )
     if not rows:
         raise WorklistGenerationError("The generated MS worklist did not contain any usable runs.")
     return rows
+
+
+def namespace_generated_worklist(generated: GeneratedWorklist, rows: list[dict[str, object]], namespace: str) -> None:
+    """Keep generated instrument filenames unique across project acquisitions."""
+    suffix = re.sub(r"[^A-Za-z0-9_-]+", "_", namespace).strip("_- ")
+    if not suffix:
+        raise WorklistGenerationError("A project and worklist name are required to make generated filenames unique.")
+
+    def scoped_name(filename: str) -> str:
+        stem, separator, extension = filename.rpartition(".")
+        if not separator:
+            stem, extension = filename, ""
+        else:
+            extension = f".{extension}"
+        suffix_part = f"_{suffix}"
+        stem = stem[: 255 - len(extension) - len(suffix_part)]
+        return f"{stem}{suffix_part}{extension}"
+
+    for row in rows:
+        original_name = str(row["expected_filename"])
+        instrument_filename = scoped_name(original_name)
+        row["expected_filename"] = instrument_filename
+        row["run_name"] = instrument_filename
+        metadata = dict(row.get("metadata") or {})
+        metadata["source_sample_name"] = metadata.get("source_sample_name") or original_name
+        metadata["instrument_filename"] = instrument_filename
+        metadata["filename_namespace"] = suffix
+        row["metadata"] = metadata
+
+    for path in (generated.ms_path, generated.lc_path):
+        if not path.is_file():
+            continue
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            records = list(csv.reader(handle))
+        for record in records[2:]:
+            if len(record) >= 2 and record[1].strip():
+                record[1] = scoped_name(record[1].strip())
+        with path.open("w", newline="", encoding="utf-8-sig") as handle:
+            csv.writer(handle, lineterminator="\n").writerows(records)
 
 
 def validate_generated_hye_pairs(rows: list[dict[str, object]]) -> None:
@@ -113,7 +203,7 @@ def generate_vendor_worklists(input_path: Path, output_directory: Path) -> Gener
         ) from exc
 
     try:
-        ms_frame, lc_frame, ms_name, lc_name, filenames, condition_names, replicate_numbers = main(str(input_path))
+        ms_frame, lc_frame, ms_name, lc_name, filenames, condition_names, condition_types, replicate_numbers = main(str(input_path))
         ms_path = output_directory / Path(ms_name).name
         lc_path = output_directory / Path(lc_name).name
         ms_frame.to_csv(ms_path, index=False, header=False, encoding="utf-8-sig")
@@ -129,4 +219,5 @@ def generate_vendor_worklists(input_path: Path, output_directory: Path) -> Gener
         filenames=tuple(str(value) for value in filenames),
         condition_names=tuple(str(value) for value in condition_names),
         replicate_numbers=tuple(int(value) for value in replicate_numbers),
+        condition_types=tuple(str(value) for value in condition_types),
     )

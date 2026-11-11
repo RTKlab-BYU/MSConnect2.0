@@ -19,6 +19,7 @@ import type {
   DiannPreflightResponse,
   Experiment,
   Facility,
+  Lab,
   FindingsWorkspaceResponse,
   DirectUploadSession,
   FileMatchException,
@@ -60,6 +61,7 @@ import type {
   SpectrumDetailResponse,
   WorklistImportPayload,
   WorklistImportResponse,
+  WorklistGeneratorResponse,
 } from "@/lib/api/types";
 
 export const queryKeys = {
@@ -67,6 +69,7 @@ export const queryKeys = {
   project: (id: number) => ["project", id] as const,
   projectExperiments: (id: number) => ["project", id, "experiments"] as const,
   experiment: (id: number) => ["experiment", id] as const,
+  lab: (id: number) => ["lab", id] as const,
   directUploadSessions: (params?: ListParams) => ["direct-upload-sessions", params] as const,
   projectSummary: (id: number) => ["project", id, "summary"] as const,
   projectResearcherStatus: (id: number, params?: ListParams) => ["project", id, "researcher-status", params] as const,
@@ -236,6 +239,10 @@ export function fetchExperiment(id: number): Promise<Experiment> {
   return getResource<Experiment>(`/experiments/${id}/`);
 }
 
+export function fetchLab(id: number): Promise<Lab> {
+  return getResource<Lab>(`/labs/${id}/`);
+}
+
 export function fetchDirectUploadSessions(params?: ListParams): Promise<Paginated<DirectUploadSession>> {
   return paginatedResource<DirectUploadSession>("/direct-uploads/", { ordering: "-updated_at", ...params });
 }
@@ -350,12 +357,29 @@ export function importProjectWorklist(projectId: number, payload: WorklistImport
   return postResource<WorklistImportResponse>(`/projects/${projectId}/import-worklist/`, payload);
 }
 
-export function generateProjectWorklist(projectId: number, workbook: File, options: { worklistName: string; experimentName?: string }): Promise<WorklistImportResponse> {
+export function generateProjectWorklist(projectId: number, workbook: File, options: {
+  worklistName: string;
+  experimentName?: string;
+  instrumentConfigurationId?: number;
+  generatorMetadata?: Record<string, unknown>;
+}): Promise<WorklistImportResponse> {
   const formData = new FormData();
   formData.append("workbook", workbook);
   formData.append("worklist_name", options.worklistName);
   if (options.experimentName) formData.append("experiment_name", options.experimentName);
+  if (options.instrumentConfigurationId) formData.append("instrument_configuration", String(options.instrumentConfigurationId));
+  if (options.generatorMetadata) formData.append("generator_metadata", JSON.stringify(options.generatorMetadata));
   return uploadResource<WorklistImportResponse>(`/projects/${projectId}/generate-worklist/`, formData);
+}
+
+export function createWorklistMetadataTemplate(payload: { name: string; description: string; groups: string[] }): Promise<WorklistGeneratorResponse> {
+  return postResource<WorklistGeneratorResponse>("/capabilities/worklist-generator/metadata/", payload);
+}
+
+export function createWorklistPlateTemplate(metadata: File): Promise<WorklistGeneratorResponse> {
+  const formData = new FormData();
+  formData.append("metadata", metadata);
+  return uploadResource<WorklistGeneratorResponse>("/capabilities/worklist-generator/worklist-template/", formData);
 }
 
 export function downloadWorklist(worklistId: number, exportFormat: "ms" | "lc"): Promise<Blob> {

@@ -63,6 +63,7 @@ from core.services.worklist_generation import (
     WorklistGenerationError,
     generate_vendor_worklists,
     generated_worklist_rows,
+    namespace_generated_worklist,
     validate_generated_hye_pairs,
 )
 from ingest.result_import import ResultTableImportError, import_diann_report, import_result_tables
@@ -356,6 +357,10 @@ class WorklistImportSerializer(serializers.Serializer):
     experiment_name = serializers.CharField(max_length=255, default="Default experiment")
     diann_version = serializers.CharField(max_length=128, default="2.0")
     hye_target_profile = serializers.PrimaryKeyRelatedField(queryset=HyeTargetProfile.objects.filter(active=True), required=False, allow_null=True)
+    instrument_configuration = serializers.PrimaryKeyRelatedField(
+        queryset=InstrumentConfiguration.objects.filter(active=True), required=False, allow_null=True
+    )
+    generator_metadata = serializers.JSONField(required=False, default=dict)
     ms_filename = serializers.CharField(max_length=255, allow_blank=True, required=False)
     lc_filename = serializers.CharField(max_length=255, allow_blank=True, required=False)
     lc_rows = WorklistImportRowSerializer(many=True, required=False, default=list)
@@ -4811,8 +4816,22 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             raise ValidationError({"workbook": "Upload an Excel workbook in the 'workbook' field."})
         if not str(workbook.name).lower().endswith((".xlsx", ".xlsm")):
             raise ValidationError({"workbook": "The generator accepts .xlsx or .xlsm workbooks."})
+        generator_metadata = request.data.get("generator_metadata") or {}
+        if isinstance(generator_metadata, str):
+            try:
+                generator_metadata = json.loads(generator_metadata)
+            except json.JSONDecodeError as exc:
+                raise ValidationError({"generator_metadata": "Provide valid JSON metadata."}) from exc
+        if not isinstance(generator_metadata, dict):
+            raise ValidationError({"generator_metadata": "Generator metadata must be a JSON object."})
+        generator_request = bool(generator_metadata or request.data.get("instrument_configuration"))
         safe_name = Path(workbook.name).name
-        output_directory = Path(settings.MEDIA_ROOT).resolve() / "generated-worklists" / str(project.id)
+        requested_worklist_name = str(request.data.get("worklist_name") or "generated-worklist")
+        relative_output_directory = Path("generated-worklists") / str(project.id)
+        if generator_request:
+            output_subdirectory = f"{slugify(requested_worklist_name)[:64] or 'worklist'}-{uuid.uuid4().hex[:12]}"
+            relative_output_directory /= output_subdirectory
+        output_directory = Path(settings.MEDIA_ROOT).resolve() / relative_output_directory
         output_directory.mkdir(parents=True, exist_ok=True)
         input_path = output_directory / safe_name
         with input_path.open("wb") as destination:
@@ -4821,14 +4840,40 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         try:
             generated = generate_vendor_worklists(input_path, output_directory)
             rows = generated_worklist_rows(generated)
+            experiment_name = str(request.data.get("experiment_name") or "Generated acquisition").strip()
+            worklist_name = str(request.data.get("worklist_name") or generated.ms_path.stem).strip()
+            filename_namespace = ""
+            if generator_request:
+                namespace_hash = hashlib.sha256(
+                    f"{project.id}:{experiment_name}:{worklist_name}".encode()
+                ).hexdigest()[:8]
+                filename_namespace = "_".join(
+                    part for part in (
+                        f"P{project.id}",
+                        slugify(experiment_name)[:16],
+                        slugify(worklist_name)[:16],
+                        namespace_hash,
+                    ) if part
+                )
+                namespace_generated_worklist(generated, rows, filename_namespace)
             validate_generated_hye_pairs(rows)
+            if generated.lc_path.is_file():
+                with generated.lc_path.open(newline="", encoding="utf-8-sig") as handle:
+                    lc_worklist_rows = list(csv.reader(handle))
+            else:
+                lc_worklist_rows = []
         except WorklistGenerationError as exc:
             raise ValidationError({"workbook": str(exc)}) from exc
 
         payload = {
-            "worklist_name": request.data.get("worklist_name") or generated.ms_path.stem,
-            "experiment_name": request.data.get("experiment_name") or "Generated acquisition",
+            "worklist_name": worklist_name,
+            "experiment_name": experiment_name,
             "diann_version": request.data.get("diann_version") or "2.0",
+            "instrument_configuration": request.data.get("instrument_configuration"),
+            "generator_metadata": {
+                **generator_metadata,
+                "filename_namespace": filename_namespace,
+            },
             "rows": rows,
         }
         # Reuse the established transactional import path so generated rows
@@ -4838,14 +4883,62 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         worklist = AcquisitionWorklist.objects.get(pk=response.data["worklist"]["id"])
         worklist.metadata = {
             **(worklist.metadata or {}),
+            "lc_worklist": {
+                "filename": generated.lc_path.name,
+                "row_count": max(0, len(lc_worklist_rows) - 2),
+                "rows": lc_worklist_rows,
+            },
             "generator_artifacts": {
-                "directory": f"generated-worklists/{project.id}",
+                "directory": relative_output_directory.as_posix(),
                 "ms_filename": generated.ms_path.name,
                 "lc_filename": generated.lc_path.name,
                 "source_workbook": safe_name,
             },
         }
         worklist.save(update_fields=["metadata", "updated_at"])
+        generator_metadata = worklist.metadata.get("generator_metadata") or {}
+        configuration_snapshot = None
+        if worklist.configuration_id:
+            configuration = worklist.configuration
+            configuration_snapshot = {
+                "id": configuration.id,
+                "name": configuration.name,
+                "facility_id": configuration.facility_id,
+                "lc_instrument_id": configuration.lc_instrument_id,
+                "ms_instrument_id": configuration.ms_instrument_id,
+                "method_name": configuration.method_name,
+                "column_description": configuration.column_description,
+                "gradient_description": configuration.gradient_description,
+                "ion_source": configuration.ion_source,
+            }
+            worklist.metadata = {**(worklist.metadata or {}), "instrument_configuration_snapshot": configuration_snapshot}
+            worklist.save(update_fields=["metadata", "updated_at"])
+        generator_record = {
+            **generator_metadata,
+            "worklist_id": worklist.id,
+            "worklist_name": worklist.name,
+            "experiment_id": worklist.experiment_id,
+            "experiment_name": worklist.experiment.name,
+            "instrument_configuration_id": worklist.configuration_id,
+            "instrument_configuration": configuration_snapshot,
+            "artifacts": worklist.metadata["generator_artifacts"],
+            "lc_worklist_row_count": worklist.metadata["lc_worklist"]["row_count"],
+            "run_count": len(rows),
+            "generated_at": timezone.now().isoformat(),
+        }
+        project_metadata = dict(project.metadata or {})
+        project_worklists = dict(project_metadata.get("worklist_generator") or {})
+        project_worklists[str(worklist.id)] = generator_record
+        project_metadata["worklist_generator"] = project_worklists
+        project.metadata = project_metadata
+        project.save(update_fields=["metadata", "updated_at"])
+        experiment = worklist.experiment
+        experiment_metadata = dict(experiment.metadata or {})
+        experiment_worklists = dict(experiment_metadata.get("worklist_generator") or {})
+        experiment_worklists[str(worklist.id)] = generator_record
+        experiment_metadata["worklist_generator"] = experiment_worklists
+        experiment.metadata = experiment_metadata
+        experiment.save(update_fields=["metadata", "updated_at"])
         response.data = {
             **response.data,
             "generator": {
@@ -5179,6 +5272,9 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         serializer = WorklistImportSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        configuration = data.get("instrument_configuration")
+        if configuration and configuration.facility_id != project.lab.facility_id:
+            raise ValidationError({"instrument_configuration": "The selected LC-MS setup must belong to the project's facility."})
 
         with transaction.atomic():
             experiment, _created = Experiment.objects.get_or_create(
@@ -5203,6 +5299,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 defaults={
                     "status": WorklistStatus.READY,
                     "generated_by": request.user,
+                    "configuration": configuration,
                     "notes": "Imported from LC-MS worklist file.",
                     "metadata": {
                         "setup_source": "worklist_import",
@@ -5219,6 +5316,8 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 worklist.revision += 1
             worklist.status = WorklistStatus.READY
             worklist.generated_by = worklist.generated_by or request.user
+            if configuration:
+                worklist.configuration = configuration
             worklist.metadata = {
                 **(worklist.metadata or {}),
                 "setup_source": "worklist_import",
@@ -5230,13 +5329,14 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     "ms": data.get("ms_filename", ""),
                     "lc": data.get("lc_filename", ""),
                 },
+                **({"generator_metadata": data["generator_metadata"]} if data.get("generator_metadata") else {}),
                 "lc_worklist": {
                     "filename": data.get("lc_filename", ""),
                     "row_count": len(data.get("lc_rows", [])),
                     "rows": data.get("lc_rows", []),
                 } if data.get("lc_rows") else None,
             }
-            worklist.save(update_fields=["status", "revision", "generated_by", "metadata", "updated_at"])
+            worklist.save(update_fields=["status", "revision", "generated_by", "configuration", "metadata", "updated_at"])
 
             existing_by_position = {
                 entry.position: entry for entry in worklist.entries.select_related("run", "run__sample")
@@ -5273,6 +5373,8 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 entry = existing_by_position.get(row["position"])
                 if entry:
                     run = entry.run
+                    if configuration:
+                        run.configuration = configuration
                     run.sample = sample
                     run.run_name = run_name
                     run.status = row.get("status", run.status)
@@ -5284,6 +5386,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     run.metadata = {**(run.metadata or {}), **metadata, "expected_filename": row["expected_filename"]}
                     run.save(
                         update_fields=[
+                            "configuration",
                             "sample",
                             "run_name",
                             "status",
@@ -5313,6 +5416,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 else:
                     run = Run.objects.create(
                         sample=sample,
+                        configuration=configuration,
                         run_name=run_name,
                         status=row.get("status", RunStatus.PLANNED),
                         file_role=row["file_role"],

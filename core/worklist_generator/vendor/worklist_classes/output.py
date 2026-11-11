@@ -22,6 +22,7 @@ class Output:
         # creates a list of filenames
         filenames = []
         condition_names = []  # parallel list: condition/group name for each filename, for SDRF generation
+        condition_types = []  # parallel list: role from the Manager sheet
         rep_numbers = []      # parallel list: replicate number for each filename, for SDRF generation
         TB_method_found = False # in a 2 column system we need to store the msmethod for a TrueBlank for later
 
@@ -47,6 +48,7 @@ class Output:
                     TB_method = self.msmethods[index]
                     TB_method_found = True
             condition_names.append(condition)
+            condition_types.append(self.conditions[self.well_conditions[index]][0])
             rep_numbers.append(self.reps[index])
         for run_num, (_, row) in enumerate(df.iterrows(), start=1):
             joined = "_".join(str(x).strip().replace(" ", "_") for x in row if pd.notna(x))
@@ -55,8 +57,8 @@ class Output:
             filenames.append(joined)
 
         if TB_method_found == True:
-            return filenames, TB_method, condition_names, rep_numbers
-        return filenames, None, condition_names, rep_numbers
+            return filenames, TB_method, condition_names, condition_types, rep_numbers
+        return filenames, None, condition_names, condition_types, rep_numbers
 
     def create_instrument_methods(self, methodpaths, methods, csv_file):
         inst_methods = []
@@ -85,19 +87,32 @@ class Output:
         for index in well_conditions:
             if index not in self.conditions:
                 raise KeyError(f"Condition {index} not found.")
-            if len(self.conditions[index]) < 10:
-                raise ValueError(f"Condition {index} is malformed: expected at least 10 fields, but got {len(self.conditions[index])}. Check the corresponding row in your Excel sheet for missing values.")
-            try:
-                if csv_file == 'MS':
-                    data_paths.append(self.conditions[index][2].strip())
-                    method_paths.append(self.conditions[index][3].strip())
-                    method_names.append(self.conditions[index][5].strip())
-                elif csv_file == 'LC':
-                    data_paths.append(self.conditions[index][6].strip())
-                    method_paths.append(self.conditions[index][7].strip())
-                    method_names.append(self.conditions[index][9].strip())
-            except:
-                raise ValueError(f"Condition {index} is malformed. Make sure all additional data for this condition is filled out.")
+            condition = self.conditions[index]
+            required_fields = (
+                (2, "MS DataPath"),
+                (3, "MS MethodPath"),
+                (5, "MS method file name"),
+                (6, "LC DataPath"),
+                (7, "LC MethodPath"),
+                (9, "LC method file name"),
+            )
+            missing_fields = [
+                label
+                for field_index, label in required_fields
+                if field_index >= len(condition)
+                or pd.isna(condition[field_index])
+                or not str(condition[field_index]).strip()
+            ]
+            if missing_fields:
+                raise ValueError(f"Condition {index} is missing required Manager fields: {', '.join(missing_fields)}.")
+            if csv_file == 'MS':
+                data_paths.append(str(condition[2]).strip())
+                method_paths.append(str(condition[3]).strip())
+                method_names.append(str(condition[5]).strip())
+            elif csv_file == 'LC':
+                data_paths.append(str(condition[6]).strip())
+                method_paths.append(str(condition[7]).strip())
+                method_names.append(str(condition[9]).strip())
         inst_methods = self.create_instrument_methods(method_paths, method_names, csv_file)
         # Offset for 2 column system
         if self.lc_number == 2:
@@ -140,7 +155,7 @@ class Output:
         return pd.DataFrame(rows)
 
     def putout(self):
-        filenames, TB_method, condition_names, rep_numbers = self.create_filenames()
+        filenames, TB_method, condition_names, condition_types, rep_numbers = self.create_filenames()
         # Create and export MS CSV
         ms_pd = self.final_csv_format_as_pd("MS", filenames.copy(), self.well_conditions.copy(), self.positions.copy(), self.inj_vols.copy(), TB_method)
         # Create and export LC CSV
@@ -150,6 +165,5 @@ class Output:
         ms_filename = f"{self.nbcode}_MS.csv"
         lc_filename = f"{self.nbcode}_LC.csv"
 
-        # filenames/condition_names/rep_numbers are returned (not just used internally) so that
-        # SDRF generation in stage 3 can map each raw file to its group's metadata and replicate number.
-        return ms_pd, lc_pd, ms_filename, lc_filename, filenames, condition_names, rep_numbers
+        # Return row metadata with the generated files so the importer can tag samples and controls.
+        return ms_pd, lc_pd, ms_filename, lc_filename, filenames, condition_names, condition_types, rep_numbers

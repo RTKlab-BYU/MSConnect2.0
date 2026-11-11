@@ -424,6 +424,17 @@ export type Facility = {
   active: boolean;
 };
 
+export type Lab = {
+  id: EntityId;
+  facility: EntityId;
+  name: string;
+  slug: string;
+  active: boolean;
+};
+
+export type WorklistGeneratorFile = { kind: string; name: string; url: string };
+export type WorklistGeneratorResponse = { job_id: string; files: WorklistGeneratorFile[] };
+
 export type ProjectSummary = {
   project_id: EntityId;
   project_code: string;
