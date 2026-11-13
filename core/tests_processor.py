@@ -1,8 +1,10 @@
 import json
+import subprocess
 import sys
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -28,6 +30,7 @@ from core.models import (
     University,
 )
 from core.processing.adapters import render_adapter_plan
+from core.processing.diann_search import main
 from core.processing.postprocess import skyline_prtc_postprocess
 from core.services.processing_routing import should_queue_spectra_conversion_for_raw_file
 
@@ -641,10 +644,6 @@ class DiannSearchStageTests(SimpleTestCase):
         self.assertIn("fatal input error", _detect_engine_failure({"adapter": "diann"}, "WARNING: skipping reference.fasta - invalid raw MS data format"))
 
     def test_prediction_and_search_are_separate_and_stop_on_failure(self):
-        from unittest.mock import patch
-        from core.processing.diann_search import main
-        import subprocess
-
         with TemporaryDirectory() as tmp_dir:
             report = Path(tmp_dir) / 'report.parquet'
             library = Path(tmp_dir) / 'search-library.predicted.speclib'
