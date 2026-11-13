@@ -28,7 +28,7 @@ for each comparison.
 ./scripts/run-diann-smoke.sh
 ```
 
-The default image is `msconnect-processor-diann:2.2.0-standalone`.
+The default image is `msconnect-processor-diann:2.2.0-standalone-r2`.
 The runner requires the two-stage helper included in the dedicated worker image.
 Older cached images must be rebuilt before using this runner.
 
@@ -39,7 +39,7 @@ two input paths:
 ./scripts/run-diann-smoke.sh \
   data/processor-smoke/inputs/mzml/CW0615_Hela_250pg_rep240_ch2_G3_DIAex480.mzML \
   data/processor-smoke/inputs/human-100.fasta \
-  msconnect-processor-diann:2.2.0-standalone
+  msconnect-processor-diann:2.2.0-standalone-r2
 ```
 
 Set `DIANN_SMOKE_OUTPUT_DIR` to save results elsewhere,

@@ -135,6 +135,28 @@ class WatcherStabilityTests(SimpleTestCase):
 
 
 class ProcessorAdapterTests(SimpleTestCase):
+    def test_diann_adapter_keeps_individual_reports_out_of_raw_storage(self):
+        with TemporaryDirectory() as temp_dir:
+            results_dir = Path(temp_dir)
+            plan = render_adapter_plan(
+                adapter="diann",
+                parameters={
+                    "executable": "diann",
+                    "report": "report.parquet",
+                    "individual_reports": True,
+                    "options": ["--individual-reports", "--verbose", "1"],
+                },
+                placeholders={
+                    "job_id": "88",
+                    "raw_file_path": "/data/raw/sample.raw",
+                    "results_dir": str(results_dir),
+                    "run_name": "Sample",
+                },
+                results_dir=results_dir,
+            )
+
+        self.assertNotIn("--individual-reports", plan.command)
+        self.assertIn(str((results_dir / "report.parquet").resolve()), plan.command)
     def test_diann_adapter_merges_performance_and_experimental_tags(self):
         with TemporaryDirectory() as temp_dir:
             results_dir = Path(temp_dir)
@@ -594,6 +616,73 @@ class ProcessorAdapterTests(SimpleTestCase):
         self.assertNotIn("--gen-spec-lib", execution.command)
         self.assertNotIn("--fasta", execution.command)
         self.assertNotIn("--fasta-search", execution.command)
+
+    def test_prepare_job_execution_uses_batch_library_dependency(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_file = root / "sample.raw"
+            raw_file.write_text("raw", encoding="utf-8")
+            shared_library = root / "results" / "jobs" / "76" / "search-library.predicted.speclib"
+            execution = prepare_job_execution(
+                {
+                    "id": 77,
+                    "metadata": {"diann_library_path": str(shared_library)},
+                    "run": {"name": "Sample Run"},
+                    "raw_file": {"storage_path": str(raw_file)},
+                    "pipeline": {
+                        "parameters": {
+                            "adapter": "diann",
+                            "required_engine": "diann",
+                            "fasta": "/shared/human.fasta",
+                            "generate_speclib": True,
+                            "fasta_search": True,
+                            "out_library": "search-library.predicted.speclib",
+                        }
+                    },
+                },
+                results_root=root / "results",
+            )
+
+        self.assertIn("--lib", execution.command)
+        self.assertIn(str(shared_library), execution.command)
+        self.assertNotIn("--fasta-search", execution.command)
+        self.assertNotIn("--gen-spec-lib", execution.command)
+        self.assertNotIn(str(shared_library.parent / "search-library.predicted.speclib"), [item["path"] for item in execution.artifact_files])
+
+
+class ProcessorAgentFailureTests(SimpleTestCase):
+    def test_preparation_failure_reports_the_active_lease_token(self):
+        job = {"id": 88, "lease_token": "active-lease", "metadata": {}}
+        captured = {}
+
+        class FakeClient:
+            def heartbeat(self, **_kwargs):
+                return {}
+
+            def claim_next_job(self, *, node_name):
+                return job
+
+            def fail_job(self, job_id, payload):
+                captured["job_id"] = job_id
+                captured["payload"] = dict(payload)
+
+        client = FakeClient()
+        with (
+            override_settings(
+                MSCONNECT_AGENT_TOKEN="processor-token",
+                MSCONNECT_AGENT_NAME="processor-test",
+                RESULTS_ROOT="/tmp/msconnect-agent-test-results",
+            ),
+            patch("core.management.commands.run_processor_agent.Command._resolve_client", return_value=client),
+            patch(
+                "core.management.commands.run_processor_agent.prepare_job_execution",
+                side_effect=ValueError("prepare failed"),
+            ),
+        ):
+            call_command("run_processor_agent", "--once", engine="diann", stdout=StringIO(), stderr=StringIO())
+
+        self.assertEqual(captured["job_id"], 88)
+        self.assertEqual(captured["payload"]["lease_token"], "active-lease")
 
     def test_processor_registry_cli_registers_image_and_external_engine_profiles(self):
         with TemporaryDirectory() as temp_dir:

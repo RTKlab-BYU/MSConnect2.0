@@ -1,7 +1,7 @@
 # Standalone DIA-NN worker for an existing MSConnect API (including Tailscale).
 services:
   processor-diann:
-    image: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.2.0-standalone}
+    image: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.2.0-standalone-r2}
     build:
       context: .
       dockerfile: docker/processor/diann.Dockerfile
@@ -18,7 +18,7 @@ services:
       MSCONNECT_PROCESSOR_ENGINE: diann
       MSCONNECT_PROCESSOR_ENGINE_VERSION: ${DIANN_ENGINE_VERSION:-2.2.0}
       MSCONNECT_PROCESSOR_ENGINE_PROFILE: ${DIANN_ENGINE_PROFILE:-diann:2.2.0}
-      MSCONNECT_IMAGE: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.2.0-standalone}
+      MSCONNECT_IMAGE: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.2.0-standalone-r2}
       RAW_FILE_STORAGE_ROOT: /data/raw
       RESULTS_ROOT: /data/results
       PROCESSOR_SHARED_STORAGE_ROOT: /data/shared

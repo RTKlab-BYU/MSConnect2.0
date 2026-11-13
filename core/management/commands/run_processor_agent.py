@@ -108,11 +108,19 @@ class Command(BaseCommand):
                 try:
                     execution = prepare_job_execution(job, results_root=results_root)
                     client.start_job(job["id"], node_name=agent_name, lease_token=job.get("lease_token", ""))
-                    self._run_job(job, execution, client, agent_name=agent_name)
+                    self._run_job(
+                        job,
+                        execution,
+                        client,
+                        agent_name=agent_name,
+                        node_type=node_type,
+                        control_state=control_state,
+                    )
                 except Exception as exc:
                     log_path = (results_root / "jobs" / str(job["id"]) / "process.log").resolve()
                     failure_payload = {
                         "node_name": agent_name,
+                        "lease_token": job.get("lease_token", ""),
                         "error_message": str(exc),
                     }
                     if log_path.exists():
@@ -152,7 +160,16 @@ class Command(BaseCommand):
                 client = self._resolve_client(role="processor")
                 time.sleep(min(10, max(1, int(options["poll_interval"]))))
 
-    def _run_job(self, job: dict, execution, client: AgentApiClient, *, agent_name: str):
+    def _run_job(
+        self,
+        job: dict,
+        execution,
+        client: AgentApiClient,
+        *,
+        agent_name: str,
+        node_type: str,
+        control_state: str,
+    ):
         execution.log_path.parent.mkdir(parents=True, exist_ok=True)
         backend = str((job.get("metadata") or {}).get("execution_backend") or "local").strip().lower()
         command = execution.command
@@ -240,7 +257,26 @@ class Command(BaseCommand):
                                 lease_token=job.get("lease_token", ""),
                             )
                         except AgentApiError as exc:
-                            self.stderr.write(self.style.WARNING(f"lease renewal deferred for job {job['id']}: {exc}"))
+                            self.stderr.write(self.style.ERROR(f"lease renewal failed for job {job['id']}; stopping engine: {exc}"))
+                            process.terminate()
+                            try:
+                                process.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                process.kill()
+                                process.wait()
+                            raise CommandError(
+                                f"Lease renewal failed; DIA-NN was stopped to prevent untracked work: {exc}"
+                            ) from exc
+                        try:
+                            self._heartbeat(
+                                client,
+                                agent_name=agent_name,
+                                node_type=node_type,
+                                status=ProcessingNodeStatus.BUSY,
+                                control_state=control_state,
+                            )
+                        except AgentApiError as exc:
+                            self.stderr.write(self.style.WARNING(f"heartbeat failed during job {job['id']}: {exc}"))
                         next_renewal = time.monotonic() + renew_interval
                 completed = type("Completed", (), {"returncode": process.wait()})()
         finally:

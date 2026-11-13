@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
@@ -5,6 +7,7 @@ from django.utils import timezone
 from core.models import (
     AcquisitionWorklist,
     ProcessingJob,
+    ProcessingJobArtifact,
     ProcessingPipeline,
     ProcessingStatus,
     RawFile,
@@ -27,6 +30,8 @@ def rerun_latest_diann_batch(*, project_code: str | None = None, worklist_id: in
     converted = 0
     rerun = 0
     skipped = 0
+    rerun_jobs = []
+    conversion_dependencies = {}
     queue_conversion = _worklist_requires_conversion(worklist)
     with transaction.atomic():
         for entry in worklist.entries.select_related("run").prefetch_related("run__raw_files", "run__processing_jobs"):
@@ -50,9 +55,19 @@ def rerun_latest_diann_batch(*, project_code: str | None = None, worklist_id: in
                 conversion_job = _queue_or_reset_conversion_job(raw_file, conversion_pipeline)
                 if conversion_job:
                     converted += 1
+                    conversion_dependencies[entry.run.id] = conversion_job.id
 
             job = _queue_or_reset_diann_job(entry.run, raw_file, diann_pipeline, existing_job=job)
             rerun += 1 if job else 0
+            if job:
+                rerun_jobs.append(job)
+
+        _configure_shared_diann_library(
+            worklist=worklist,
+            pipeline=diann_pipeline,
+            jobs=rerun_jobs,
+            conversion_dependencies=conversion_dependencies,
+        )
 
     return {
         "worklist_id": worklist.id,
@@ -62,6 +77,52 @@ def rerun_latest_diann_batch(*, project_code: str | None = None, worklist_id: in
         "rerun": rerun,
         "skipped": skipped,
     }
+
+
+def _configure_shared_diann_library(*, worklist, pipeline, jobs, conversion_dependencies) -> None:
+    """Build a predicted library once, then gate remaining jobs on that output."""
+    parameters = pipeline.parameters or {}
+    if not jobs or not parameters.get("generate_speclib") or parameters.get("library"):
+        return
+
+    reusable = (
+        ProcessingJobArtifact.objects.filter(
+            job__run__sample__experiment=worklist.experiment,
+            job__pipeline=pipeline,
+            job__status=ProcessingStatus.COMPLETE,
+            metadata__role="diann_speclib",
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    builder = None
+    if reusable and Path(reusable.path).is_file():
+        library_path = reusable.path
+    else:
+        builder = jobs[0]
+        library_path = str(Path(settings.RESULTS_ROOT) / "jobs" / str(builder.id) / "search-library.predicted.speclib")
+
+    for job in jobs:
+        metadata = dict(job.metadata or {})
+        dependencies = [
+            value
+            for value in (metadata.get("depends_on_job_ids") or [])
+            if str(value).isdigit()
+        ]
+        conversion_job_id = conversion_dependencies.get(job.run_id)
+        if conversion_job_id:
+            dependencies.append(conversion_job_id)
+        metadata.pop("diann_library_path", None)
+        metadata.pop("diann_library_builder", None)
+        if builder and job.pk == builder.pk:
+            metadata["diann_library_builder"] = True
+        else:
+            metadata["diann_library_path"] = library_path
+            if builder:
+                dependencies.append(builder.pk)
+        metadata["depends_on_job_ids"] = list(dict.fromkeys(dependencies))
+        job.metadata = metadata
+        job.save(update_fields=["metadata", "updated_at"])
 
 
 def _resolve_worklist(*, worklist_id: int | None, project_code: str | None):

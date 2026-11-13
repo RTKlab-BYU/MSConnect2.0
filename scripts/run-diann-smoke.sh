@@ -28,7 +28,7 @@ fi
 if [[ $# -gt 0 ]]; then
   images=("$@")
 else
-  images=("msconnect-processor-diann:2.2.0-standalone")
+  images=("msconnect-processor-diann:2.2.0-standalone-r2")
 fi
 
 OUTPUT_ROOT="${DIANN_SMOKE_OUTPUT_DIR:-$ROOT_DIR/data/processor-smoke/results/human-100}"

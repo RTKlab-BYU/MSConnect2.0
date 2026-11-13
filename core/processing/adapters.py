@@ -103,6 +103,15 @@ def _msconvert_plan(*, parameters: dict, placeholders: dict[str, str], results_d
 
 def _diann_plan(*, parameters: dict, placeholders: dict[str, str], results_dir: Path) -> AdapterPlan:
     effective = diann_effective_settings(parameters)
+    # DIA-NN's per-run reports are written beside their input raw files.  In
+    # MSConnect those files are immutable inputs; all output belongs in the job
+    # results directory and is collected from there.
+    effective["individual_reports"] = False
+    for key in ("options", "extra_options"):
+        effective[key] = [
+            str(option) for option in (effective.get(key) or [])
+            if str(option).strip() and str(option).strip().lower() != "--individual-reports"
+        ]
     executable = _command_prefix(effective.get("executable") or "diann")
     report_name = _substitute(str(effective.get("report") or "diann-report.parquet"), placeholders)
     temp_dir = _substitute(str(effective.get("temp") or str(results_dir / "temp")), placeholders)

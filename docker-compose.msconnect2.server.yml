@@ -128,7 +128,7 @@ services:
       PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
-      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw:ro
       - ${RESULTS_HOST_PATH:-./results}:/data/results
       - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
       - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive

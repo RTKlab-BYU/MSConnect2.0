@@ -568,6 +568,66 @@ class OperationalSmokeCommandTests(TestCase):
             self.assertEqual(conversion_job.metadata["purpose"], "spectra_conversion")
             self.assertEqual(conversion_job.metadata["backfill"], True)
 
+    def test_rerun_latest_diann_batch_builds_one_library_and_gates_search_jobs(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with override_settings(INCOMING_RAW_ROOT=str(root / "incoming")):
+                call_command(
+                    "create_filename_worklist",
+                    code="BATCH-LIBRARY-UNIT",
+                    project_title="Batch library smoke project",
+                    worklist_name="Batch library worklist",
+                    filename=["LIB-01.mzML", "LIB-02.mzML"],
+                )
+
+            project = Project.objects.get(code="BATCH-LIBRARY-UNIT")
+            worklist = project.experiments.get().worklists.get()
+            pipeline_id = worklist.metadata["processing_pipeline_id"]
+            pipeline = ProcessingPipeline.objects.get(pk=pipeline_id)
+            pipeline.parameters = {
+                **pipeline.parameters,
+                "adapter": "diann",
+                "required_engine": "diann",
+                "fasta": "/shared/reference/human.fasta",
+                "library": "",
+                "generate_speclib": True,
+                "fasta_search": True,
+            }
+            pipeline.save(update_fields=["parameters"])
+
+            jobs = []
+            for entry in worklist.entries.select_related("run").order_by("position"):
+                raw_file = RawFile.objects.create(
+                    run=entry.run,
+                    source_path=f"/incoming/{entry.expected_filename}",
+                    storage_path=str(root / "raw" / entry.expected_filename),
+                    filename=entry.expected_filename,
+                    checksum_sha256=("a" if entry.position == 1 else "b") * 64,
+                    size_bytes=1024,
+                    imported_at=timezone.now(),
+                    status=RawFileStatus.IMPORTED,
+                )
+                jobs.append(
+                    ProcessingJob.objects.create(
+                        run=entry.run,
+                        raw_file=raw_file,
+                        pipeline=pipeline,
+                        status=ProcessingStatus.FAILED,
+                    )
+                )
+
+            with override_settings(RESULTS_ROOT=str(root / "results")):
+                call_command("rerun_latest_diann_batch", project_code="BATCH-LIBRARY-UNIT")
+
+            for job in jobs:
+                job.refresh_from_db()
+            builder, search = jobs
+            self.assertEqual(builder.status, ProcessingStatus.QUEUED)
+            self.assertTrue(builder.metadata["diann_library_builder"])
+            expected_library = root / "results" / "jobs" / str(builder.id) / "search-library.predicted.speclib"
+            self.assertEqual(search.metadata["diann_library_path"], str(expected_library))
+            self.assertIn(builder.id, search.metadata["depends_on_job_ids"])
+
     def test_processor_registry_create_pipeline_pins_engine_profile(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

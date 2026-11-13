@@ -43,6 +43,25 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
         experimental.update({"generate_speclib": False, "fasta_search": True, "out_library": ""})
         tags["experimental"] = experimental
         parameters["tags"] = tags
+    shared_library_path = str(job_metadata.get("diann_library_path") or "").strip()
+    if shared_library_path:
+        parameters = {
+            **parameters,
+            "library": shared_library_path,
+            "generate_speclib": False,
+            "fasta_search": False,
+            "out_library": "",
+        }
+        tags = dict(parameters.get("tags") or {})
+        experimental = dict(tags.get("experimental") or {})
+        experimental.update({
+            "library": shared_library_path,
+            "generate_speclib": False,
+            "fasta_search": False,
+            "out_library": "",
+        })
+        tags["experimental"] = experimental
+        parameters["tags"] = tags
     experiment_metadata = run.get("experiment_metadata") or {}
     project_metadata = run.get("project_metadata") or {}
     diann_metadata = experiment_metadata.get("diann") or {}

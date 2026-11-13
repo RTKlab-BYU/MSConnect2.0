@@ -16,7 +16,7 @@ DIANN_ENGINE_VERSION=2.2.0
 DIANN_ENGINE_PROFILE=diann:2.2.0
 DIANN_SOURCE_IMAGE=msconnect-processor-diann:2.2.0
 DOTNET_SDK_IMAGE=msconnect-processor-diann:2.2.0
-MSCONNECT_DIANN_IMAGE=msconnect-processor-diann:2.2.0-standalone
+MSCONNECT_DIANN_IMAGE=msconnect-processor-diann:2.2.0-standalone-r2
 RAW_STORAGE_HOST_PATH=/mnt/msconnect/raw
 RESULTS_HOST_PATH=/mnt/msconnect/results
 PROCESSOR_SHARED_HOST_PATH=/mnt/msconnect/shared
@@ -107,3 +107,35 @@ directories, and register predicted libraries for subsequent reuse. An exhausted
 initial-build count cannot trigger reuse until a preferred library actually
 exists. The importer accepts both `Run` and `File.Name`, including the managed
 storage basename containing the checksum prefix.
+
+## Follow-up after the 2026-11-13 HeLa batch failure
+
+The live worker was stopped and the HeLa project queue was held for diagnosis.
+Twenty unfinished DIA-NN jobs remain recorded as failed/held, with no queued,
+assigned, retrying, or running jobs. Partial job output and failure logs were
+preserved.
+
+Job 25 completed the DIA-NN search and produced a quantitative report with
+11,665 rows, but `--individual-reports` wrote that report beside its RAW input
+under `/data/raw`. The expected report under the job results directory was
+therefore missing, and MSConnect could not collect/import it. The production
+worker had `/data/raw` mounted read-write. Agent-managed DIA-NN commands now
+suppress individual reports, and both Compose worker definitions mount raw
+storage read-only.
+
+The project rerun path now elects one library-builder job. Other jobs depend on
+its completion and use its generated `.speclib`, rather than each regenerating
+the same 1.5 GB predicted library. Long-running jobs now refresh both their
+lease and node heartbeat. A failure raised after job preparation also includes
+the active lease token; if lease renewal itself fails, the engine is stopped to
+avoid continuing untracked work.
+
+Candidate image `msconnect-processor-diann:2.2.0-standalone-r2` was built on the
+live host (`sha256:ad26e2b080a075afe597955f90a50187aeded6834d51e1f890a842bc0146a803`).
+It passed a small-file output check and a real HeLa report-generation check using
+the retained quant cache. The latter produced an 11,665-row Parquet report,
+stats, protein and precursor matrices, a manifest, and protein descriptions in
+an isolated results directory while mounting the RAW file read-only. The small
+fixture produced zero accepted rows; it validates output generation only. The
+candidate is not running on the production queue, and the HeLa jobs remain held
+until the updated web/API code and worker image are deployed together.

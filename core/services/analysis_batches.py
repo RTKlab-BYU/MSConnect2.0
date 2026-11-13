@@ -73,7 +73,7 @@ def queue_project_analysis_batches(*, project, user, experiment=None, pipeline_i
             rollup_parameters["input_files"] = [_diann_input_path(raw) for _run, raw in inputs]
             rollup_tags = copy.deepcopy(rollup_parameters.get("tags") or {})
             rollup_experimental = dict(rollup_tags.get("experimental") or {})
-            rollup_experimental.update({"individual_reports": True, "matrices": True})
+            rollup_experimental.update({"individual_reports": False, "matrices": True})
             rollup_tags["experimental"] = rollup_experimental
             rollup_parameters["tags"] = rollup_tags
             rollup_metadata = _job_metadata(batch, parameters, job_kind="experiment_rollup")

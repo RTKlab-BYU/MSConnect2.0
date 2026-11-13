@@ -1178,7 +1178,7 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(pipeline.parameters["speclib_path"], "/data/reference/hye.speclib")
         self.assertEqual(pipeline.parameters["report"], "diann-first-pass.parquet")
         self.assertEqual(pipeline.parameters["library"], "")
-        self.assertIn("--individual-reports", pipeline.parameters["options"])
+        self.assertNotIn("--individual-reports", pipeline.parameters["options"])
         self.assertIn("--individual-mass-acc", pipeline.parameters["options"])
         self.assertIn("--individual-windows", pipeline.parameters["options"])
         self.assertIn("--matrices", pipeline.parameters["options"])
@@ -1241,7 +1241,7 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(pipeline.parameters["processing_preset"], "DIA-NN speclib build")
         self.assertEqual(pipeline.parameters["library_source"], "")
         self.assertTrue(pipeline.parameters["generate_speclib"])
-        self.assertIn("--individual-reports", pipeline.parameters["options"])
+        self.assertNotIn("--individual-reports", pipeline.parameters["options"])
         self.assertIn("--qvalue", pipeline.parameters["options"])
 
     def test_pre_acquisition_setup_rejects_researcher_performance_tags(self):
