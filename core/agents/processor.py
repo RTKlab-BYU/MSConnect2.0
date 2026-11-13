@@ -103,7 +103,39 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
     adapter = parameters.get("adapter")
     derivative_files = []
     files_to_write = {}
-    if adapter:
+    if str(parameters.get("execution_mode") or "").lower() == "nextflow":
+        workflow = str(parameters.get("nextflow_workflow") or "").strip()
+        version = str(parameters.get("diann_version") or "").strip()
+        if not workflow or not version:
+            raise ValueError("Nextflow DIA-NN pipelines require nextflow_workflow and diann_version.")
+        command = [
+            str(parameters.get("nextflow_executable") or "nextflow"), "run", workflow,
+            "-profile", str(parameters.get("nextflow_profile") or "conda"),
+            "--diann_version", version,
+            "--input", raw_file_path,
+            "--results_dir", str(results_dir),
+        ]
+        if parameters.get("nextflow_version_catalog"):
+            command.extend(["--version_catalog", str(parameters["nextflow_version_catalog"])])
+        for key in ("fasta", "library", "cli_script"):
+            value = parameters.get(key)
+            if value:
+                command.extend([f"--{key}", _substitute_string(str(value), placeholders, field_name=key)])
+        command.extend(str(value) for value in (parameters.get("nextflow_args") or []))
+        result_files = parameters.get("result_files") or {}
+        artifact_files = [
+            {"artifact_type": "diann_report", "path": str(results_dir / "report.parquet"), "format": "parquet"},
+            {"artifact_type": "other", "path": str(results_dir / "diann.log"), "format": "log"},
+            *list(parameters.get("artifact_files") or []),
+        ]
+        if parameters.get("fasta") and not parameters.get("library"):
+            artifact_files.append({
+                "artifact_type": "other",
+                "path": str(results_dir / "search-library.predicted.speclib"),
+                "format": "speclib",
+                "metadata": {"role": "diann_speclib"},
+            })
+    elif adapter:
         adapter_plan = render_adapter_plan(
             adapter=str(adapter),
             parameters=parameters,

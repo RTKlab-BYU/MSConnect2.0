@@ -112,6 +112,44 @@ class ProcessorFailureDetectionTests(SimpleTestCase):
         self.assertEqual(_detect_engine_failure({"adapter": "diann"}, "Finished\n0 files will be processed\n"), "")
 
 
+class NextflowProcessorPreparationTests(SimpleTestCase):
+    def test_nextflow_job_uses_selected_version_and_registers_parquet_report(self):
+        with TemporaryDirectory() as temp_dir:
+            execution = prepare_job_execution(
+                {
+                    "id": 901,
+                    "pipeline": {
+                        "parameters": {
+                            "adapter": "diann",
+                            "execution_mode": "nextflow",
+                            "nextflow_workflow": "/data/shared/nextflow/diann/main.nf",
+                            "nextflow_version_catalog": "/data/shared/nextflow/diann/versions.json",
+                            "diann_version": "2.2.0",
+                            "fasta": "/data/shared/reference/human.fasta",
+                            "cli_script": "/data/shared/nextflow/diann/diann_search.py",
+                        }
+                    },
+                    "raw_file": {"storage_path": "/data/raw/sample.mzML"},
+                    "run": {"name": "test-run"},
+                },
+                results_root=Path(temp_dir),
+            )
+
+        self.assertEqual(execution.command[0:3], ["nextflow", "run", "/data/shared/nextflow/diann/main.nf"])
+        self.assertIn("--diann_version", execution.command)
+        self.assertEqual(execution.command[execution.command.index("--diann_version") + 1], "2.2.0")
+        self.assertEqual(execution.command[execution.command.index("--version_catalog") + 1], "/data/shared/nextflow/diann/versions.json")
+        self.assertTrue(any(item["artifact_type"] == "diann_report" and item["path"].endswith("report.parquet") for item in execution.artifact_files))
+
+    def test_nextflow_job_requires_version_and_workflow(self):
+        with TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(ValueError, "nextflow_workflow and diann_version"):
+                prepare_job_execution(
+                    {"id": 902, "pipeline": {"parameters": {"execution_mode": "nextflow"}}, "raw_file": {"storage_path": "/data/raw/sample.mzML"}},
+                    results_root=Path(temp_dir),
+                )
+
+
 class WatcherStabilityTests(SimpleTestCase):
     def test_file_fingerprint_changes_when_acquisition_grows(self):
         with TemporaryDirectory() as temp_dir:
