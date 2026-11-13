@@ -1,0 +1,5 @@
+name: msconnect-diann-2.2.0
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12.8

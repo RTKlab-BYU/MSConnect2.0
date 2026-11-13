@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "versions": {
+    "2.2.0": {
+      "distribution": "DIA-NN-2.2.0-Academia-Linux.zip",
+      "download_url": "https://github.com/vdemichev/DiaNN/releases/download/2.2.0/DIA-NN-2.2.0-Academia-Linux.zip",
+      "executable": "/opt/diann/2.2.0/diann-linux",
+      "conda_env": "envs/diann-2.2.0.yml",
+      "tested": false
+    }
+  }
+}
