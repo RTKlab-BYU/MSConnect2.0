@@ -35,8 +35,9 @@ Workers should not modify shared references.
 Install WSL2 with a supported Linux distribution on all three machines. In each
 distribution install Python and Java (Nextflow runtime requirements), Conda or
 Mamba, Nextflow, and the MSConnect checkout/agent dependencies. Configure the
-agent to use the server API's Tailscale DNS name and a unique processor token and
-agent name. Use the Windows Task Scheduler helper below to start the WSL agent
+agent to use the server API's Tailscale DNS name, the server's processor token,
+and a unique agent name. The current server configuration accepts one shared
+processor token for all three nodes. Use the Windows Task Scheduler helper below to start the WSL agent
 at user logon. Keep the three agents on the same shared mount paths.
 
 Install and sign in to Tailscale on the server, each Windows processor host, and
@@ -71,7 +72,7 @@ python3 -m venv "$HOME/.venvs/msconnect"
 ```
 
 Copy `docs/env.processor.wsl2.example` to `C:\MSConnect\.env` and edit the
-unique agent name and token for that machine. Keep values unquoted unless they
+unique agent name and shared server processor token for that machine. Keep values unquoted unless they
 contain spaces. Set `MSCONNECT_PYTHON` to the venv Python path, replacing
 `<wsl-user>` with the Linux account name. The configured API host must resolve
 over Tailscale, and the three storage roots must already be mounted inside WSL2.
