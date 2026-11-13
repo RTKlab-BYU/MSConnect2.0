@@ -28,6 +28,7 @@ def _detect_engine_failure(parameters: dict, log_text: str) -> str:
             "Thermo RAW file format not supported.",
             "ERROR: DIA-NN tried but failed to load the following files:",
             "No MS2 spectra: aborting",
+            "invalid raw MS data format",
         )
         for marker in markers:
             if marker in log_text:
@@ -252,7 +253,7 @@ class Command(BaseCommand):
                 {
                     "node_name": agent_name,
                     "lease_token": job.get("lease_token", ""),
-                    "error_message": f"Command exited with status {completed.returncode}.",
+                    "error_message": f"Command exited with status {completed.returncode}.\n" + execution.log_path.read_text(encoding="utf-8", errors="replace")[-8000:],
                     "log_path": str(execution.log_path.resolve()),
                 },
             )
@@ -272,6 +273,8 @@ class Command(BaseCommand):
             )
             self.stderr.write(self.style.ERROR(f"job {job['id']} failed: {engine_failure}"))
             return
+
+        client.renew_job(job["id"], node_name=agent_name, lease_token=job.get("lease_token", ""))
 
         postprocess_stats = {}
         if execution.postprocess:
@@ -365,6 +368,7 @@ class Command(BaseCommand):
                 raise CommandError(f"Expected stats JSON object in {execution.stats_json_path}")
         stats_payload = {**stats_payload, **postprocess_stats}
 
+        client.renew_job(job["id"], node_name=agent_name, lease_token=job.get("lease_token", ""))
         client.complete_job(
             job["id"],
             {

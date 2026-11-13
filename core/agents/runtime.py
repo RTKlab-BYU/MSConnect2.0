@@ -50,7 +50,7 @@ def capture_runtime_metadata(
         "shared_storage": shared_roots,
         "system": system_metadata(),
         "environment": selected_environment(env),
-        "input_fingerprints": fingerprint_inputs([raw_file_path, *parameters.get("input_files", [])]),
+        "input_fingerprints": fingerprint_inputs([raw_file_path, *parameters.get("input_files", []), *parameters.get("reference_files", [])]),
         "output_paths": output_paths or {},
         "pipeline_parameters": scrub_parameters(parameters),
     }

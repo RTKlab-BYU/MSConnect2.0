@@ -458,7 +458,7 @@ class ProcessorAdapterTests(SimpleTestCase):
             self.assertIn(str(fasta), fingerprint_paths)
             self.assertIn(str(library), fingerprint_paths)
 
-    def test_diann_adapter_can_generate_a_speclib_on_first_pass(self):
+    def test_diann_raw_search_defers_library_generation(self):
         with TemporaryDirectory() as temp_dir:
             results_dir = Path(temp_dir)
             plan = render_adapter_plan(
@@ -469,6 +469,7 @@ class ProcessorAdapterTests(SimpleTestCase):
                     "fasta": "/data/shared/reference/human.fasta",
                     "generate_speclib": True,
                     "out_library": "diann-first-pass.speclib",
+                    "input_files": ["/data/shared/reference/human.fasta"],
                 },
                 placeholders={
                     "job_id": "77",
@@ -479,18 +480,14 @@ class ProcessorAdapterTests(SimpleTestCase):
                 results_dir=results_dir,
             )
 
-        self.assertIn("--gen-spec-lib", plan.command)
-        self.assertIn("--predictor", plan.command)
+        self.assertEqual(plan.command[plan.command.index("--f") + 1], "/data/raw/sample.raw")
+        self.assertNotIn("--gen-spec-lib", plan.command)
+        self.assertNotIn("--predictor", plan.command)
         self.assertEqual(plan.command.count("--fasta-search"), 1)
-        self.assertTrue(any(arg.endswith("diann-first-pass.speclib") for arg in plan.command))
-        self.assertTrue(
-            any(
-                artifact["artifact_type"] == "other"
-                and artifact["metadata"]["role"] == "diann_speclib"
-                and artifact["path"].endswith("diann-first-pass.predicted.speclib")
-                for artifact in plan.artifact_files
-            )
-        )
+        self.assertTrue(Path(plan.command[1]).is_absolute())
+        self.assertEqual(Path(plan.command[1]).name, "diann_search.py")
+        self.assertEqual(len(plan.artifact_files), 2)
+        self.assertEqual(plan.artifact_files[0]["artifact_type"], "diann_report")
 
     def test_prepare_job_execution_uses_raw_input_for_diann(self):
         with TemporaryDirectory() as temp_dir:
@@ -522,6 +519,8 @@ class ProcessorAdapterTests(SimpleTestCase):
                 },
                 results_root=results_root,
             )
+
+            self.assertTrue(Path(execution.command[execution.command.index("--temp") + 1]).is_dir())
 
         self.assertEqual(execution.command[2], "/data/raw/sample.raw")
 
@@ -635,3 +634,34 @@ class ProcessorAdapterTests(SimpleTestCase):
                 "registry.example.org/msconnect/processor-diann:2.1.0",
             )
             self.assertEqual(registry["engines"]["proteome-discoverer"]["3.1"]["install_type"], "external")
+
+
+class DiannSearchStageTests(SimpleTestCase):
+    def test_invalid_raw_input_is_a_failure_even_with_zero_exit_status(self):
+        self.assertIn("fatal input error", _detect_engine_failure({"adapter": "diann"}, "WARNING: skipping reference.fasta - invalid raw MS data format"))
+
+    def test_prediction_and_search_are_separate_and_stop_on_failure(self):
+        from unittest.mock import patch
+        from core.processing.diann_search import main
+        import subprocess
+
+        with TemporaryDirectory() as tmp_dir:
+            report = Path(tmp_dir) / 'report.parquet'
+            library = Path(tmp_dir) / 'search-library.predicted.speclib'
+            command = ['diann', '--f', '/input.mzML', '--fasta', '/human.fasta',
+                       '--out', str(report), '--fasta-search', '--matrices', '--threads', '1']
+            def run(args, **kwargs):
+                if '--predictor' in args:
+                    library.write_bytes(b'library')
+            with patch('core.processing.diann_search.subprocess.run', side_effect=run) as mocked:
+                main(command)
+            prediction, search = [call.args[0] for call in mocked.call_args_list]
+            self.assertNotIn('--f', prediction)
+            self.assertIn('--predictor', prediction)
+            self.assertIn('--f', search)
+            self.assertNotIn('--fasta-search', search)
+            self.assertIn(str(library), search)
+            with patch('core.processing.diann_search.subprocess.run', side_effect=subprocess.CalledProcessError(1, 'diann')) as mocked:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    main(command)
+                self.assertEqual(mocked.call_count, 1)

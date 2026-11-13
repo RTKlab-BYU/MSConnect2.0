@@ -21,7 +21,7 @@ from core.models import (
     Sample,
     University,
 )
-from ingest.result_import import import_diann_report, import_result_tables
+from ingest.result_import import ResultTableImportError, import_diann_report, import_result_tables
 
 User = get_user_model()
 
@@ -80,16 +80,19 @@ class ResultTableImportTests(TestCase):
         self.assertEqual(PeptideIdentification.objects.count(), 1)
 
     @skipUnless(importlib.util.find_spec("pyarrow"), "pyarrow is required for DIA-NN parquet import")
-    def test_imports_diann_parquet_with_run_and_global_q_values(self):
+    def test_imports_diann_parquet_with_storage_run_name_and_global_q_values(self):
         import pyarrow as pa
         import pyarrow.parquet as parquet
 
+        storage_stem = "a" * 64 + "_source"
+        self.job.raw_file.storage_path = "/data/raw/" + storage_stem + ".mzML"
+        self.job.raw_file.save(update_fields=["storage_path"])
         with TemporaryDirectory() as tmp_dir:
             report = Path(tmp_dir) / "report.parquet"
             parquet.write_table(
                 pa.table(
                     {
-                        "File.Name": ["source.raw", "other.raw"],
+                        "Run": [storage_stem, "other"],
                         "Protein.Group": ["P12345", "P99999"],
                         "PG.Quantity": [1234.5, 99.0],
                         "PG.Q.Value": [0.01, 0.02],
@@ -117,6 +120,18 @@ class ResultTableImportTests(TestCase):
         self.assertEqual(protein_ident.q_value_context, "run")
         self.assertEqual(protein_ident.metadata["global_pg_q_value"], 0.015)
         self.assertEqual(peptide_ident.metadata["global_q_value_context"], "experiment")
+
+    @skipUnless(importlib.util.find_spec("pyarrow"), "pyarrow is required")
+    def test_rejects_predicted_library_before_importing_rows(self):
+        import pyarrow as pa
+        import pyarrow.parquet as parquet
+        with TemporaryDirectory() as tmp_dir:
+            report = Path(tmp_dir) / "library.parquet"
+            parquet.write_table(pa.table({"Protein.Group": ["P12345"], "Precursor.Id": ["PEPTIDE2"]}), report)
+            with self.assertRaisesRegex(ResultTableImportError, "quantitative DIA-NN report"):
+                import_diann_report(job=self.job, report_path=report)
+        self.assertEqual(ProteinQuant.objects.count(), 0)
+        self.assertEqual(PeptideQuant.objects.count(), 0)
 
     def test_reimport_updates_existing_quant_and_ident_rows(self):
         with TemporaryDirectory() as tmp_dir:

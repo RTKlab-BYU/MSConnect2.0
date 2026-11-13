@@ -50,7 +50,8 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
     policy = parameters.get("speclib_policy") or {}
     build_runs = int(policy.get("build_runs") or 0)
     position = run.get("worklist_position")
-    if parameters.get("generate_speclib") and build_runs and position and int(position) > build_runs:
+    preferred_library = str(diann_metadata.get("preferred_speclib_path") or project_diann_metadata.get("preferred_speclib_path") or "")
+    if parameters.get("generate_speclib") and build_runs and position and int(position) > build_runs and preferred_library:
         parameters = {**parameters, "generate_speclib": False, "fasta_search": False, "out_library": ""}
         parameters = {**parameters, "library_source": "preferred_speclib_path"}
     if not parameters.get("library") and not parameters.get("generate_speclib"):
@@ -104,6 +105,9 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
         command = [_substitute_string(item, placeholders, field_name="command") for item in command_template]
         result_files = parameters.get("result_files") or {}
         artifact_files = list(parameters.get("artifact_files") or [])
+
+    if str(adapter).lower() in {"diann", "dia-nn"} and "--temp" in command:
+        Path(command[command.index("--temp") + 1]).mkdir(parents=True, exist_ok=True)
 
     for path, contents in files_to_write.items():
         target = Path(path).resolve()

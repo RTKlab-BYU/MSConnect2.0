@@ -36,10 +36,20 @@ def import_diann_report(*, job: ProcessingJob, report_path: Path) -> dict:
 
     parquet_file = parquet.ParquetFile(report_path)
     available = set(parquet_file.schema_arrow.names)
+    required = {"Protein.Group", "Precursor.Id", "Q.Value", "Precursor.Quantity"}
+    missing = required - available
+    if not available.intersection({"File.Name", "Run"}):
+        missing.add("File.Name or Run")
+    if missing:
+        raise ResultTableImportError(
+            "Expected a quantitative DIA-NN report, not a spectral library; "
+            f"missing columns: {', '.join(sorted(missing))}"
+        )
     columns = [
         name
         for name in (
             "File.Name",
+            "Run",
             "Protein.Group",
             "PG.MaxLFQ",
             "PG.Quantity",
@@ -70,7 +80,9 @@ def import_diann_report(*, job: ProcessingJob, report_path: Path) -> dict:
         "q_value_context": "run",
     }
     seen_proteins = set()
-    raw_stem = _sample_key(getattr(job.raw_file, "filename", ""))
+    raw_stem = {
+        _sample_key(value) for value in (job.raw_file.filename, job.raw_file.storage_path) if value
+    }
 
     with transaction.atomic():
         for batch in parquet_file.iter_batches(columns=columns, batch_size=10_000):
@@ -320,9 +332,10 @@ def _sample_key(value: str) -> str:
     return name.lower()
 
 
-def _diann_row_matches_raw(row: dict, raw_stem: str) -> bool:
-    file_name = row.get("File.Name")
-    return not file_name or _sample_key(str(file_name)) == raw_stem
+def _diann_row_matches_raw(row: dict, raw_stem: str | set[str]) -> bool:
+    file_name = row.get("File.Name") or row.get("Run")
+    names = raw_stem if isinstance(raw_stem, set) else {raw_stem}
+    return not file_name or _sample_key(str(file_name)) in names
 
 
 def _first_float(row: dict, *aliases: str) -> float | None:

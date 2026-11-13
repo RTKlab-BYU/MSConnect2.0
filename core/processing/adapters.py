@@ -1,3 +1,4 @@
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -110,6 +111,9 @@ def _diann_plan(*, parameters: dict, placeholders: dict[str, str], results_dir: 
     input_files = parameters.get("input_files") or [placeholders["raw_file_path"]]
     if not isinstance(input_files, list) or not input_files or not all(str(path).strip() for path in input_files):
         raise ValueError("DIA-NN input_files must be a non-empty list of paths when provided.")
+    # Older registry entries mixed FASTA/library dependencies into input_files.
+    references = {str(effective.get(key)) for key in ("fasta", "library") if effective.get(key)}
+    input_files = [path for path in input_files if str(path) not in references] or [placeholders["raw_file_path"]]
     command = [*executable]
     for input_file in input_files:
         command.extend(["--f", _substitute(str(input_file), placeholders)])
@@ -126,19 +130,10 @@ def _diann_plan(*, parameters: dict, placeholders: dict[str, str], results_dir: 
     fasta = effective.get("fasta")
     if fasta:
         command.extend(["--fasta", _substitute(str(fasta), placeholders)])
-    if generate_speclib:
-        requested_out_library = _substitute(str(effective.get("out_library") or f"{Path(report_name).stem}.speclib"), placeholders)
-        out_library_name = (
-            requested_out_library
-            if requested_out_library.endswith(".predicted.speclib")
-            else str(Path(requested_out_library).with_suffix(".predicted.speclib"))
-        )
-        out_library_path = str((results_dir / out_library_name).resolve())
-        command.extend(["--gen-spec-lib", "--predictor"])
-        if bool(effective.get("fasta_search", True)):
-            command.append("--fasta-search")
-        command.extend(["--out-lib", str((results_dir / requested_out_library).resolve())])
-        command.extend(build_diann_command_options({**effective, "fasta_search": False}))
+    # Raw-file jobs must perform quantification. Prediction/library generation
+    # is a separate operation and can otherwise leave a library at --out.
+    if generate_speclib and not library:
+        command.extend(build_diann_command_options({**effective, "fasta_search": True}))
     else:
         command.extend(build_diann_command_options(effective))
     artifact_files = [
@@ -148,15 +143,13 @@ def _diann_plan(*, parameters: dict, placeholders: dict[str, str], results_dir: 
             "format": report_format,
         }
     ]
-    if generate_speclib:
-        artifact_files.append(
-            {
-                "artifact_type": "other",
-                "path": out_library_path,
-                "format": "speclib",
-                "metadata": {"role": "diann_speclib"},
-            }
-        )
+    if not library and "--fasta-search" in command:
+        command = [sys.executable, str(Path(__file__).with_name("diann_search.py")), *command]
+        artifact_files.append({
+            "artifact_type": "other",
+            "path": str(results_dir / "search-library.predicted.speclib"),
+            "format": "speclib", "metadata": {"role": "diann_speclib"},
+        })
     artifact_files.extend(list(effective.get("artifact_files") or []))
     return AdapterPlan(
         command=command,

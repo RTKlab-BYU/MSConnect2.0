@@ -28,12 +28,9 @@ for each comparison.
 ./scripts/run-diann-smoke.sh
 ```
 
-The default matrix is:
-
-- `msconnect-processor-diann:1.8.1`
-- `msconnect-processor-diann:1.9.2`
-- `msconnect-processor-diann:2.0`
-- `msconnect-processor-diann:2.6.1`
+The default image is `msconnect-processor-diann:2.2.0-standalone`.
+The runner requires the two-stage helper included in the dedicated worker image.
+Older cached images must be rebuilt before using this runner.
 
 Run only one version, or add a later version, by passing image tags after the
 two input paths:
@@ -42,7 +39,7 @@ two input paths:
 ./scripts/run-diann-smoke.sh \
   data/processor-smoke/inputs/mzml/CW0615_Hela_250pg_rep240_ch2_G3_DIAex480.mzML \
   data/processor-smoke/inputs/human-100.fasta \
-  msconnect-processor-diann:2.0
+  msconnect-processor-diann:2.2.0-standalone
 ```
 
 Set `DIANN_SMOKE_OUTPUT_DIR` to save results elsewhere,
@@ -57,8 +54,9 @@ non-zero if any image fails.
 ## What this validates
 
 This is an engine and input-reader smoke test: it checks that the binary starts,
-loads the shared mzML and FASTA, and writes a DIA-NN report. It runs library-free
-search with predicted spectral-library generation. It does not validate
+loads the shared mzML and FASTA, and writes a DIA-NN report. It runs library prediction and quantitative search as separate invocations.
+Validation requires a quantitative Parquet schema, nonzero identification rows,
+a stats table, and a protein matrix. Every run uses a fresh output directory. It does not validate
 MSConnect queueing, agent health, project metadata, or scientific equivalence
 between software versions. The small FASTA is intentionally a memory-limited
 smoke reference, not a production search database.

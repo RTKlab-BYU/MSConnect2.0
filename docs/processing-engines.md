@@ -27,7 +27,7 @@ For best replication, pipeline definitions should set a pinned `software_version
 
 For DIA-NN, use explicit presets instead of implicit guessing:
 
-- `DIA-NN speclib build` generates a new speclib from the approved FASTA and writes the report.
+- `DIA-NN speclib build` runs prediction from the approved FASTA first, then searches the raw input against that library in a separate invocation.
 - `DIA-NN speclib reuse` runs later samples against the generated speclib without rebuilding it.
 - `DIA-NN smoke test` is a fast launcher check only and is not the production search path.
 

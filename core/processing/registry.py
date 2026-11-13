@@ -207,7 +207,7 @@ def resolve_pipeline_parameters(parameters: dict, *, engine: str | None = None) 
             target_key="library",
             kind="speclib",
         )
-        _append_input_files(resolved, ["fasta", "library"])
+        _append_input_files(resolved, ["fasta", "library"], target="reference_files")
     elif normalized_engine == "fragpipe":
         resolved["adapter"] = resolved.get("adapter") or "fragpipe"
         _resolve_reference_key(
@@ -373,14 +373,14 @@ def _resolve_reference_key(resolved: dict, *, registry: dict, source_key: str, t
     resolved[target_key] = _reference_path(registry=registry, kind=kind, key=str(key))
 
 
-def _append_input_files(resolved: dict, keys: list[str]) -> None:
-    input_files = list(resolved.get("input_files") or [])
+def _append_input_files(resolved: dict, keys: list[str], *, target="input_files") -> None:
+    input_files = list(resolved.get(target) or [])
     for key in keys:
         value = resolved.get(key)
         if value and value not in input_files:
             input_files.append(value)
     if input_files:
-        resolved["input_files"] = input_files
+        resolved[target] = input_files
 
 
 def _reference_path(*, registry: dict, kind: str, key: str) -> str:

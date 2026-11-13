@@ -15,6 +15,9 @@ if [[ ! -f "$FASTA_FILE" ]]; then
   exit 2
 fi
 
+INPUT_FILE="$(cd "$(dirname "$INPUT_FILE")" && pwd)/$(basename "$INPUT_FILE")"
+FASTA_FILE="$(cd "$(dirname "$FASTA_FILE")" && pwd)/$(basename "$FASTA_FILE")"
+
 input_ext="${INPUT_FILE##*.}"
 input_ext="$(printf '%s' "$input_ext" | tr '[:upper:]' '[:lower:]')"
 if [[ "$input_ext" != "mzml" ]]; then
@@ -25,12 +28,7 @@ fi
 if [[ $# -gt 0 ]]; then
   images=("$@")
 else
-  images=(
-    "msconnect-processor-diann:1.8.1"
-    "msconnect-processor-diann:1.9.2"
-    "msconnect-processor-diann:2.0"
-    "msconnect-processor-diann:2.6.1"
-  )
+  images=("msconnect-processor-diann:2.2.0-standalone")
 fi
 
 OUTPUT_ROOT="${DIANN_SMOKE_OUTPUT_DIR:-$ROOT_DIR/data/processor-smoke/results/human-100}"
@@ -44,8 +42,7 @@ printf 'Input: %s\nInput SHA-256: %s\nFASTA: %s\nFASTA SHA-256: %s\nTimeout: %ss
 
 for image in "${images[@]}"; do
   label="${image//[^[:alnum:]_.-]/_}"
-  output_dir="$OUTPUT_ROOT/$label"
-  mkdir -p "$output_dir"
+  output_dir="$(mktemp -d "$OUTPUT_ROOT/$label.XXXXXX")"
   printf '\n=== %s ===\nOutput: %s\n' "$image" "$output_dir"
 
   if ! docker image inspect "$image" >/dev/null 2>&1; then
@@ -68,13 +65,11 @@ for image in "${images[@]}"; do
     -v "$FASTA_FILE:/reference.fasta:ro" \
     -v "$output_dir:/out" \
     --entrypoint timeout "$image" \
-    --signal=TERM "${TIMEOUT_SECONDS}s" diann \
+    --signal=TERM "${TIMEOUT_SECONDS}s" python -m core.processing.diann_search diann \
     --f /input.mzML \
     --fasta /reference.fasta \
     --fasta-search \
-    --gen-spec-lib \
-    --predictor \
-    --out-lib /out/smoke.speclib \
+    --matrices \
     --out /out/report.parquet \
     --threads "${DIANN_SMOKE_THREADS:-1}" \
     --verbose 1 2>&1 | tee "$output_dir/diann.log"
@@ -98,6 +93,23 @@ for image in "${images[@]}"; do
   fi
   if grep -Eqi 'DIA-NN tried but failed to load|cannot load the file|No MS2 spectra: aborting' "$output_dir/diann.log"; then
     printf 'FAIL: DIA-NN reported an input-load failure; see diann.log\n' | tee "$output_dir/status.txt"
+    matrix_failed=1
+    continue
+  fi
+  if ! docker run --rm -v "$output_dir:/out:ro" --entrypoint python "$image" -c '
+import pyarrow.parquet as pq
+p = pq.ParquetFile("/out/report.parquet")
+required = {"Protein.Group", "Precursor.Id", "Q.Value", "Precursor.Quantity"}
+missing = required - set(p.schema_arrow.names)
+assert {"File.Name", "Run"} & set(p.schema_arrow.names), "Missing run identity"
+assert not missing, f"Not a quantitative report: missing {sorted(missing)}"
+assert p.metadata.num_rows > 0, "Report contains no identifications"
+from pathlib import Path
+assert Path("/out/report.stats.tsv").stat().st_size > 0, "Missing stats"
+assert Path("/out/report.pg_matrix.tsv").stat().st_size > 0, "Missing protein matrix"
+print(f"Validated quantitative report: {p.metadata.num_rows} rows")
+'; then
+    printf 'FAIL: quantitative output validation failed\n' | tee "$output_dir/status.txt"
     matrix_failed=1
     continue
   fi
