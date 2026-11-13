@@ -36,15 +36,72 @@ Install WSL2 with a supported Linux distribution on all three machines. In each
 distribution install Python and Java (Nextflow runtime requirements), Conda or
 Mamba, Nextflow, and the MSConnect checkout/agent dependencies. Configure the
 agent to use the server API's Tailscale DNS name and a unique processor token and
-agent name. Run the agent as a WSL systemd service (enable systemd in
-`/etc/wsl.conf`); configure Windows Task Scheduler to start the distribution at
-boot. Keep the three agents on the same shared mount paths.
+agent name. Use the Windows Task Scheduler helper below to start the WSL agent
+at user logon. Keep the three agents on the same shared mount paths.
+
+Install and sign in to Tailscale on the server, each Windows processor host, and
+the watcher hosts. Keep Tailscale on the Windows host only; Tailscale documents
+that running it both on Windows and inside WSL2 can break nested encrypted
+traffic. Enable MagicDNS or use the server's Tailscale IP in the API URL. Confirm
+from Windows with `tailscale ping <server-name>` and from WSL with
+`getent hosts <server-name>`. Permit only the required API HTTPS port and SMB
+TCP 445 from the processor devices in the tailnet access policy and host
+firewall. [Tailscale's WSL2 guidance](https://tailscale.com/docs/install/windows/wsl2)
+recommends Windows-host installation for this topology; [MagicDNS](https://tailscale.com/docs/features/magicdns)
+provides tailnet hostnames.
 
 Connect the server SMB export and managed raw/results shares over Tailscale.
-Mount them inside WSL2 at stable Linux paths, for example `/data/raw`,
-`/data/results`, and `/data/shared`. Set `RAW_FILE_STORAGE_ROOT`, `RESULTS_ROOT`,
-and `PROCESSOR_SHARED_STORAGE_ROOT` to those paths. Ensure the processor
-service identity can read inputs/references and write job results.
+Mount them inside WSL2 at stable Linux paths, for example `/mnt/msconnect/raw`,
+`/mnt/msconnect/results`, and `/mnt/msconnect/shared`. Use `cifs-utils` and a
+root-owned credentials file for the SMB mount; do not place SMB credentials in
+the processor `.env`. Set `RAW_FILE_STORAGE_ROOT`, `RESULTS_ROOT`, and
+`PROCESSOR_SHARED_STORAGE_ROOT` to those paths. Ensure the processor identity
+can read inputs/references and write job results.
+
+## Simple per-node setup
+
+Use the same Windows repository path and shared Linux mount paths on all three
+workers. In each WSL2 distribution install Python 3.12, Java 17 or newer,
+Miniforge/Conda, and Nextflow. Keep Python environments and Nextflow work/cache
+under the Linux home directory; then in WSL run:
+
+```bash
+python3 -m venv "$HOME/.venvs/msconnect"
+"$HOME/.venvs/msconnect/bin/python" -m pip install -r /mnt/c/MSConnect/requirements.txt
+```
+
+Copy `docs/env.processor.wsl2.example` to `C:\MSConnect\.env` and edit the
+unique agent name and token for that machine. Keep values unquoted unless they
+contain spaces. Set `MSCONNECT_PYTHON` to the venv Python path, replacing
+`<wsl-user>` with the Linux account name. The configured API host must resolve
+over Tailscale, and the three storage roots must already be mounted inside WSL2.
+The WSL project path for `C:\MSConnect` is `/mnt/c/MSConnect`.
+
+From an elevated PowerShell prompt in the Windows checkout, verify then start
+the node:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\ops\run-msconnect-diann-processor.ps1 -ProjectDir C:\MSConnect -EnvFile C:\MSConnect\.env -WslProjectDir /mnt/c/MSConnect -Distro Ubuntu -Action check
+.\ops\run-msconnect-diann-processor.ps1 -ProjectDir C:\MSConnect -EnvFile C:\MSConnect\.env -WslProjectDir /mnt/c/MSConnect -Distro Ubuntu -Action once
+.\ops\install-msconnect-diann-processor.ps1 -ProjectDir C:\MSConnect -EnvFile C:\MSConnect\.env -WslProjectDir /mnt/c/MSConnect -Distro Ubuntu
+```
+
+`check` verifies required environment values, WSL mount paths, Python,
+Nextflow, Conda, catalog entries, DIA-NN executable presence, and Tailscale DNS
+resolution. `once` claims at most one queued job for a smoke run. `run` keeps the
+agent polling. The installer registers a per-user Scheduled Task at logon and
+restarts it after failure; the Windows account must be signed in for its WSL2
+distribution to run. Logs are written by the processor agent under
+`RESULTS_ROOT/jobs/<job-id>/process.log`.
+
+Install the DIA-NN Linux archive at `/opt/diann/<version>/diann-linux` on each
+WSL2 worker, matching the executable path in `versions.json`. DIA-NN's Linux distribution requires .NET SDK 8 and system
+libraries; the Conda file only pins the helper's Python runtime. The first
+Nextflow run creates the Conda cache. To prime it before production, run the
+`once` action with an eligible smoke job after confirming the CLI and reference
+paths. Server-side pipelines must also specify `execution_mode: "nextflow"`,
+the workflow/catalog paths, selected `diann_version`, and FASTA or speclib path.
 
 ## MSConnect pipeline configuration
 
