@@ -2156,7 +2156,13 @@ def _build_processing_job_agent_payload(job: ProcessingJob) -> dict:
         and _required_engine_for_job(job) in {"diann", "dia-nn"}
         and isinstance((worklist_entry.worklist.metadata or {}).get("processing_plan"), dict)
     ):
-        pipeline_parameters = worklist_entry.worklist.metadata["processing_plan"]
+        worklist_parameters = worklist_entry.worklist.metadata["processing_plan"]
+        pipeline_parameters = worklist_parameters
+        # A Nextflow DIA-NN pipeline is an explicit per-job execution choice.
+        # Keep the worklist plan as the source for ordinary DIA-NN jobs, while
+        # allowing this pipeline's workflow settings to reach the processor.
+        if str((job.pipeline.parameters or {}).get("execution_mode") or "").lower() == "nextflow":
+            pipeline_parameters = {**worklist_parameters, **job.pipeline.parameters}
     if job.analysis_batch_id:
         batch_metadata = job.analysis_batch.metadata or {}
         pipeline_parameters = job.analysis_batch.parameters_snapshot or pipeline_parameters
