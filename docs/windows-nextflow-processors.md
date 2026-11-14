@@ -52,8 +52,8 @@ recommends Windows-host installation for this topology; [MagicDNS](https://tails
 provides tailnet hostnames.
 
 Connect the server SMB export and managed raw/results shares over Tailscale.
-Mount them inside WSL2 at stable Linux paths, for example `/mnt/msconnect/raw`,
-`/mnt/msconnect/results`, and `/mnt/msconnect/shared`. Use `cifs-utils` and a
+Mount them inside WSL2 at the same absolute paths the server uses:
+`/data/raw`, `/data/results`, and `/data/shared`. Use `cifs-utils` and a
 root-owned credentials file for the SMB mount; do not place SMB credentials in
 the processor `.env`. Set `RAW_FILE_STORAGE_ROOT`, `RESULTS_ROOT`, and
 `PROCESSOR_SHARED_STORAGE_ROOT` to those paths. Ensure the processor identity

@@ -34,8 +34,6 @@ process DIANN_SEARCH {
     path 'diann.log'
     path 'search-library.predicted.speclib', optional: true
     path 'library-build.parquet', optional: true
-    path 'search-library.predicted.speclib', optional: true
-    path 'library-build.parquet', optional: true
 
     script:
     def executable = selected.executable
