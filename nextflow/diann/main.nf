@@ -1,7 +1,5 @@
 nextflow.enable.dsl=2
 
-import groovy.json.JsonSlurper
-
 params.diann_version = null
 params.version_catalog = "${projectDir}/versions.json"
 params.input = null
@@ -11,7 +9,7 @@ params.library = null
 params.cli_script = null
 params.threads = 1
 
-def catalog = new JsonSlurper().parse(file(params.version_catalog))
+def catalog = new groovy.json.JsonSlurper().parse(file(params.version_catalog))
 def selected = catalog.versions[params.diann_version]
 if (!selected) error "DIA-NN version '${params.diann_version}' is not in ${params.version_catalog}"
 if (!file(selected.executable).canExecute()) error "DIA-NN executable is unavailable: ${selected.executable}"
