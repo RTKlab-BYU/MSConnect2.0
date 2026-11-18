@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { BarChart3, BrainCircuit, CheckCircle2, Copy, FileUp, FolderKanban, RefreshCw, Save, Settings2, UsersRound } from "lucide-react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 
@@ -135,13 +135,13 @@ export default function ProjectWorkspacePage() {
   const processingJobsQuery = useQuery({
     queryKey: queryKeys.projectProcessingJobs(projectId),
     queryFn: () => fetchProcessingJobs({ project: projectId, page: 1, page_size: 50 }),
-    enabled: Number.isFinite(projectId) && (activeSection === "processing" || activeSection === "acquisition"),
+    enabled: Number.isFinite(projectId) && (activeSection === "overview" || activeSection === "processing" || activeSection === "acquisition"),
     refetchInterval: 10_000,
   });
   const analysisBatchesQuery = useQuery({
     queryKey: queryKeys.analysisBatches(projectId),
     queryFn: () => fetchAnalysisBatches(projectId),
-    enabled: Number.isFinite(projectId) && activeSection === "analysis",
+    enabled: Number.isFinite(projectId) && (activeSection === "overview" || activeSection === "analysis"),
     refetchInterval: 10_000,
   });
   const findingsQuery = useQuery({
@@ -164,7 +164,6 @@ export default function ProjectWorkspacePage() {
   const hyePairs = useMemo(() => buildHyePairs(runs), [runs]);
   const selectedRun = runs.find((row) => row.run.id === selectedRunId) ?? runs[0];
   const readyToProcess = runs.filter((row) => row.raw_file && !row.processing_job);
-  const failedRows = runs.filter((row) => row.processing_job?.status === "failed" || row.run.status === "failed");
   const selectedRows = runs.filter((row) => selectedRunIds.includes(row.run.id));
   const selectedReadyRows = selectedRows.filter((row) => row.raw_file && !row.processing_job);
   const allSelected = Boolean(runs.length) && selectedRunIds.length === runs.length;
@@ -458,13 +457,29 @@ export default function ProjectWorkspacePage() {
       </nav>
 
       {activeSection === "overview" ? <>
-      <section className={`grid gap-3 md:grid-cols-2 ${isExperimentRoute ? "xl:grid-cols-5" : "xl:grid-cols-6"}`}>
-        {!isExperimentRoute ? <MetricCard label="Project Status" value={project?.status ?? "-"} detail="research workflow" /> : null}
-        <MetricCard label="Runs" value={data?.summary.run_count ?? "-"} detail={isExperimentRoute ? "in this experiment" : "planned/acquired"} />
-        <MetricCard label="Raw Files" value={data?.summary.raw_file_count ?? "-"} detail={`${data?.summary.missing_raw_file_count ?? 0} missing`} />
-        <MetricCard label="Queue" value={data?.system_health.active_jobs ?? "-"} detail="active jobs" />
-        <MetricCard label="Failed" value={failedRows.length} detail="runs needing review" />
-        <MetricCard label="Ready" value={readyToProcess.length} detail="uploaded, not queued" />
+      <section aria-label="Project lifecycle stages" className="grid min-w-0 gap-3 md:grid-cols-2 2xl:grid-cols-4">
+        <LifecycleStage title="Planning" number="01" description="Project context and experimental setup">
+          <LifecycleItem label="Project entry" complete={Boolean(project)} detail={project?.code ?? "Loading project"} />
+          <LifecycleItem label="Background / description" complete={Boolean(project?.description?.trim())} detail={project?.description?.trim() ? "Description added" : "Add context in project settings"} />
+          <LifecycleItem label="Metadata" complete={runs.some((row) => Object.keys(row.sample.metadata ?? {}).length > 0)} detail={`${new Set(runs.map((row) => row.sample.id)).size} sample${new Set(runs.map((row) => row.sample.id)).size === 1 ? "" : "s"} with run records`} />
+          <LifecycleLink to={workspaceSectionPath(projectId, isExperimentRoute ? experimentId : null, "worklists")} label="Worklists" complete={runs.some((row) => row.worklist_entry_id)} detail={runs.some((row) => row.worklist_entry_id) ? "Worklist entries available" : "Create or import a worklist"} />
+        </LifecycleStage>
+        <LifecycleStage title="Acquisitions" number="02" description="Sample readiness and instrument runs">
+          <LifecycleItem label="Samples prepared" complete={runs.length > 0} detail={`${new Set(runs.map((row) => row.sample.id)).size} sample${new Set(runs.map((row) => row.sample.id)).size === 1 ? "" : "s"} in workspace`} />
+          <LifecycleLink to={workspaceSectionPath(projectId, isExperimentRoute ? experimentId : null, "worklists")} label="Acquisition schedule" complete={runs.some((row) => row.worklist_entry_id)} detail={runs.some((row) => row.worklist_entry_id) ? "Schedule available" : "No schedule linked"} />
+          <LifecycleLink to={workspaceSectionPath(projectId, isExperimentRoute ? experimentId : null, "acquisition")} label="Running / acquired" complete={runs.some((row) => ["acquired", "imported", "processed"].includes(row.run.status))} detail={`${runs.filter((row) => ["acquired", "imported", "processed"].includes(row.run.status)).length} of ${runs.length} runs acquired`} />
+        </LifecycleStage>
+        <LifecycleStage title="Analysis" number="03" description="Processing, quality control, and interpretation">
+          <LifecycleLink to={workspaceSectionPath(projectId, isExperimentRoute ? experimentId : null, "processing")} label="DIA-NN processing" complete={runs.some((row) => Boolean(row.processing_job))} detail={`${runs.filter((row) => Boolean(row.processing_job)).length} runs with processing jobs`} />
+          <LifecycleLink to={workspaceSectionPath(projectId, isExperimentRoute ? experimentId : null, "qc")} label="QC review" complete={runs.some((row) => row.raw_file)} detail={`${runs.filter((row) => row.raw_file).length} raw files available for QC`} />
+          <LifecycleLink to={workspaceSectionPath(projectId, isExperimentRoute ? experimentId : null, "analysis")} label="Findings" complete={Boolean(findingsQuery.data)} detail={findingsQuery.data ? "Findings workspace ready" : "Open analysis workspace"} />
+        </LifecycleStage>
+        <LifecycleStage title="Publish" number="04" description="Prepare outputs for sharing">
+          <LifecycleLink to={workspaceSectionPath(projectId, isExperimentRoute ? experimentId : null, "analysis")} label="Figures" complete={false} detail="Review and prepare project figures" />
+          <LifecycleLink to={workspaceSectionPath(projectId, isExperimentRoute ? experimentId : null, "analysis")} label="Findings summary" complete={Boolean(findingsQuery.data)} detail={findingsQuery.data ? "Findings workspace ready" : "Add and review findings"} />
+          <LifecycleItem label="Publish to PRIDE" complete={false} detail="Planned integration" />
+          <Button variant="secondary" size="sm" disabled className="mt-1 w-full">PRIDE publishing coming later</Button>
+        </LifecycleStage>
       </section>
       </> : null}
 
@@ -1073,6 +1088,29 @@ function HyeRunSummary({ label, row, duplicates }: { label: "A" | "B"; row?: Pro
       <div className="mt-1 text-xs text-muted-foreground">{fileState} / {processorState}{duplicates > 0 ? " / " + (duplicates + 1) + " entries" : ""}</div>
     </div>
   );
+}
+
+function LifecycleStage({ title, number, description, children }: { title: string; number: string; description: string; children: ReactNode }) {
+  return <Card className="min-w-0">
+    <CardHeader className="pb-3">
+      <div className="flex items-start gap-3">
+        <span aria-hidden="true" className="grid h-8 w-8 shrink-0 place-items-center border text-xs font-semibold text-muted-foreground">{number}</span>
+        <div className="min-w-0"><CardTitle className="text-base">{title}</CardTitle><CardDescription className="mt-1">{description}</CardDescription></div>
+      </div>
+    </CardHeader>
+    <CardContent className="grid gap-2">{children}</CardContent>
+  </Card>;
+}
+
+function LifecycleItem({ label, complete, detail }: { label: string; complete: boolean; detail: string }) {
+  return <div className="flex min-w-0 items-start gap-2 border-t pt-2">
+    <span aria-label={complete ? "Complete" : "Incomplete"} className={`mt-0.5 grid h-4 w-4 shrink-0 place-items-center border text-[10px] font-bold ${complete ? "border-success bg-success text-success-foreground" : "border-muted-foreground/40 text-transparent"}`}>{complete ? "✓" : "·"}</span>
+    <div className="min-w-0"><div className="text-sm font-medium">{label}</div><div className="break-words text-xs text-muted-foreground">{detail}</div></div>
+  </div>;
+}
+
+function LifecycleLink({ to, label, complete, detail }: { to: string; label: string; complete: boolean; detail: string }) {
+  return <Link to={to} className="block rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><LifecycleItem label={label} complete={complete} detail={detail} /></Link>;
 }
 
 function workspaceSectionPath(projectId: number, experimentId: number | null, section: string) {
