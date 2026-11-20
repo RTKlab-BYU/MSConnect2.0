@@ -32,6 +32,7 @@ from core.models import (
 from core.processing.adapters import render_adapter_plan
 from core.processing.diann_search import main
 from core.processing.postprocess import skyline_prtc_postprocess
+from core.services.organism_references import normalize_organisms
 from core.services.processing_routing import should_queue_spectra_conversion_for_raw_file
 
 
@@ -111,6 +112,10 @@ class ProcessorFailureDetectionTests(SimpleTestCase):
         self.assertEqual(_detect_engine_failure({"adapter": "processor"}, "Thermo RAW file format not supported."), "")
         self.assertEqual(_detect_engine_failure({"adapter": "diann"}, "Finished\n0 files will be processed\n"), "")
 
+    def test_supported_organism_labels_normalize_to_taxa_keys(self):
+        self.assertEqual(normalize_organisms("HumanYeastE.coli"), ["human", "yeast", "ecoli"])
+        self.assertEqual(normalize_organisms(["Pig"]), ["pig"])
+
 
 class NextflowProcessorPreparationTests(SimpleTestCase):
     def test_nextflow_job_uses_selected_version_and_registers_parquet_report(self):
@@ -124,7 +129,7 @@ class NextflowProcessorPreparationTests(SimpleTestCase):
                             "execution_mode": "nextflow",
                             "nextflow_workflow": "/data/shared/nextflow/diann/main.nf",
                             "nextflow_version_catalog": "/data/shared/nextflow/diann/versions.json",
-                            "diann_version": "2.2.0",
+                            "diann_version": "2.7.0",
                             "fasta": "/data/shared/reference/human.fasta",
                             "cli_script": "/data/shared/nextflow/diann/diann_search.py",
                         }
@@ -137,8 +142,9 @@ class NextflowProcessorPreparationTests(SimpleTestCase):
 
         self.assertEqual(execution.command[0:3], ["nextflow", "run", "/data/shared/nextflow/diann/main.nf"])
         self.assertIn("--diann_version", execution.command)
-        self.assertEqual(execution.command[execution.command.index("--diann_version") + 1], "2.2.0")
+        self.assertEqual(execution.command[execution.command.index("--diann_version") + 1], "2.7.0")
         self.assertEqual(execution.command[execution.command.index("--version_catalog") + 1], "/data/shared/nextflow/diann/versions.json")
+        self.assertEqual(execution.command[execution.command.index("--threads") + 1], "2")
         self.assertTrue(any(item["artifact_type"] == "diann_report" and item["path"].endswith("report.parquet") for item in execution.artifact_files))
 
     def test_nextflow_job_requires_version_and_workflow(self):
@@ -148,6 +154,31 @@ class NextflowProcessorPreparationTests(SimpleTestCase):
                     {"id": 902, "pipeline": {"parameters": {"execution_mode": "nextflow"}}, "raw_file": {"storage_path": "/data/raw/sample.mzML"}},
                     results_root=Path(temp_dir),
                 )
+
+    def test_nextflow_library_builder_enables_generation_in_the_versioned_workflow(self):
+        with TemporaryDirectory() as temp_dir:
+            execution = prepare_job_execution(
+                {
+                    "id": 903,
+                    "metadata": {"analysis_batch_id": 15, "job_kind": "sample", "diann_library_builder": True},
+                    "pipeline": {
+                        "parameters": {
+                            "adapter": "diann",
+                            "execution_mode": "nextflow",
+                            "nextflow_workflow": "/opt/msconnect/nextflow/diann/main.nf",
+                            "nextflow_version_catalog": "/opt/msconnect/nextflow/diann/versions.json",
+                            "diann_version": "2.7.0",
+                            "fasta": "/data/shared/reference/human.fasta",
+                            "cli_script": "/opt/msconnect/diann_search.py",
+                        }
+                    },
+                    "raw_file": {"storage_path": "/data/raw/sample.mzML"},
+                    "run": {"name": "seed-run"},
+                },
+                results_root=Path(temp_dir),
+            )
+
+        self.assertIn("--generate_speclib", execution.command)
 
 
 class WatcherStabilityTests(SimpleTestCase):
@@ -784,6 +815,7 @@ class DiannSearchStageTests(SimpleTestCase):
             prediction, search = [call.args[0] for call in mocked.call_args_list]
             self.assertNotIn('--f', prediction)
             self.assertIn('--predictor', prediction)
+            self.assertIn('--fasta-search', prediction)
             self.assertIn('--f', search)
             self.assertNotIn('--fasta-search', search)
             self.assertIn(str(library), search)

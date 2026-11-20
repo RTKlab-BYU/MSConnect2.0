@@ -272,6 +272,7 @@ export type PreAcquisitionSetupPreflightResponse = {
   planned_runs: number;
   processing_preset: string;
   diann_version: string;
+  organisms: string[];
   speclib_mode: string;
   reference_assets: Record<string, unknown>;
   settings: Record<string, unknown>;
@@ -730,6 +731,7 @@ export type DiannPreflightResponse = {
   pipeline: ProcessingPipeline | null;
   processing_preset: string;
   diann_version: string;
+  organisms: string[];
   speclib_mode: string;
   reference_assets: Record<string, unknown>;
   settings: Record<string, unknown>;

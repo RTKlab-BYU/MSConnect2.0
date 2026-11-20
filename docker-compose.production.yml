@@ -47,13 +47,7 @@ services:
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_WATCHER_TOKEN:?Set MSCONNECT_WATCHER_TOKEN in the deployment env file}
 
   processor:
-    image: ${MSCONNECT_IMAGE:?Set MSCONNECT_IMAGE to an approved release image}
-    environment:
-      DJANGO_DEBUG: "0"
-      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in the deployment env file}
-      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:?Set MSCONNECT_PROCESSOR_TOKEN in the deployment env file}
-
-  processor-diann:
+    image: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.7.0-nextflow}
     environment:
       DJANGO_DEBUG: "0"
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in the deployment env file}

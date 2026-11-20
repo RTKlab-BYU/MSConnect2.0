@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DIANN_IMAGE="${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.0}"
+DIANN_IMAGE="${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.7.0-nextflow}"
 FRAGPIPE_IMAGE="${MSCONNECT_FRAGPIPE_IMAGE:-msconnect-processor-fragpipe:local}"
 PWIZ_IMAGE="${MSCONNECT_PWIZ_IMAGE:-msconnect-processor-pwiz:local}"
 SKYLINE_IMAGE="${MSCONNECT_SKYLINE_IMAGE:-msconnect-processor-skyline:26.1}"

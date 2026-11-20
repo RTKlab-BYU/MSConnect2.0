@@ -118,7 +118,7 @@ python manage.py agent_healthcheck --role processor
 
 ## Runner Images
 
-- `processor-diann`: DIA-NN worker. Build one private-registry image per site-approved DIA-NN version, with `DIANN_LINUX_URL` pointing at the approved Linux DIA-NN archive. For a Linux Docker worker, use the Linux ZIP, not the Windows MSI.
+- `processor`: default DIA-NN 2.7.0 + Nextflow 26.10.6 worker, pinned by `docker/processor/diann-nextflow.Dockerfile` and `nextflow/diann/versions.json`. See [DIA-NN node operations](diann-node-operations.md) for server and WSL2 setup.
 - `processor-fragpipe`: FragPipe worker. Build one private-registry image per site-approved FragPipe version, with `FRAGPIPE_URL` pointing at the approved FragPipe archive.
 - `processor-pwiz`: ProteoWizard conversion worker. This image derives from the ProteoWizard/Skyline vendor-license-acceptance container and exposes `msconvert`.
 - `SkylineCmd`: can run as a Windows processor or a site-approved Wine/container runner. Build or point to a site-approved image and use the `skyline` adapter.
@@ -132,27 +132,13 @@ MSConnect does not redistribute vendor binaries or licenses. The recommended ope
 4. Register each engine profile in `PROCESSOR_SHARED_STORAGE_ROOT/config/processor-registry.json`.
 5. Create pipelines that target a specific engine profile/version.
 
-Example DIA-NN 2.0 image build and registration:
+For the default DIA-NN image, build the `processor` service with Compose. A site
+that needs a different approved DIA-NN release should create and validate a
+separate immutable image tag rather than changing a live node in place:
 
 ```sh
-docker build \
-  -f docker/processor/diann.Dockerfile \
-  --build-arg DIANN_VERSION=2.0 \
-  --build-arg DIANN_LINUX_URL=https://github.com/vdemichev/DiaNN/releases/download/2.0/DIA-NN-2.0-Academia-Linux.zip \
-  -t registry.example.org/msconnect/processor-diann:2.0 .
-
-docker run --rm registry.example.org/msconnect/processor-diann:2.0 diann
-
-docker push registry.example.org/msconnect/processor-diann:2.0
-
-python manage.py processor_registry add-engine \
-  --engine diann \
-  --version 2.0 \
-  --install-type image \
-  --image registry.example.org/msconnect/processor-diann:2.0 \
-  --executable diann \
-  --version-command-json '["diann"]' \
-  --license-note "Site-approved DIA-NN academic installation"
+docker compose build processor
+docker compose run --rm --entrypoint diann processor --version
 ```
 
 The public DIA-NN release assets are academic-use binaries under the DIA-NN license. In regulated or multi-user environments, mirror the approved ZIP into internal artifact storage and replace `DIANN_LINUX_URL` with that internal URL before building.
@@ -277,8 +263,8 @@ python manage.py processor_registry add-settings \
 
 python manage.py processor_registry create-pipeline \
   --engine diann \
-  --version "DIA-NN plasma 2.0" \
-  --engine-version 2.0 \
+  --version "DIA-NN plasma 2.7.0" \
+  --engine-version 2.7.0 \
   --settings-key plasma-standard
 ```
 
@@ -286,9 +272,9 @@ Start workers with matching engine profile metadata:
 
 ```sh
 MSCONNECT_PROCESSOR_ENGINE=diann \
-MSCONNECT_PROCESSOR_ENGINE_VERSION=2.0 \
-MSCONNECT_PROCESSOR_ENGINE_PROFILE=diann:2.0 \
-MSCONNECT_IMAGE=registry.example.org/msconnect/processor-diann:2.0 \
+MSCONNECT_PROCESSOR_ENGINE_VERSION=2.7.0 \
+MSCONNECT_PROCESSOR_ENGINE_PROFILE=diann:2.7.0 \
+MSCONNECT_IMAGE=registry.example.org/msconnect/processor-diann:2.7.0-nextflow \
 python manage.py run_processor_agent --engine diann
 ```
 
@@ -309,18 +295,19 @@ python manage.py run_processor_agent
 Example builds:
 
 ```sh
-docker compose --profile engines build processor-diann processor-fragpipe
+docker compose build processor
+docker compose --profile engines build processor-fragpipe
 docker compose --profile engines build processor-skyline
 docker compose --profile conversion build processor-pwiz
 ```
 
-For a local DIA-NN 2.0 Compose build, set:
+The default `processor` build is pinned to DIA-NN 2.7.0 and Nextflow 26.10.6.
+Use these values when pinning a worker image in a private registry:
 
 ```sh
-MSCONNECT_DIANN_IMAGE=msconnect-processor-diann:2.0
-DIANN_ENGINE_VERSION=2.0
-DIANN_ENGINE_PROFILE=diann:2.0
-DIANN_LINUX_URL=https://github.com/vdemichev/DiaNN/releases/download/2.0/DIA-NN-2.0-Academia-Linux.zip
+MSCONNECT_DIANN_IMAGE=registry.example.org/msconnect/processor-diann:2.7.0-nextflow
+MSCONNECT_PROCESSOR_ENGINE_VERSION=2.7.0
+MSCONNECT_PROCESSOR_ENGINE_PROFILE=diann:2.7.0
 ```
 
 For a local Skyline 26.1 Compose build, set:
@@ -336,7 +323,7 @@ MSCONNECT_PRTC_SKYLINE_PIPELINE_ID=<created pipeline id>
 Example runtime:
 
 ```sh
-docker compose --profile engines --profile conversion up -d web watcher processor-diann processor-skyline processor-fragpipe processor-pwiz nginx
+docker compose --profile engines --profile conversion up -d web watcher processor processor-skyline processor-fragpipe processor-pwiz nginx
 ```
 
 ## Pipeline Adapter Parameters

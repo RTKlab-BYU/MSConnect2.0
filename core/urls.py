@@ -71,6 +71,8 @@ urlpatterns = [
     path("admin/user-access/<int:user_id>/resend-email/", api.AdminUserVerificationView.as_view()),
     path("admin/lab-directory/", api.AdminLabDirectoryView.as_view()),
     path("admin/runtime-settings/", api.AdminRuntimeSettingsView.as_view()),
+    path("admin/agents/", api.AgentProvisioningView.as_view()),
+    path("admin/agents/<str:role>/<int:agent_id>/ready/", api.AgentProvisioningReadyView.as_view()),
     path("deployment-settings/", api.DeploymentSettingsView.as_view()),
     path("deployment-releases/audit/", api.DeploymentReleaseAuditView.as_view()),
     path("notifications/test/", api.NotificationTestView.as_view()),

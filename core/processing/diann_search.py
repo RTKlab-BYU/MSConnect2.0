@@ -17,12 +17,14 @@ def main(argv=None):
         if arg in {'--f', '--out', '--out-lib', '--lib'}:
             i += 2
             continue
-        if arg in {'--matrices', '--individual-reports', '--gen-spec-lib', '--predictor', '--fasta-search'}:
+        if arg in {'--matrices', '--individual-reports', '--gen-spec-lib', '--predictor'}:
             i += 1
             continue
         prediction.append(arg)
         i += 1
-    prediction.extend(['--gen-spec-lib', '--predictor', '--out-lib', str(library),
+    # DIA-NN appends ``.predicted.speclib`` to --out-lib; pass a basename so
+    # the generated path matches the stable artifact name above.
+    prediction.extend(['--gen-spec-lib', '--predictor', '--out-lib', str(library.with_suffix('')),
                        '--out', str(report.parent / 'library-build.parquet')])
     subprocess.run(prediction, check=True)
     if not library.is_file():

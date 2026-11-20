@@ -1,5 +1,7 @@
 # Dedicated DIA-NN worker
 
+> Current default processor and live server/WSL2 steps are documented in [diann-node-operations.md](diann-node-operations.md); the pinned runtime is described in [diann-nextflow-operations.md](diann-nextflow-operations.md). The 2.2.0 commands and validation below record the prior worker deployment.
+
 The DIA-NN Dockerfile builds independently of `msconnect:local` and does not
 include the frontend, Wine, or ProteoWizard. Vendor conversion remains a separate
 service. Use centroided mzML for the initial validation.

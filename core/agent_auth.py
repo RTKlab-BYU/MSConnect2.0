@@ -9,6 +9,7 @@ from rest_framework.exceptions import AuthenticationFailed
 class AgentIdentity:
     agent_role: str
     token_label: str
+    agent_name: str = ""
 
     @property
     def is_authenticated(self) -> bool:
@@ -50,5 +51,22 @@ class AgentTokenAuthentication(BaseAuthentication):
         for role, token_label, configured_token in configured_tokens:
             if configured_token and token == configured_token:
                 return AgentIdentity(agent_role=role, token_label=token_label), token
+
+        # Per-agent secrets are stored as SHA-256 hashes. They are generated with
+        # 256 bits of entropy and only shown once by the provisioning endpoint.
+        from .agent_tokens import hash_agent_token
+        from .models import AcquisitionAgent, ProcessingNode
+
+        token_hash = hash_agent_token(token)
+        agent = AcquisitionAgent.objects.filter(
+            active=True, provisioning_status="ready", agent_token_hash=token_hash
+        ).only("name", "token_label").first()
+        if agent:
+            return AgentIdentity("watcher", agent.token_label, agent.name), token
+        node = ProcessingNode.objects.filter(
+            provisioning_status="ready", agent_token_hash=token_hash
+        ).only("name").first()
+        if node:
+            return AgentIdentity("processor", node.name, node.name), token
 
         raise AuthenticationFailed("Invalid agent bearer token.")

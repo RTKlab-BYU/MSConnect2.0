@@ -23,22 +23,41 @@ from core.models import (
     Run,
     RunFileRole,
 )
+from core.processing.diann import build_diann_command_options, normalize_diann_settings
+from core.processing.registry import validate_diann_pipeline_settings
 from core.services.lifecycle import recompute_experiment_and_project_status
+from core.services.organism_references import normalize_organisms, organism_selection, resolve_project_fasta
 
 
-def queue_project_analysis_batches(*, project, user, experiment=None, pipeline_id=None, executor="slurm"):
+def queue_project_analysis_batches(
+    *, project, user, experiment=None, pipeline_id=None, executor="local", organisms=None, diann_settings=None,
+    speclib_mode="reuse", speclib_path="",
+):
     if executor not in AnalysisExecutor.values:
         raise ValueError("executor must be 'local' or 'slurm'.")
     experiments = [experiment] if experiment else list(project.experiments.order_by("id"))
     if not experiments:
         raise ValueError("The project has no experiments to reanalyze.")
 
+    planned = []
+    for item in experiments:
+        pipeline, source_parameters = _resolve_pipeline(item, pipeline_id)
+        parameters, reference_snapshot = _snapshot_parameters(
+            item,
+            pipeline,
+            user=user,
+            source_parameters=source_parameters,
+            organisms_override=organisms,
+            settings_override=diann_settings,
+            speclib_mode=speclib_mode,
+            speclib_path=speclib_path,
+        )
+        inputs = _sample_inputs(item)
+        planned.append((item, pipeline, parameters, reference_snapshot, inputs))
+
     batches = []
     with transaction.atomic():
-        for item in experiments:
-            pipeline, source_parameters = _resolve_pipeline(item, pipeline_id)
-            parameters, reference_snapshot = _snapshot_parameters(item, pipeline, source_parameters=source_parameters)
-            inputs = _sample_inputs(item)
+        for item, pipeline, parameters, reference_snapshot, inputs in planned:
             batch = AnalysisBatch.objects.create(
                 project=project,
                 experiment=item,
@@ -76,6 +95,12 @@ def queue_project_analysis_batches(*, project, user, experiment=None, pipeline_i
             rollup_experimental.update({"individual_reports": False, "matrices": True})
             rollup_tags["experimental"] = rollup_experimental
             rollup_parameters["tags"] = rollup_tags
+            rollup_settings = copy.deepcopy(rollup_parameters.get("settings") or {})
+            rollup_settings_tags = dict(rollup_settings.get("tags") or {})
+            rollup_settings_tags["experimental"] = dict(rollup_experimental)
+            rollup_settings["tags"] = rollup_settings_tags
+            rollup_parameters["settings"] = rollup_settings
+            rollup_parameters["options"] = build_diann_command_options(rollup_settings)
             rollup_metadata = _job_metadata(batch, parameters, job_kind="experiment_rollup")
             rollup_metadata.update(
                 {
@@ -91,6 +116,11 @@ def queue_project_analysis_batches(*, project, user, experiment=None, pipeline_i
                 analysis_batch=batch,
                 status=ProcessingStatus.QUEUED,
                 metadata=rollup_metadata,
+            )
+            _configure_batch_speclib(
+                sample_jobs=sample_jobs,
+                rollup_job=rollup_job,
+                parameters=parameters,
             )
             batch.metadata = {
                 **(batch.metadata or {}),
@@ -174,58 +204,155 @@ def _snapshot_parameters(
     experiment: Experiment,
     pipeline: ProcessingPipeline,
     *,
+    user,
     source_parameters: dict | None = None,
+    organisms_override=None,
+    settings_override: dict | None = None,
+    speclib_mode="reuse",
+    speclib_path="",
 ) -> tuple[dict, dict]:
     parameters = copy.deepcopy(source_parameters or pipeline.parameters or {})
     experiment_diann = (experiment.metadata or {}).get("diann") or {}
     project_diann = (experiment.project.metadata or {}).get("diann") or {}
-    preferred_library = str(
-        experiment_diann.get("preferred_speclib_path")
-        or project_diann.get("preferred_speclib_path")
-        or ((parameters.get("reference_assets") or {}).get("speclib_asset") or {}).get("path")
-        or parameters.get("library")
-        or ""
-    ).strip()
-    fasta_path = str(parameters.get("fasta") or parameters.get("fasta_path") or "").strip()
-    if not fasta_path:
-        fasta_path = str((parameters.get("reference_assets") or {}).get("fasta_path") or "").strip()
-    if preferred_library:
-        parameters.update(
-            {
-                "library": preferred_library,
-                "library_source": "analysis_batch_reference",
-                "generate_speclib": False,
-                "fasta_search": False,
-            }
-        )
-        tags = copy.deepcopy(parameters.get("tags") or {})
-        experimental = dict(tags.get("experimental") or {})
-        experimental.update({"library": preferred_library, "generate_speclib": False, "fasta_search": False})
-        tags["experimental"] = experimental
-        parameters["tags"] = tags
-        if not bool(parameters.get("fasta_search")) and not bool(parameters.get("generate_speclib")):
-            fasta_path = ""
-    elif not bool(parameters.get("generate_speclib")) and not (fasta_path and bool(parameters.get("fasta_search"))):
-        raise ValueError(
-            f"Experiment {experiment.name!r} has no reusable spectral library. Upload one or complete a library-build analysis first."
-        )
+    base_references = parameters.get("reference_assets") or {}
+    metadata_organisms = organism_selection(
+        experiment_diann, experiment.metadata or {}, project_diann, experiment.project.metadata or {}
+    )
+    organisms = normalize_organisms(
+        organisms_override
+        or metadata_organisms
+        or base_references.get("organisms")
+        or parameters.get("organisms")
+        or ["human", "yeast", "ecoli"]
+    )
 
-    reference_snapshot = {}
-    for label, path_value in (("fasta", fasta_path), ("spectral_library", preferred_library)):
-        if not path_value:
-            continue
-        path = Path(path_value).resolve()
-        if not path.is_file():
-            raise ValueError(f"The configured {label.replace('_', ' ')} reference is missing: {path}")
-        reference_snapshot[label] = {
-            "path": str(path),
-            "filename": path.name,
-            "size_bytes": path.stat().st_size,
-            "checksum_sha256": _sha256(path),
+    current = normalize_diann_settings(parameters.get("settings") or parameters)
+    if settings_override:
+        proposed = normalize_diann_settings(settings_override)
+        experimental = {
+            **(current.get("tags", {}).get("experimental") or {}),
+            **(proposed.get("tags", {}).get("experimental") or {}),
         }
-    parameters["reference_snapshot"] = reference_snapshot
+        performance = dict(current.get("tags", {}).get("performance") or {})
+        merged = {
+            **{key: value for key, value in current.items() if key != "tags"},
+            **{key: value for key, value in proposed.items() if key != "tags"},
+            "tags": {"experimental": experimental, "performance": performance},
+        }
+        errors = validate_diann_pipeline_settings(merged, allow_performance_tags=False)
+        if errors:
+            raise ValueError("Invalid DIA-NN settings: " + "; ".join(errors))
+        current = normalize_diann_settings(merged)
+
+    parameters["organisms"] = organisms
+    parameters["execution_mode"] = "nextflow"
+    parameters.setdefault("nextflow_workflow", "/opt/msconnect/nextflow/diann/main.nf")
+    parameters.setdefault("nextflow_config", "/opt/msconnect/nextflow/diann/nextflow.config")
+    parameters.setdefault("nextflow_version_catalog", "/opt/msconnect/nextflow/diann/versions.json")
+    parameters.setdefault("nextflow_profile", "local")
+    parameters.setdefault("cli_script", "/opt/msconnect/diann_search.py")
+    parameters["diann_version"] = str(parameters.get("diann_version") or pipeline.version or "2.7.0")
+    parameters["required_engine_version"] = parameters["diann_version"]
+
+    tags = current.get("tags") or {}
+    experimental = dict(tags.get("experimental") or {})
+    performance = dict(tags.get("performance") or {})
+    reference_organisms = normalize_organisms(base_references.get("organisms") or parameters.get("organisms") or organisms)
+    organism_changed = reference_organisms != organisms
+    explicit_fasta = str(experimental.get("fasta") or parameters.get("fasta") or parameters.get("fasta_path") or "").strip()
+    explicit_library = str(experimental.get("library") or parameters.get("library") or "").strip()
+    preferred_organisms = experiment_diann.get("preferred_speclib_organisms") or project_diann.get("preferred_speclib_organisms") or []
+    preferred_library = ""
+    if preferred_organisms and normalize_organisms(preferred_organisms) == organisms and not organism_changed:
+        preferred_library = str(
+            experiment_diann.get("preferred_speclib_path") or project_diann.get("preferred_speclib_path") or ""
+        ).strip()
+    preferred_library = explicit_library or preferred_library
+    if speclib_mode == "custom":
+        preferred_library = str(speclib_path or "").strip()
+    elif speclib_mode == "rebuild":
+        preferred_library = ""
+
+    reference_snapshot = {"organisms": organisms, "diann_version": parameters["diann_version"]}
+    if preferred_library:
+        path = Path(preferred_library).resolve()
+        if not path.is_file():
+            raise ValueError(f"The selected spectral library is missing: {path}")
+        reference_snapshot["spectral_library"] = {
+            "path": str(path), "filename": path.name, "size_bytes": path.stat().st_size, "checksum_sha256": _sha256(path)
+        }
+        parameters.update({"library": str(path), "fasta": "", "library_source": "project_reference", "generate_speclib": False, "fasta_search": False})
+    else:
+        fasta_asset = None
+        if explicit_fasta and Path(explicit_fasta).is_file() and not organism_changed:
+            fasta_path = str(Path(explicit_fasta).resolve())
+        else:
+            fasta_asset = resolve_project_fasta(organisms=organisms, project=experiment.project, experiment=experiment, user=user)
+            fasta_path = fasta_asset.storage_path
+        path = Path(fasta_path).resolve()
+        if not path.is_file():
+            raise ValueError(f"The selected FASTA is missing: {path}")
+        reference_snapshot["fasta"] = {
+            "path": str(path), "filename": path.name, "size_bytes": path.stat().st_size, "checksum_sha256": _sha256(path)
+        }
+        if fasta_asset:
+            reference_snapshot["fasta_asset_id"] = fasta_asset.id
+        parameters.update({"fasta": str(path), "fasta_path": str(path), "library": "", "library_source": "", "generate_speclib": True, "fasta_search": True})
+
+    effective_settings = {
+        **{key: value for key, value in current.items() if key != "tags"},
+        "fasta": parameters.get("fasta", ""),
+        "library": parameters.get("library", ""),
+        "tags": {"experimental": experimental, "performance": performance},
+    }
+    parameters["settings"] = effective_settings
+    parameters["tags"] = effective_settings["tags"]
+    parameters["options"] = build_diann_command_options(effective_settings)
+    parameters["reference_assets"] = {
+        **base_references,
+        "organisms": organisms,
+        "fasta_path": parameters.get("fasta", ""),
+        "speclib_asset": reference_snapshot.get("spectral_library", {}),
+    }
+    parameters["speclib_policy"] = {
+        **(parameters.get("speclib_policy") or {}),
+        "scope": "project",
+        "build_runs": 1,
+        "reuse_after_build": True,
+    }
     parameters["settings_snapshot_at"] = timezone.now().isoformat()
+    parameters["analysis_organisms"] = organisms
+    parameters["analysis_settings_override"] = copy.deepcopy(settings_override or {})
+    parameters["speclib_mode"] = speclib_mode
+    parameters["reference_snapshot"] = reference_snapshot
     return parameters, reference_snapshot
+
+
+def _configure_batch_speclib(*, sample_jobs, rollup_job, parameters):
+    if not sample_jobs:
+        return
+    existing_library = str(parameters.get("library") or "").strip()
+    builder = None if existing_library else sample_jobs[0]
+    library_path = existing_library or str(
+        Path(settings.RESULTS_ROOT) / "jobs" / str(sample_jobs[0].id) / "search-library.predicted.speclib"
+    )
+    for job in sample_jobs:
+        metadata = dict(job.metadata or {})
+        if builder and job.pk == builder.pk:
+            metadata["diann_library_builder"] = True
+        else:
+            metadata["diann_library_path"] = library_path
+            if builder:
+                metadata["depends_on_job_ids"] = list(
+                    dict.fromkeys([*(metadata.get("depends_on_job_ids") or []), builder.pk])
+                )
+        job.metadata = metadata
+        job.save(update_fields=["metadata", "updated_at"])
+    rollup_metadata = dict(rollup_job.metadata or {})
+    if library_path:
+        rollup_metadata["diann_library_path"] = library_path
+    rollup_job.metadata = rollup_metadata
+    rollup_job.save(update_fields=["metadata", "updated_at"])
 
 
 def _diann_input_path(raw_file: RawFile) -> str:

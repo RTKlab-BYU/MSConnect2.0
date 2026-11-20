@@ -6,6 +6,7 @@ const sections = [
   { to: "/admin/lc-ms", label: "LC-MS setups" },
   { to: "/admin/settings", label: "Global settings" },
   { to: "/processing/admin?type=processor", label: "Nodes & compute" },
+  { to: "/admin/agents", label: "Agent setup" },
   { to: "/admin/assistant", label: "AI agent" },
 ];
 

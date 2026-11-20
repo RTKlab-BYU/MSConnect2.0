@@ -1,12 +1,16 @@
 {
   "schema_version": 1,
   "versions": {
-    "2.2.0": {
-      "distribution": "DIA-NN-2.2.0-Academia-Linux.zip",
-      "download_url": "https://github.com/vdemichev/DiaNN/releases/download/2.0/DIA-NN-2.2.0-Academia-Linux.zip",
-      "executable": "/opt/diann/2.2.0/diann-linux",
-      "conda_env": "envs/diann-2.2.0.yml",
-      "tested": false
+    "2.7.0": {
+      "distribution": "DIA-NN-2.7.0-Academia-Linux.zip",
+      "download_url": "https://github.com/vdemichev/DiaNN/releases/download/2.0/DIA-NN-2.7.0-Academia-Linux.zip",
+      "executable": "/usr/local/bin/diann",
+      "conda_env": null,
+      "tested": true,
+      "validation": "DIA-NN 2.7.0 + Nextflow 26.10.6 end-to-end smoke with mzML and one-protein FASTA",
+      "release_channel": "main",
+      "nextflow_version": "26.10.6",
+      "archive_sha256": "246ca8baf2e9f308854976f94b8761e452275a97b3632070e275a2b4401cb223"
     }
   }
 }

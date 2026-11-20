@@ -122,7 +122,7 @@ Agent preflight checks verify DNS, TCP connectivity, bearer-token role, API ping
 
 ```sh
 docker compose run --rm watcher python manage.py check_agent_runtime --role watcher --write-test
-docker compose run --rm processor python manage.py check_agent_runtime --role processor --engine processor --write-test
+docker compose run --rm processor python manage.py check_agent_runtime --role processor --engine diann --write-test
 ```
 
 Each component is a Django management command run from the same container image:
@@ -202,6 +202,8 @@ For DIA-NN project setup, keep researcher choices in `tags.experimental` and let
 Use these docs as the source of truth instead of spreading the same guidance across multiple markdown files:
 
 - `docs/processing-engines.md` for engine, version, and runtime contracts.
+- `docs/diann-nextflow-operations.md` for the pinned DIA-NN workflow, shared references, library reuse, and processor setup.
+- `docs/diann-node-operations.md` for pulling the release on a live server and bringing up Linux, WSL2, or Docker DIA-NN nodes.
 - `docs/three-machine-deployment.md` for the watcher/server/processor topology.
 - `docs/live-stack-smoke-runbook.md` for end-to-end verification.
 - `docs/app-review-guide.md` for the React `/app/*` surface.
@@ -248,7 +250,7 @@ Use this flow to prove web, watcher, processor, networking, shared storage, queu
 docker compose up -d --build web watcher processor nginx
 curl -f http://localhost:8080/readyz/
 docker compose run --rm watcher python manage.py check_agent_runtime --role watcher --write-test
-docker compose run --rm processor python manage.py check_agent_runtime --role processor --engine processor --write-test
+docker compose run --rm processor python manage.py check_agent_runtime --role processor --engine diann --write-test
 docker compose exec web python manage.py create_e2e_smoke_fixture --code E2E-SMOKE
 docker compose run --rm watcher python manage.py run_watcher_agent --once --match-run-by-name
 docker compose run --rm processor python manage.py run_processor_agent --once
@@ -313,10 +315,10 @@ docker compose exec web python manage.py create_engine_operations_fixture \
   --skyline-file SampleA.mzML \
   --skyline-document /data/shared/skyline/project.sky
 
-docker compose --profile engines up -d processor-diann processor-skyline
+docker compose --profile engines up -d processor processor-skyline
 ```
 
-DIA-NN jobs require a compatible `diann` processor node and Skyline jobs require a compatible `skyline` processor node. The generic processor remains available for command-runner smoke jobs.
+DIA-NN jobs use the default `processor` service. Skyline jobs require a compatible `skyline` processor node. One-shot command-runner smoke jobs can still use the default processor when their pipeline has no engine requirement.
 
 ## Agent Auth
 

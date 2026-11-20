@@ -425,7 +425,7 @@ export function rerunLatestDiannBatch(projectId: number): Promise<{
 
 export function reanalyzeProject(
   projectId: number,
-  payload: { executor: "local" | "slurm"; experiment?: number },
+  payload: { executor: "local" | "slurm"; experiment?: number; organisms?: string[]; diann_settings?: Record<string, unknown>; speclib_mode?: "reuse" | "rebuild" | "custom"; speclib_path?: string },
 ): Promise<AnalysisBatch[]> {
   return postResource<AnalysisBatch[]>(`/projects/${projectId}/reanalyze/`, payload);
 }
@@ -586,6 +586,41 @@ export function fetchAcquisitionAgents(params?: ListParams): Promise<Paginated<A
 
 export function updateAcquisitionAgent(id: number, payload: { ms_instrument: number | null }): Promise<AcquisitionAgent> {
   return patchResource(`/acquisition-agents/${id}/`, payload);
+}
+
+export type ProvisionedAgent = {
+  role: "watcher" | "processor";
+  id: number;
+  name: string;
+  node_type?: string;
+  provisioning_status: "pending" | "ready";
+  active?: boolean;
+  status?: string;
+  last_seen_at?: string | null;
+  last_heartbeat_at?: string | null;
+};
+
+export type AgentProvisioningIndex = { watchers: ProvisionedAgent[]; processors: ProvisionedAgent[] };
+export type AgentProvisioningCreated = {
+  role: "watcher" | "processor";
+  id: number;
+  name: string;
+  engine?: string;
+  token: string;
+  provisioning_status: "pending" | "ready";
+  instructions: { api_url: string; install_and_check: string; after_ready: string };
+};
+
+export function fetchAgentProvisioning(): Promise<AgentProvisioningIndex> {
+  return getResource("/admin/agents/");
+}
+
+export function createProvisionedAgent(payload: Record<string, string | number>): Promise<AgentProvisioningCreated> {
+  return postResource("/admin/agents/", payload);
+}
+
+export function activateProvisionedAgent(role: "watcher" | "processor", id: number): Promise<ProvisionedAgent> {
+  return postResource(`/admin/agents/${role}/${id}/ready/`, {});
 }
 
 export function fetchRawFilesOverview(params?: ListParams): Promise<RawFileOverview> {

@@ -1,0 +1,33 @@
+services:
+  processor-diann-dev:
+    image: msconnect-processor-diann:2.7.0-nextflow
+    build:
+      context: .
+      dockerfile: docker/processor/diann-nextflow.Dockerfile
+      args:
+        DIANN_VERSION: 2.7.0
+        NEXTFLOW_VERSION: 26.10.6
+        DIANN_SHA256: 246ca8baf2e9f308854976f94b8761e452275a97b3632070e275a2b4401cb223
+    restart: unless-stopped
+    environment:
+      MSCONNECT_API_BASE_URL: ${MSCONNECT_API_BASE_URL:-http://host.docker.internal:8000/api}
+      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:?Create a per-agent token in Admin > Agent setup}
+      MSCONNECT_AGENT_NAME: ${DIANN_AGENT_NAME:-diann-dev-wsl}
+      MSCONNECT_PROCESSOR_ENGINE: diann
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: 2.7.0
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: diann:2.7.0
+      MSCONNECT_IMAGE: msconnect-processor-diann:2.7.0-nextflow
+      RAW_FILE_STORAGE_ROOT: /data/raw
+      RESULTS_ROOT: /data/results
+      PROCESSOR_SHARED_STORAGE_ROOT: /data/shared
+      NXF_WORK_DIR: /scratch/nxf-work
+    volumes:
+      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw:ro
+      - ${RESULTS_HOST_PATH:-./results}:/data/results
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared:ro
+      - diann-dev-nextflow-work:/scratch/nxf-work
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+volumes:
+  diann-dev-nextflow-work:

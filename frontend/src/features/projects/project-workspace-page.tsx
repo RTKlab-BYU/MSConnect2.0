@@ -99,7 +99,11 @@ export default function ProjectWorkspacePage() {
   const [workspaceMode, setWorkspaceMode] = useState<"personal" | "shared">("personal");
   const [dataStrategy, setDataStrategy] = useState<"manifest" | "symlink">("manifest");
   const [rerunNotice, setRerunNotice] = useState("");
-  const [analysisExecutor, setAnalysisExecutor] = useState<"local" | "slurm">("slurm");
+  const [analysisExecutor, setAnalysisExecutor] = useState<"local" | "slurm">("local");
+  const [analysisOrganism, setAnalysisOrganism] = useState("metadata");
+  const [speclibMode, setSpeclibMode] = useState<"reuse" | "rebuild" | "custom">("reuse");
+  const [speclibPath, setSpeclibPath] = useState("");
+  const [advancedSettings, setAdvancedSettings] = useState("{}");
   const statusParams = isExperimentRoute ? { experiment: experimentId } : undefined;
   const statusQueryKey = queryKeys.projectResearcherStatus(projectId, statusParams);
   const preflightQueryKey = queryKeys.projectDiannPreflight(projectId, statusParams);
@@ -113,7 +117,7 @@ export default function ProjectWorkspacePage() {
   const preflightQuery = useQuery({
     queryKey: preflightQueryKey,
     queryFn: () => fetchProjectDiannPreflight(projectId, statusParams),
-    enabled: Number.isFinite(projectId) && (activeSection === "acquisition" || activeSection === "worklists"),
+    enabled: Number.isFinite(projectId) && (activeSection === "acquisition" || activeSection === "worklists" || activeSection === "analysis"),
     refetchInterval: 60_000,
   });
   const experimentsQuery = useQuery({
@@ -238,10 +242,27 @@ export default function ProjectWorkspacePage() {
     },
   });
   const reanalyzeMutation = useMutation({
-    mutationFn: () => reanalyzeProject(projectId, {
-      executor: analysisExecutor,
-      ...(isExperimentRoute ? { experiment: experimentId } : {}),
-    }),
+    mutationFn: () => {
+      let diannSettings: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(advancedSettings || "{}");
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("DIA-NN advanced settings must be a JSON object.");
+        diannSettings = parsed as Record<string, unknown>;
+      } catch (error) {
+        throw new Error(error instanceof Error ? error.message : "Invalid DIA-NN advanced settings JSON.");
+      }
+      const organismOptions: Record<string, string[]> = {
+        hye: ["human", "yeast", "ecoli"], human: ["human"], pig: ["pig"], rat: ["rat"], mouse: ["mouse"],
+      };
+      return reanalyzeProject(projectId, {
+        executor: analysisExecutor,
+        ...(isExperimentRoute ? { experiment: experimentId } : {}),
+        ...(analysisOrganism === "metadata" ? {} : { organisms: organismOptions[analysisOrganism] }),
+        diann_settings: diannSettings,
+        speclib_mode: speclibMode,
+        ...(speclibMode === "custom" ? { speclib_path: speclibPath.trim() } : {}),
+      });
+    },
     onSuccess: async (batches: AnalysisBatch[]) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: statusQueryKey }),
@@ -684,28 +705,54 @@ export default function ProjectWorkspacePage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3">
+          <p className="text-sm text-muted-foreground">Experiment/project metadata organism: {(preflightQuery.data?.organisms ?? []).join(" + ") || (preflightQuery.isLoading ? "loading…" : "Human + Yeast + E. coli (default)")}. Choose an override below if the metadata needs attention.</p>
           <div className="flex flex-wrap items-center gap-3">
             <Select value={analysisExecutor} onValueChange={(value) => setAnalysisExecutor(value as "local" | "slurm")}>
               <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="slurm">BYU Slurm</SelectItem>
                 <SelectItem value="local">Local processors</SelectItem>
+                <SelectItem value="slurm">BYU Slurm</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={analysisOrganism} onValueChange={setAnalysisOrganism}>
+              <SelectTrigger className="w-56" aria-label="DIA-NN organism"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="metadata">Use project metadata</SelectItem>
+                <SelectItem value="hye">Human + Yeast + E. coli</SelectItem>
+                <SelectItem value="human">Human</SelectItem>
+                <SelectItem value="pig">Pig</SelectItem>
+                <SelectItem value="rat">Rat</SelectItem>
+                <SelectItem value="mouse">Mouse</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={speclibMode} onValueChange={(value) => setSpeclibMode(value as "reuse" | "rebuild" | "custom")}>
+              <SelectTrigger className="w-56" aria-label="Spectral library mode"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="reuse">Reuse project library / build if needed</SelectItem>
+                <SelectItem value="rebuild">Build a new project library</SelectItem>
+                <SelectItem value="custom">Use shared library path</SelectItem>
               </SelectContent>
             </Select>
             <Button
-              disabled={!isOperator || reanalyzeMutation.isPending}
+              disabled={!isOperator || reanalyzeMutation.isPending || (speclibMode === "custom" && !speclibPath.trim())}
               onClick={() => reanalyzeMutation.mutate()}
             >
               <RefreshCw className="h-4 w-4" />
               {reanalyzeMutation.isPending ? "Queueing analysis…" : "Queue reanalysis"}
             </Button>
           </div>
+          {speclibMode === "custom" ? <Input aria-label="Shared spectral library path" placeholder="/shared/reference-assets/spectral_library/project/library.speclib" value={speclibPath} onChange={(event) => setSpeclibPath(event.target.value)} /> : null}
+          <label className="grid gap-1 text-sm font-medium">
+            Advanced DIA-NN settings (JSON)
+            <textarea className="min-h-28 rounded-md border bg-background px-3 py-2 font-mono text-xs" value={advancedSettings} onChange={(event) => setAdvancedSettings(event.target.value)} spellCheck={false} aria-label="Advanced DIA-NN settings JSON" />
+            <span className="font-normal text-muted-foreground">Optional DIA-NN setting names and values, for example {`{"mass_acc":15,"mass_acc_ms1":10,"extra_options":["--peak-window","0.7"]}`}. Put each command token in its own array item. Each queued rerun stores its own settings and reference snapshot.</span>
+          </label>
           {rerunNotice ? <div role="status" className="rounded-md bg-success/10 px-4 py-3 text-sm text-success">{rerunNotice}</div> : null}
           {reanalyzeMutation.error instanceof Error ? <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">{reanalyzeMutation.error.message}</div> : null}
           <div className="divide-y rounded-md border">
             {(analysisBatchesQuery.data?.results ?? []).slice(0, 5).map((batch) => (
               <div key={batch.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
-                <span className="font-medium">{batch.experiment_name} · batch {batch.id}</span>
+                <span className="font-medium">{batch.experiment_name} · batch {batch.id}{batch.error_message ? <span className="ml-2 text-destructive">{batch.error_message}</span> : null}</span>
                 <span className="text-muted-foreground">{batch.executor === "slurm" ? "BYU Slurm" : "Local"} · {batch.status} · {batch.job_ids.length} jobs</span>
               </div>
             ))}

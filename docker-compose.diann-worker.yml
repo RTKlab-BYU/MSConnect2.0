@@ -1,28 +1,34 @@
 # Standalone DIA-NN worker for an existing MSConnect API (including Tailscale).
 services:
   processor-diann:
-    image: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.2.0-standalone-r2}
+    image: msconnect-processor-diann:2.7.0-nextflow
     build:
       context: .
-      dockerfile: docker/processor/diann.Dockerfile
+      dockerfile: docker/processor/diann-nextflow.Dockerfile
       args:
-        DIANN_LINUX_URL: ${DIANN_LINUX_URL:-}
-        DIANN_SOURCE_IMAGE: ${DIANN_SOURCE_IMAGE:-download}
-        DOTNET_SDK_IMAGE: ${DOTNET_SDK_IMAGE:-mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim}
-        DIANN_VERSION: ${DIANN_ENGINE_VERSION:-2.2.0}
+        DIANN_LINUX_URL: https://github.com/vdemichev/DiaNN/releases/download/2.0/DIA-NN-2.7.0-Academia-Linux.zip
+        DOTNET_SDK_IMAGE: mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim
+        DIANN_VERSION: 2.7.0
+        NEXTFLOW_VERSION: 26.10.6
+        DIANN_SHA256: 246ca8baf2e9f308854976f94b8761e452275a97b3632070e275a2b4401cb223
     restart: unless-stopped
     environment:
       MSCONNECT_API_BASE_URL: ${MSCONNECT_API_BASE_URL:?Set the remote API URL ending in /api}
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:?Set the remote processor token}
       MSCONNECT_AGENT_NAME: ${DIANN_AGENT_NAME:-diann-remote-1}
       MSCONNECT_PROCESSOR_ENGINE: diann
-      MSCONNECT_PROCESSOR_ENGINE_VERSION: ${DIANN_ENGINE_VERSION:-2.2.0}
-      MSCONNECT_PROCESSOR_ENGINE_PROFILE: ${DIANN_ENGINE_PROFILE:-diann:2.2.0}
-      MSCONNECT_IMAGE: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.2.0-standalone-r2}
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: 2.7.0
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: diann:2.7.0
+      MSCONNECT_IMAGE: msconnect-processor-diann:2.7.0-nextflow
       RAW_FILE_STORAGE_ROOT: /data/raw
       RESULTS_ROOT: /data/results
       PROCESSOR_SHARED_STORAGE_ROOT: /data/shared
+      NXF_WORK_DIR: /scratch/nxf-work
     volumes:
       - ${RAW_STORAGE_HOST_PATH:?Mount the remote raw storage first}:/data/raw:ro
       - ${RESULTS_HOST_PATH:?Mount the remote results storage first}:/data/results
       - ${PROCESSOR_SHARED_HOST_PATH:?Mount the remote reference storage first}:/data/shared:ro
+      - diann-nextflow-work:/scratch/nxf-work
+
+volumes:
+  diann-nextflow-work:

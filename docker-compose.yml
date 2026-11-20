@@ -79,77 +79,42 @@ services:
       start_period: 45s
 
   processor:
-    image: ${MSCONNECT_IMAGE:-msconnect:local}
-    build: .
+    image: msconnect-processor-diann:2.7.0-nextflow
+    build:
+      context: .
+      dockerfile: docker/processor/diann-nextflow.Dockerfile
+      args:
+        DIANN_VERSION: 2.7.0
+        NEXTFLOW_VERSION: 26.10.6
+        DIANN_SHA256: 246ca8baf2e9f308854976f94b8761e452275a97b3632070e275a2b4401cb223
     restart: unless-stopped
-    command: >
-      sh -c "python manage.py run_processor_agent"
+    command: ["python", "manage.py", "run_processor_agent", "--engine", "diann"]
     env_file:
       - path: .env
         required: false
     environment:
       MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
-      MSCONNECT_AGENT_NAME: ${PROCESSOR_AGENT_NAME:-processor-1}
-      MSCONNECT_PROCESSOR_ENGINE: ${PROCESSOR_ENGINE:-processor}
+      MSCONNECT_AGENT_NAME: ${DIANN_AGENT_NAME:-processor-1}
+      MSCONNECT_PROCESSOR_ENGINE: diann
+      MSCONNECT_PROCESSOR_ENGINE_VERSION: 2.7.0
+      MSCONNECT_PROCESSOR_ENGINE_PROFILE: diann:2.7.0
       MSCONNECT_PROCESSOR_EXECUTION_BACKEND: local
+      MSCONNECT_IMAGE: msconnect-processor-diann:2.7.0-nextflow
       RAW_FILE_STORAGE_ROOT: ${RAW_FILE_STORAGE_ROOT:-/data/raw}
       RESULTS_ROOT: ${RESULTS_ROOT:-/data/results}
       MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
       MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
       PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
+      NXF_WORK_DIR: /scratch/nxf-work
     volumes:
       - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${INCOMING_RAW_HOST_PATH:-./incoming}:/data/incoming:ro
-      - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw
-      - ${RESULTS_HOST_PATH:-./results}:/data/results
-      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
-      - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
-      - ${BACKUP_HOST_PATH:-./backups}:/data/backup
-    depends_on:
-      web:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "manage.py", "agent_healthcheck", "--role", "processor"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 45s
-
-  processor-diann:
-    profiles: ["engines"]
-    image: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.0}
-    restart: unless-stopped
-    build:
-      context: .
-      dockerfile: docker/processor/diann.Dockerfile
-      args:
-        DIANN_LINUX_URL: ${DIANN_LINUX_URL:-}
-        DIANN_VERSION: ${DIANN_ENGINE_VERSION:-2.0}
-    command: >
-      sh -c "python manage.py run_processor_agent"
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      MSCONNECT_AGENT_TOKEN: ${MSCONNECT_PROCESSOR_TOKEN:-processor-token}
-      MSCONNECT_AGENT_NAME: ${DIANN_AGENT_NAME:-diann-1}
-      MSCONNECT_PROCESSOR_ENGINE: diann
-      MSCONNECT_PROCESSOR_ENGINE_VERSION: ${DIANN_ENGINE_VERSION:-2.0}
-      MSCONNECT_PROCESSOR_ENGINE_PROFILE: ${DIANN_ENGINE_PROFILE:-diann:2.0}
-      MSCONNECT_PROCESSOR_EXECUTION_BACKEND: local
-      RAW_FILE_STORAGE_ROOT: ${RAW_FILE_STORAGE_ROOT:-/data/raw}
-      RESULTS_ROOT: ${RESULTS_ROOT:-/data/results}
-      MSCONNECT_IMAGE: ${MSCONNECT_DIANN_IMAGE:-msconnect-processor-diann:2.0}
-      MSCONNECT_ARCHIVE_ROOTS: ${MSCONNECT_ARCHIVE_ROOTS:-/data/archive}
-      MSCONNECT_BACKUP_ROOTS: ${MSCONNECT_BACKUP_ROOTS:-/data/backup}
-      PROCESSOR_SHARED_STORAGE_ROOT: ${PROCESSOR_SHARED_STORAGE_ROOT:-/data/shared}
-    volumes:
-      - ${MSCONNECT_DATA_HOST_PATH:-./data}:/app/data
       - ${RAW_STORAGE_HOST_PATH:-./raw-storage}:/data/raw:ro
       - ${RESULTS_HOST_PATH:-./results}:/data/results
-      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared
+      - ${PROCESSOR_SHARED_HOST_PATH:-./shared}:/data/shared:ro
       - ${ARCHIVE_HOST_PATH:-./archives}:/data/archive
       - ${BACKUP_HOST_PATH:-./backups}:/data/backup
+      - diann-nextflow-work:/scratch/nxf-work
     depends_on:
       web:
         condition: service_healthy
@@ -369,3 +334,6 @@ services:
     depends_on:
       web:
         condition: service_healthy
+
+volumes:
+  diann-nextflow-work:

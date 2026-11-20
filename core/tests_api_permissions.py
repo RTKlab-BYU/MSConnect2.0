@@ -13,7 +13,9 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from core.agent_tokens import hash_agent_token
 from core.models import (
+    AcquisitionAgent,
     AcquisitionWorklist,
     AnalysisPreset,
     DeploymentRelease,
@@ -22,7 +24,9 @@ from core.models import (
     Experiment,
     Facility,
     FileMatchException,
+    Instrument,
     InstrumentConfiguration,
+    InstrumentType,
     Lab,
     LabMembership,
     PeptideQuant,
@@ -30,6 +34,7 @@ from core.models import (
     ProcessingJobArtifact,
     ProcessingNode,
     ProcessingNodeEvent,
+    ProcessingNodeStatus,
     ProcessingPipeline,
     ProcessingStatus,
     Project,
@@ -113,6 +118,86 @@ class ApiPermissionTests(TestCase):
         user = User.objects.create_user(username=username, password="password123")
         UserProfile.objects.create(user=user, global_role=role)
         return user
+
+    def test_processor_agent_key_is_hash_only_and_activates_without_server_restart(self):
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=self.admin)
+        created = admin_client.post(
+            "/api/admin/agents/",
+            {"role": "processor", "name": "diann-wsl-test", "engine": "diann"},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        token = created.data["token"]
+        node = ProcessingNode.objects.get(name="diann-wsl-test")
+        self.assertEqual(node.agent_token_hash, hash_agent_token(token))
+        self.assertNotIn("agent_token_hash", created.data)
+        self.assertNotEqual(node.agent_token_hash, token)
+
+        machine_client = APIClient()
+        machine_client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        self.assertEqual(machine_client.get("/api/agents/ping/").status_code, 401)
+
+        ready = admin_client.post(f"/api/admin/agents/processor/{node.id}/ready/", {}, format="json")
+        self.assertEqual(ready.status_code, 200, ready.data)
+        ping = machine_client.get("/api/agents/ping/")
+        self.assertEqual(ping.status_code, 200, ping.data)
+        self.assertEqual(ping.data["agent_role"], "processor")
+
+        mismatched_name = machine_client.post(
+            "/api/agents/heartbeat/",
+            {"name": "different-computer", "node_type": "diann", "status": ProcessingNodeStatus.IDLE},
+            format="json",
+        )
+        self.assertEqual(mismatched_name.status_code, 403)
+        mismatch_engine = machine_client.post(
+            "/api/agents/heartbeat/",
+            {"name": node.name, "node_type": "fragpipe", "status": ProcessingNodeStatus.IDLE},
+            format="json",
+        )
+        self.assertEqual(mismatch_engine.status_code, 403)
+
+        heartbeat = machine_client.post(
+            "/api/agents/heartbeat/",
+            {"name": node.name, "node_type": "diann", "status": ProcessingNodeStatus.IDLE},
+            format="json",
+        )
+        self.assertEqual(heartbeat.status_code, 200, heartbeat.data)
+
+    def test_watcher_key_activates_only_for_its_assigned_instrument(self):
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=self.admin)
+        instrument = Instrument.objects.create(
+            facility=self.facility,
+            nickname="Watcher Test MS",
+            instrument_type=InstrumentType.MS,
+        )
+        created = admin_client.post(
+            "/api/admin/agents/",
+            {
+                "role": "watcher",
+                "name": "watcher-computer-test",
+                "ms_instrument": instrument.id,
+                "source_root": "/acquisition/output",
+                "spool_root": "/var/lib/msconnect/spool",
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        token = created.data["token"]
+        agent = AcquisitionAgent.objects.get(name="watcher-computer-test")
+        self.assertEqual(agent.agent_token_hash, hash_agent_token(token))
+        self.assertFalse(agent.active)
+
+        machine_client = APIClient()
+        machine_client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        self.assertEqual(machine_client.get("/api/agents/ping/").status_code, 401)
+        ready = admin_client.post(f"/api/admin/agents/watcher/{agent.id}/ready/", {}, format="json")
+        self.assertEqual(ready.status_code, 200, ready.data)
+        self.assertTrue(AcquisitionAgent.objects.get(pk=agent.id).active)
+        ping = machine_client.get("/api/agents/ping/")
+        self.assertEqual(ping.status_code, 200, ping.data)
+        self.assertEqual(ping.data["agent_role"], "watcher")
 
     def test_current_user_allows_accounts_without_email(self):
         self.client.force_authenticate(user=self.admin)

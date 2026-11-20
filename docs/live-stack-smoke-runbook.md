@@ -17,7 +17,7 @@ This assumes a single local or lab deployment with the repo's Docker Compose ser
 Before a new manual pass, stop the worker containers that are holding old queue state and clear transient processing rows:
 
 ```sh
-docker compose stop watcher processor processor-diann processor-pwiz
+docker compose stop watcher processor processor-pwiz
 docker compose exec web python manage.py cleanup_processing_state
 ```
 
@@ -120,7 +120,7 @@ If you are testing a real folder from an MS computer, start with one folder from
 Leave the DIANN worker running and watch it claim queued jobs after the watcher import:
 
 ```sh
-docker compose logs -f processor-diann
+docker compose logs -f processor
 ```
 
 Expected results:
@@ -131,7 +131,7 @@ Expected results:
 - the job imports protein and peptide outputs
 - the raw file status moves to processed
 
-If the DIA-NN engine image is not available yet, you can still validate the wrapper contract with the generic smoke processor, but that does not replace a real DIA-NN run. The smoke case is only a launcher check and is not the production search path.
+The default processor is the pinned DIA-NN image. The placeholder end-to-end fixture checks queueing and result import; it does not validate production identification performance. Use an approved reference and representative acquisition for engine acceptance.
 
 ## 6. Verify UI and Metrics
 

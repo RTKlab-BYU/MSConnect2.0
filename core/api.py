@@ -54,6 +54,7 @@ from core.services.lifecycle import (
     update_worklist_status_for_run,
 )
 from core.services.notifications import send_notification
+from core.services.organism_references import organism_selection
 from core.services.processing_routing import (
     is_spectra_conversion_job,
     job_dependencies_satisfied,
@@ -71,6 +72,7 @@ from ingest.services import build_storage_path, find_run_for_path, parse_filenam
 from msconnect.health import readiness_snapshot
 
 from .agent_auth import AgentTokenAuthentication
+from .agent_tokens import hash_agent_token, issue_agent_token
 from .models import (
     AcquisitionAgent,
     AcquisitionRoute,
@@ -287,7 +289,7 @@ class ProjectPreAcquisitionSetupSerializer(serializers.Serializer):
     speclib_reference_asset_id = serializers.IntegerField(min_value=1, required=False)
     speclib_scope = serializers.ChoiceField(choices=("experiment", "project"), default="experiment")
     speclib_build_runs = serializers.IntegerField(min_value=1, max_value=20, default=3)
-    diann_version = serializers.CharField(max_length=128, default="2.0")
+    diann_version = serializers.CharField(max_length=128, default="2.7.0")
     diann_settings = serializers.JSONField(required=False)
 
     def validate(self, attrs):
@@ -355,7 +357,8 @@ class WorklistImportRowSerializer(serializers.Serializer):
 class WorklistImportSerializer(serializers.Serializer):
     worklist_name = serializers.CharField(max_length=255, default="Imported LC-MS worklist")
     experiment_name = serializers.CharField(max_length=255, default="Default experiment")
-    diann_version = serializers.CharField(max_length=128, default="2.0")
+    diann_version = serializers.CharField(max_length=128, default="2.7.0")
+    organisms = serializers.ListField(child=serializers.CharField(max_length=128), required=False)
     hye_target_profile = serializers.PrimaryKeyRelatedField(queryset=HyeTargetProfile.objects.filter(active=True), required=False, allow_null=True)
     instrument_configuration = serializers.PrimaryKeyRelatedField(
         queryset=InstrumentConfiguration.objects.filter(active=True), required=False, allow_null=True
@@ -622,7 +625,12 @@ class AcquisitionAgentSerializer(BaseSerializer):
 
     class Meta(BaseSerializer.Meta):
         model = AcquisitionAgent
-        read_only_fields = ("config_version", "last_seen_at", "last_validation")
+        read_only_fields = ("config_version", "last_seen_at", "last_validation", "provisioning_status", "agent_token_hash")
+
+    def get_fields(self):
+        fields = super().get_fields()
+        fields.pop("agent_token_hash", None)
+        return fields
 
     def validate(self, attrs):
         instrument = attrs.get("ms_instrument", getattr(self.instance, "ms_instrument", None))
@@ -864,6 +872,12 @@ class ProcessingNodeSerializer(BaseSerializer):
 
     class Meta(BaseSerializer.Meta):
         model = ProcessingNode
+        read_only_fields = ("provisioning_status", "agent_token_hash")
+
+    def get_fields(self):
+        fields = super().get_fields()
+        fields.pop("agent_token_hash", None)
+        return fields
 
     def get_ip_address(self, obj):
         return (obj.metadata or {}).get("ip_address") or (obj.metadata or {}).get("remote_addr") or ""
@@ -1241,19 +1255,25 @@ def _normalize_run_file_role(value: str | None) -> str:
 REFERENCE_PRESETS = {
     "human": {
         "label": "Human",
-        "fasta_path": "/data/shared/reference/human.fasta",
-        "speclib_path": "/data/shared/reference/human.speclib",
+        "taxonomy_id": 9606,
+        "fasta_path": "/data/shared/reference-assets/fasta/organisms/human.fasta",
+        "speclib_path": "",
     },
     "yeast": {
         "label": "Yeast",
-        "fasta_path": "/data/reference/managed/2026Q3/yeast.fasta",
-        "speclib_path": "/data/reference/managed/2026Q3/yeast.speclib",
+        "taxonomy_id": 559292,
+        "fasta_path": "/data/shared/reference-assets/fasta/organisms/yeast.fasta",
+        "speclib_path": "",
     },
     "ecoli": {
         "label": "E. coli",
-        "fasta_path": "/data/reference/managed/2026Q3/ecoli.fasta",
-        "speclib_path": "/data/reference/managed/2026Q3/ecoli.speclib",
+        "taxonomy_id": 83333,
+        "fasta_path": "/data/shared/reference-assets/fasta/organisms/ecoli.fasta",
+        "speclib_path": "",
     },
+    "pig": {"label": "Pig", "taxonomy_id": 9823, "fasta_path": "/data/shared/reference-assets/fasta/organisms/pig.fasta", "speclib_path": ""},
+    "rat": {"label": "Rat", "taxonomy_id": 10116, "fasta_path": "/data/shared/reference-assets/fasta/organisms/rat.fasta", "speclib_path": ""},
+    "mouse": {"label": "Mouse", "taxonomy_id": 10090, "fasta_path": "/data/shared/reference-assets/fasta/organisms/mouse.fasta", "speclib_path": ""},
 }
 
 DIANN_PRESET_SPECLIB_BUILD = "DIA-NN speclib build"
@@ -1267,23 +1287,17 @@ DIANN_PRESET_LEGACY_ALIASES = {
 
 
 def _normalize_organisms(value) -> list[str]:
-    organisms = value or ["human", "yeast", "ecoli"]
-    normalized = []
-    for organism in organisms:
-        token = str(organism).strip().lower().replace(" ", "_")
-        if token in {"e_coli", "escherichia_coli"}:
-            token = "ecoli"
-        if token and token not in normalized:
-            normalized.append(token)
-    invalid = [organism for organism in normalized if organism not in REFERENCE_PRESETS]
-    if invalid:
-        raise ValidationError({"organisms": f"Unsupported organism preset(s): {', '.join(invalid)}."})
-    return normalized or ["human"]
+    from core.services.organism_references import normalize_organisms
+
+    try:
+        return normalize_organisms(value or ["human", "yeast", "ecoli"])
+    except ValueError as exc:
+        raise ValidationError({"organisms": str(exc)}) from exc
 
 
 def _resolve_reference_assets(data: dict, *, user=None, project=None, experiment=None) -> dict:
     organisms = _normalize_organisms(data.get("organisms"))
-    preset_version = "2026Q3"
+    preset_version = "uniprot-reviewed"
     fasta_upload = (data.get("fasta_upload_name") or "").strip()
     speclib_upload = (data.get("speclib_upload_name") or "").strip()
     fasta_asset = _find_reference_asset(
@@ -1302,12 +1316,12 @@ def _resolve_reference_assets(data: dict, *, user=None, project=None, experiment
     if not fasta_path:
         fasta_path = fasta_asset.storage_path if fasta_asset else (
             f"/data/reference/uploads/{_filename_token(fasta_upload)}.fasta"
-            if fasta_upload else f"/data/reference/managed/{preset_version}/{'_'.join(organisms)}.fasta"
+            if fasta_upload else f"/data/shared/reference-assets/fasta/organisms/{'_'.join(organisms)}.fasta"
         )
     if not speclib_path:
         speclib_path = speclib_asset.storage_path if speclib_asset else (
             f"/data/reference/uploads/{_filename_token(speclib_upload)}.speclib"
-            if speclib_upload else f"/data/reference/managed/{preset_version}/{'_'.join(organisms)}.speclib"
+            if speclib_upload else ""
         )
 
     return {
@@ -2244,6 +2258,66 @@ def _analysis_batch_diann_inputs(batch: AnalysisBatch) -> tuple[list[str], list[
     return paths, checksums
 
 
+def _archive_diann_speclib(*, source_path, project, experiment, job, organisms, parameters):
+    source = Path(source_path).resolve()
+    if not source.is_file() or source.stat().st_size <= 0:
+        raise ValidationError({"diann_speclib": "DIA-NN reported a library artifact, but the file is missing or empty."})
+    library_root = Path(settings.PROCESSOR_SHARED_STORAGE_ROOT).resolve() / "reference-assets" / "spectral_library" / _filename_token(project.code)
+    library_root.mkdir(parents=True, exist_ok=True)
+    temporary = library_root / f".{job.id}-{uuid.uuid4().hex}.speclib.tmp"
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with source.open("rb") as source_file, temporary.open("wb") as target:
+            for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                target.write(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+        checksum = digest.hexdigest()
+        filename = f"{checksum}_diann-{job.pipeline.version}.speclib"
+        destination = library_root / filename
+        if destination.exists():
+            temporary.unlink()
+        else:
+            temporary.replace(destination)
+    except Exception:
+        if temporary.exists():
+            temporary.unlink()
+        raise
+
+    uploader = None
+    if job.analysis_batch_id:
+        uploader = job.analysis_batch.created_by
+    if uploader is None:
+        entry = getattr(job.run, "worklist_entry", None)
+        uploader = entry.worklist.generated_by if entry else None
+    uploader = uploader or project.owner
+    if uploader is None:
+        raise ValidationError({"diann_speclib": "A project owner is required to register a generated library."})
+    ReferenceAsset.objects.get_or_create(
+        storage_path=str(destination),
+        defaults={
+            "asset_type": ReferenceAssetType.SPECTRAL_LIBRARY,
+            "filename": filename,
+            "checksum_sha256": checksum,
+            "size_bytes": size,
+            "uploaded_by": uploader,
+            "project": project,
+            "experiment": None,
+            "scope": "project",
+            "metadata": {
+                "source": "DIA-NN generated",
+                "organisms": organisms,
+                "software_version": job.pipeline.version,
+                "analysis_batch_id": job.analysis_batch_id,
+                "builder_job_id": job.id,
+                "settings_snapshot_at": parameters.get("settings_snapshot_at", ""),
+            },
+        },
+    )
+    return str(destination)
+
+
 class AgentApiView(APIView):
     authentication_classes = (AgentTokenAuthentication,)
     permission_classes = (AgentRolePermission,)
@@ -2259,10 +2333,17 @@ class AgentHeartbeatView(AgentApiView):
             raise ValidationError({"name": "Agent name is required."})
 
         agent_role = getattr(request.user, "agent_role", "")
+        authenticated_name = getattr(request.user, "agent_name", "")
+        if authenticated_name and name != authenticated_name:
+            raise PermissionDenied("The agent name must match the provisioned credential.")
         node_type = (request.data.get("node_type") or agent_role).strip()
         if agent_role == "processor":
             if not re.fullmatch(r"[A-Za-z0-9_. -]{1,64}", node_type):
                 raise ValidationError({"node_type": "Processor node_type must be a short engine identifier."})
+            if authenticated_name:
+                provisioned = ProcessingNode.objects.filter(name=authenticated_name).only("node_type").first()
+                if provisioned and node_type != provisioned.node_type:
+                    raise PermissionDenied("The processor engine must match its provisioned engine type.")
         elif node_type != agent_role:
             raise ValidationError({"node_type": "node_type must match the authenticated agent role."})
 
@@ -2331,6 +2412,199 @@ class AgentHeartbeatView(AgentApiView):
             if desired else None
         )
         return Response(payload, status=status.HTTP_200_OK)
+
+
+class AgentProvisioningView(APIView):
+    """Admin-only creation and activation for machine-specific watcher/processor keys."""
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        _require_agent_admin(request.user)
+        watchers = AcquisitionAgent.objects.order_by("name").values(
+            "id", "name", "token_label", "provisioning_status", "active", "last_seen_at"
+        )
+        processors = ProcessingNode.objects.order_by("name").values(
+            "id", "name", "node_type", "provisioning_status", "status", "last_heartbeat_at"
+        )
+        return Response({"watchers": list(watchers), "processors": list(processors)})
+
+    def post(self, request):
+        _require_agent_admin(request.user)
+        role = str(request.data.get("role") or "").strip().lower()
+        name = str(request.data.get("name") or "").strip()
+        if role not in {"watcher", "processor"}:
+            raise ValidationError({"role": "Choose watcher or processor."})
+        if not re.fullmatch(r"[A-Za-z0-9_. -]{1,128}", name):
+            raise ValidationError({"name": "Use 1–128 letters, numbers, spaces, dots, underscores, or hyphens."})
+        if ProcessingNode.objects.filter(name=name).exists() or AcquisitionAgent.objects.filter(name=name).exists():
+            raise ValidationError({"name": "An agent with this name already exists."})
+
+        token = issue_agent_token()
+        token_hash = hash_agent_token(token)
+        if role == "watcher":
+            instrument_id = request.data.get("ms_instrument")
+            if not instrument_id:
+                raise ValidationError({"ms_instrument": "Select the MS instrument assigned to this watcher."})
+            instrument = get_object_or_404(Instrument, pk=instrument_id, active=True)
+            if instrument.instrument_type not in ("ms", "lcms"):
+                raise ValidationError({"ms_instrument": "The selected instrument must be an MS or LC-MS instrument."})
+            source_root = str(request.data.get("source_root") or "").strip()
+            if not source_root:
+                raise ValidationError({"source_root": "Set the acquisition source folder on the MS computer."})
+            label = f"agent:{slugify(name)}"
+            if label == "agent:":
+                raise ValidationError({"name": "Name must contain at least one letter or number."})
+            if AcquisitionAgent.objects.filter(token_label=label).exists():
+                raise ValidationError({"name": "This name produces a duplicate watcher token label."})
+            agent = AcquisitionAgent.objects.create(
+                name=name,
+                token_label=label,
+                ms_instrument=instrument,
+                source_root=source_root,
+                source_root_status=AcquisitionSourceRootStatus.APPROVED,
+                active=False,
+                provisioning_status="pending",
+                agent_token_hash=token_hash,
+            )
+            payload = {
+                "role": role,
+                "id": agent.id,
+                "name": agent.name,
+                "token": token,
+                "provisioning_status": agent.provisioning_status,
+                "instructions": _agent_setup_instructions(
+                    request, role=role, name=name, token=token,
+                    source_root=agent.source_root,
+                    spool_root=str(request.data.get("spool_root") or "C:\\MSConnect2\\spool"),
+                ),
+            }
+        else:
+            engine = str(request.data.get("engine") or "diann").strip().lower()
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", engine):
+                raise ValidationError({"engine": "Use a valid processor engine identifier."})
+            storage_roots = {
+                "raw": str(request.data.get("raw_root") or "/mnt/msconnect/raw").strip(),
+                "results": str(request.data.get("results_root") or "/mnt/msconnect/results").strip(),
+                "shared": str(request.data.get("shared_root") or "/mnt/msconnect/shared").strip(),
+            }
+            if any(not value.startswith("/") for value in storage_roots.values()):
+                raise ValidationError({"storage": "Processor storage roots must be absolute Linux/WSL paths."})
+            node = ProcessingNode.objects.create(
+                name=name,
+                node_type=engine,
+                status=ProcessingNodeStatus.OFFLINE,
+                provisioning_status="pending",
+                agent_token_hash=token_hash,
+                settings={"storage_roots": storage_roots},
+                metadata={"provisioned_by": request.user.get_username()},
+            )
+            payload = {
+                "role": role,
+                "id": node.id,
+                "name": node.name,
+                "engine": engine,
+                "token": token,
+                "provisioning_status": node.provisioning_status,
+                "instructions": _agent_setup_instructions(
+                    request, role=role, name=name, token=token, engine=engine,
+                    storage_roots=storage_roots,
+                ),
+            }
+        return Response(payload, status=status.HTTP_201_CREATED)
+
+class AgentProvisioningReadyView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request, role, agent_id):
+        _require_agent_admin(request.user)
+        if role == "watcher":
+            agent = get_object_or_404(AcquisitionAgent, pk=agent_id)
+            if not agent.ms_instrument_id or agent.source_root_status != AcquisitionSourceRootStatus.APPROVED:
+                raise ValidationError({"watcher": "Assign its MS instrument and approve its source folder before activating."})
+            agent.provisioning_status = "ready"
+            agent.active = True
+            agent.save(update_fields=["provisioning_status", "active", "updated_at"])
+            return Response({"role": role, "id": agent.id, "name": agent.name, "provisioning_status": "ready", "active": True})
+        if role == "processor":
+            node = get_object_or_404(ProcessingNode, pk=agent_id)
+            node.provisioning_status = "ready"
+            node.save(update_fields=["provisioning_status", "updated_at"])
+            return Response({"role": role, "id": node.id, "name": node.name, "provisioning_status": "ready"})
+        raise ValidationError({"role": "Choose watcher or processor."})
+
+
+def _require_agent_admin(user):
+    if not is_admin(user):
+        raise PermissionDenied("Only a system administrator can provision machine agents.")
+
+
+def _agent_setup_instructions(request, *, role, name, token, engine="", source_root="", spool_root="", storage_roots=None):
+    base = request.build_absolute_uri("/").rstrip("/")
+    api_url = f"{base}/api"
+    repo = "https://github.com/RTKlab-BYU/MSConnect2.0.git"
+    if role == "watcher":
+        setup = f'''# Run from PowerShell on the MS acquisition computer.
+if (-not (Get-Command py -ErrorAction SilentlyContinue)) {{ winget install --id Python.Python.3.12 -e }}
+if (-not (Test-Path C:\\MSConnect2)) {{ git clone {repo} C:\\MSConnect2 }}
+Set-Location C:\\MSConnect2
+py -3.12 -m venv .venv
+.\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt
+$env:MSCONNECT_API_BASE_URL = "{api_url}"
+$env:MSCONNECT_AGENT_TOKEN = "{token}"
+$env:MSCONNECT_AGENT_NAME = "{name}"
+$env:MSCONNECT_ACQUISITION_SOURCE_ROOT = "{source_root}"
+$env:MSCONNECT_ALLOWED_SOURCE_ROOTS = "{source_root}"
+$env:MSCONNECT_SPOOL_ROOT = "{spool_root}"
+$env:MSCONNECT_AGENT_STATE_DB = "C:\\MSConnect2\\data\\agent-state.sqlite3"
+New-Item -ItemType Directory -Force C:\\MSConnect2\\data | Out-Null
+if (-not (Test-Path $env:MSCONNECT_ACQUISITION_SOURCE_ROOT)) {{ throw "Acquisition source root is unavailable." }}
+New-Item -ItemType Directory -Force $env:MSCONNECT_SPOOL_ROOT | Out-Null
+Write-Host "Local Python, source path, spool path, and dependencies are ready. Click Ready in MSConnect, then run the connection check and start command below."
+'''
+        connect_check = f'''Set-Location C:\\MSConnect2
+$env:MSCONNECT_API_BASE_URL = "{api_url}"
+$env:MSCONNECT_AGENT_TOKEN = "{token}"
+$env:MSCONNECT_AGENT_NAME = "{name}"
+$env:MSCONNECT_ACQUISITION_SOURCE_ROOT = "{source_root}"
+$env:MSCONNECT_ALLOWED_SOURCE_ROOTS = "{source_root}"
+$env:MSCONNECT_SPOOL_ROOT = "{spool_root}"
+.\\.venv\\Scripts\\python.exe manage.py check_agent_runtime --role watcher --json
+.\\.venv\\Scripts\\python.exe manage.py run_staged_upload_agent
+'''
+    else:
+        roots = storage_roots or {"raw": "/mnt/msconnect/raw", "results": "/mnt/msconnect/results", "shared": "/mnt/msconnect/shared"}
+        setup = f'''#!/usr/bin/env bash
+set -euo pipefail
+command -v docker >/dev/null || {{ echo "Install Docker Desktop and enable WSL integration first." >&2; exit 1; }}
+docker compose version >/dev/null
+for path in "{roots['raw']}" "{roots['results']}" "{roots['shared']}"; do
+  test -d "$path" || {{ echo "Required file share is not mounted: $path" >&2; exit 1; }}
+done
+if [[ ! -d "$HOME/MSConnect2" ]]; then git clone {repo} "$HOME/MSConnect2"; fi
+cd "$HOME/MSConnect2"
+cat > .env.diann-worker <<'MSCONNECT_ENV'
+MSCONNECT_API_BASE_URL={api_url}
+MSCONNECT_PROCESSOR_TOKEN={token}
+DIANN_AGENT_NAME={name}
+DIANN_ENGINE_VERSION=2.7.0
+DIANN_ENGINE_PROFILE=diann:2.7.0
+DIANN_SHA256=246ca8baf2e9f308854976f94b8761e452275a97b3632070e275a2b4401cb223
+MSCONNECT_DIANN_IMAGE=msconnect-processor-diann:2.7.0-nextflow
+RAW_STORAGE_HOST_PATH={roots['raw']}
+RESULTS_HOST_PATH={roots['results']}
+PROCESSOR_SHARED_HOST_PATH={roots['shared']}
+MSCONNECT_ENV
+docker compose --env-file .env.diann-worker -f docker-compose.diann-worker.yml build processor-diann
+echo "Image built and shares are present. Click Ready in MSConnect, then run the connection check and start command below."
+'''
+        connect_check = f'''#!/usr/bin/env bash
+set -euo pipefail
+cd "$HOME/MSConnect2"
+docker compose --env-file .env.diann-worker -f docker-compose.diann-worker.yml run --rm processor-diann python manage.py check_agent_runtime --role processor --engine {engine} --write-test
+docker compose --env-file .env.diann-worker -f docker-compose.diann-worker.yml up -d processor-diann
+'''
+    return {"api_url": api_url, "install_and_check": setup, "after_ready": connect_check}
 
 
 class AgentPingView(AgentApiView):
@@ -2814,8 +3088,25 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
                 if (artifact.metadata or {}).get("role") == "diann_speclib"
             ]
             if generated_speclibs:
-                preferred_path = generated_speclibs[0].path
                 experiment = job.run.sample.experiment
+                job_parameters = (
+                    job.analysis_batch.parameters_snapshot
+                    if job.analysis_batch_id
+                    else job.pipeline.parameters or {}
+                )
+                organisms = _normalize_organisms(
+                    job_parameters.get("analysis_organisms")
+                    or job_parameters.get("organisms")
+                    or (job_parameters.get("reference_assets") or {}).get("organisms")
+                )
+                preferred_path = _archive_diann_speclib(
+                    source_path=generated_speclibs[0].path,
+                    project=experiment.project,
+                    experiment=experiment,
+                    job=job,
+                    organisms=organisms,
+                    parameters=job_parameters,
+                )
                 experiment_metadata = dict(experiment.metadata or {})
                 diann_metadata = dict(experiment_metadata.get("diann") or {})
                 diann_metadata.setdefault("generated_speclib_paths", [])
@@ -2823,25 +3114,18 @@ class ProcessingJobCompleteView(ProcessingJobStartView):
                     diann_metadata["generated_speclib_paths"].append(preferred_path)
                 diann_metadata["last_generated_speclib_path"] = preferred_path
                 diann_metadata.setdefault("preferred_speclib_path", preferred_path)
+                diann_metadata["preferred_speclib_organisms"] = organisms
                 experiment_metadata["diann"] = diann_metadata
                 experiment.metadata = experiment_metadata
                 experiment.save(update_fields=["metadata", "updated_at"])
-                if job.analysis_batch_id:
-                    job_parameters = job.analysis_batch.parameters_snapshot or job.pipeline.parameters or {}
-                else:
-                    worklist_entry = getattr(job.run, "worklist_entry", None)
-                    job_parameters = (
-                        (worklist_entry.worklist.metadata or {}).get("processing_plan")
-                        if worklist_entry
-                        else None
-                    ) or job.pipeline.parameters or {}
                 policy = job_parameters.get("speclib_policy") or {}
-                if policy.get("scope") == "project":
+                if policy.get("scope") == "project" or job.analysis_batch_id:
                     project = experiment.project
                     project_metadata = dict(project.metadata or {})
                     project_diann = dict(project_metadata.get("diann") or {})
                     project_diann["preferred_speclib_path"] = preferred_path
                     project_diann["last_generated_speclib_path"] = preferred_path
+                    project_diann["preferred_speclib_organisms"] = organisms
                     project_metadata["diann"] = project_diann
                     project.metadata = project_metadata
                     project.save(update_fields=["metadata", "updated_at"])
@@ -4874,7 +5158,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         payload = {
             "worklist_name": worklist_name,
             "experiment_name": experiment_name,
-            "diann_version": request.data.get("diann_version") or "2.0",
+            "diann_version": request.data.get("diann_version") or "2.7.0",
             "instrument_configuration": request.data.get("instrument_configuration"),
             "generator_metadata": {
                 **generator_metadata,
@@ -5258,8 +5542,20 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         )
         if request.data.get("experiment") and experiment is None:
             raise ValidationError({"experiment": "Experiment does not belong to this project."})
-        executor = str(request.data.get("executor") or AnalysisExecutor.SLURM).strip().lower()
+        executor = str(request.data.get("executor") or AnalysisExecutor.LOCAL).strip().lower()
         pipeline_id = _int_or_none(request.data.get("pipeline_id"))
+        organisms = request.data.get("organisms")
+        diann_settings = request.data.get("diann_settings") or {}
+        speclib_mode = str(request.data.get("speclib_mode") or "reuse").strip().lower()
+        speclib_path = str(request.data.get("speclib_path") or "").strip()
+        if speclib_mode not in {"reuse", "rebuild", "custom"}:
+            raise ValidationError({"speclib_mode": "Choose reuse, rebuild, or custom."})
+        if speclib_mode == "custom" and not speclib_path:
+            raise ValidationError({"speclib_path": "A shared spectral library path is required for custom mode."})
+        if not isinstance(diann_settings, dict):
+            raise ValidationError({"diann_settings": "DIA-NN overrides must be a JSON object."})
+        if organisms:
+            organisms = _normalize_organisms(organisms)
         try:
             batches = queue_project_analysis_batches(
                 project=project,
@@ -5267,6 +5563,10 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 experiment=experiment,
                 pipeline_id=pipeline_id,
                 executor=executor,
+                organisms=organisms,
+                diann_settings=diann_settings,
+                speclib_mode=speclib_mode,
+                speclib_path=speclib_path,
             )
         except ValueError as exc:
             raise ValidationError({"analysis": str(exc)}) from exc
@@ -5278,6 +5578,9 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         serializer = WorklistImportSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        organisms = _normalize_organisms(
+            data.get("organisms") or (project.metadata or {}).get("organisms") or ["human", "yeast", "ecoli"]
+        )
         configuration = data.get("instrument_configuration")
         if configuration and configuration.facility_id != project.lab.facility_id:
             raise ValidationError({"instrument_configuration": "The selected LC-MS setup must belong to the project's facility."})
@@ -5291,9 +5594,23 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     "metadata": {"setup_source": "worklist_import"},
                 },
             )
+            experiment_metadata = dict(experiment.metadata or {})
+            experiment_metadata["organisms"] = organisms
+            experiment_diann = dict(experiment_metadata.get("diann") or {})
+            experiment_diann["organisms"] = organisms
+            experiment_metadata["diann"] = experiment_diann
+            experiment.metadata = experiment_metadata
+            experiment.save(update_fields=["metadata", "updated_at"])
+            project_metadata = dict(project.metadata or {})
+            project_metadata.setdefault("organisms", organisms)
+            project_diann = dict(project_metadata.get("diann") or {})
+            project_diann.setdefault("organisms", project_metadata["organisms"])
+            project_metadata["diann"] = project_diann
+            project.metadata = project_metadata
+            project.save(update_fields=["metadata", "updated_at"])
             pipeline = self._create_or_update_diann_pipeline(
                 {
-                    "organisms": ["human", "yeast", "ecoli"],
+                    "organisms": organisms,
                     "diann_settings": {},
                     "diann_version": data["diann_version"],
                     "processing_preset": DIANN_PRESET_SPECLIB_BUILD,
@@ -5571,6 +5888,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                 code=data["code"],
                 pi=getattr(lab, "pi", None) or request.user,
                 owner=request.user,
+                metadata={"organisms": data["organisms"], "diann": {"organisms": data["organisms"]}},
                 description=(
                     "Pre-acquisition project generated from MSConnect setup. "
                     "Expected filenames are available before LC-MS acquisition."
@@ -5586,6 +5904,8 @@ class ProjectViewSet(AuthenticatedModelViewSet):
                     "diseased_count": data["diseased_count"],
                     "sample_metadata_mode": "sample_rows" if data["sample_rows"] else "counts",
                     "plate_type": data["plate_type"],
+                    "organisms": data["organisms"],
+                    "diann": {"organisms": data["organisms"]},
                 },
             )
             pipeline = self._create_or_update_diann_pipeline(
@@ -5781,8 +6101,15 @@ class ProjectViewSet(AuthenticatedModelViewSet):
         parameters = {
             "engine": "diann",
             "adapter": "diann",
+            "execution_mode": "nextflow",
+            "nextflow_workflow": "/opt/msconnect/nextflow/diann/main.nf",
+            "nextflow_config": "/opt/msconnect/nextflow/diann/nextflow.config",
+            "nextflow_profile": "local",
+            "nextflow_version_catalog": "/opt/msconnect/nextflow/diann/versions.json",
+            "cli_script": "/opt/msconnect/diann_search.py",
+            "diann_version": str(data.get("diann_version") or "2.7.0"),
             "required_engine": "diann",
-            "required_engine_version": data.get("diann_version", ""),
+            "required_engine_version": str(data.get("diann_version") or "2.7.0"),
             "requires_mzml_input": True,
             "executable": "diann",
             "version_command": ["diann"],
@@ -5807,7 +6134,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             },
             "speclib_policy": {
                 "scope": str(data.get("speclib_scope") or "experiment"),
-                "build_runs": int(data.get("speclib_build_runs") or 3),
+                "build_runs": int(data.get("speclib_build_runs") or 1),
                 "reuse_after_build": True,
             },
         }
@@ -5821,7 +6148,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             name="DIA-NN",
             version=data["diann_version"],
             defaults={
-                "container_image": "ghcr.io/rtklab-byu/msconnect-diann:latest",
+                "container_image": f"msconnect-processor-diann:{data.get('diann_version') or '2.7.0'}-nextflow",
                 "parameters": parameters,
             },
         )
@@ -5847,6 +6174,19 @@ class ProjectViewSet(AuthenticatedModelViewSet):
 
         if pipeline:
             parameters = (worklist.metadata or {}).get("processing_plan") or pipeline.parameters or {}
+            selected_organisms = _normalize_organisms(
+                organism_selection(
+                    (experiment.metadata or {}).get("diann") if experiment else {},
+                    experiment.metadata if experiment else {},
+                    (project.metadata or {}).get("diann"),
+                    project.metadata or {},
+                )
+                or (experiment.metadata if experiment else {}).get("organisms")
+                or (project.metadata or {}).get("organisms")
+                or (parameters.get("reference_assets") or {}).get("organisms")
+                or parameters.get("organisms")
+                or ["human", "yeast", "ecoli"]
+            )
             processing_preset = str(parameters.get("processing_preset") or "")
             diann_version = pipeline.version
             speclib_mode = _diann_speclib_mode(processing_preset)
@@ -5854,16 +6194,27 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             source_label = "Project pipeline"
             source_detail = f"Using processing pipeline {pipeline.name} {pipeline.version}."
         else:
+            selected_organisms = _normalize_organisms(
+                organism_selection(
+                    (experiment.metadata or {}).get("diann") if experiment else {},
+                    experiment.metadata if experiment else {},
+                    (project.metadata or {}).get("diann"),
+                    project.metadata or {},
+                )
+                or (experiment.metadata if experiment else {}).get("organisms")
+                or (project.metadata or {}).get("organisms")
+                or ["human", "yeast", "ecoli"]
+            )
             parameters = self._build_diann_pipeline_parameters(
                 {
-                    "organisms": ["human", "yeast", "ecoli"],
+                    "organisms": selected_organisms,
                     "diann_settings": {},
-                    "diann_version": "preview",
+                    "diann_version": "2.7.0",
                     "processing_preset": DIANN_PRESET_SPECLIB_BUILD,
                 }
             )
             processing_preset = DIANN_PRESET_SPECLIB_BUILD
-            diann_version = "preview"
+            diann_version = "2.7.0"
             speclib_mode = _diann_speclib_mode(processing_preset)
             source = "site_defaults"
             source_label = "Site defaults"
@@ -5881,6 +6232,7 @@ class ProjectViewSet(AuthenticatedModelViewSet):
             "pipeline": ProcessingPipelineSerializer(pipeline).data if pipeline else None,
             "processing_preset": processing_preset,
             "diann_version": diann_version,
+            "organisms": selected_organisms,
             "speclib_mode": speclib_mode,
             "reference_assets": parameters.get("reference_assets", {}),
             "settings": normalized,
@@ -7514,6 +7866,7 @@ class AcquisitionRouteViewSet(AuthenticatedModelViewSet):
 class ProcessingNodeViewSet(AuthenticatedModelViewSet):
     queryset = ProcessingNode.objects.all()
     serializer_class = ProcessingNodeSerializer
+    write_requires_admin = True
     write_requires_admin = True
     search_fields = ("name", "node_type", "container_image", "endpoint_url")
     ordering_fields = ("name", "node_type", "status", "last_heartbeat_at", "created_at", "updated_at")

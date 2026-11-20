@@ -9,26 +9,25 @@ heartbeat time. Keep processor images versioned and immutable; do not use
 
 The supported initial release set is:
 
-| Image | Engine | Compose profile | Required external runtime |
+| Image/service | Engine | Compose profile | Required external runtime |
 | --- | --- | --- | --- |
+| `processor` | DIA-NN 2.7.0 + Nextflow 26.10.6 | default | pinned DIA-NN Linux archive |
 | `processor-pwiz` | ProteoWizard `msconvert` | `conversion` | approved ProteoWizard/Wine image |
-| `processor-diann` | DIA-NN | `engines` | approved DIA-NN Linux archive and pinned version |
 | `processor-fragpipe` | FragPipe | `engines` | approved FragPipe archive and site-pinned version |
 | `processor-skyline` | SkylineCmd | `engines` | approved Skyline/ProteoWizard image and license acceptance |
 
-Build all four on a machine with Docker BuildKit:
+The default processor image pins DIA-NN 2.7.0 and Nextflow 26.10.6 in the
+repository Dockerfile. Build it with `docker compose build processor`. Build
+additional engine images on a machine with Docker BuildKit:
 
 ```bash
-DIANN_LINUX_URL='https://site-approved.example/diann-linux.zip' \
 FRAGPIPE_URL='https://github.com/Nesvilab/FragPipe/releases/download/24.0/FragPipe-24.0-linux.zip' \
-DIANN_ENGINE_VERSION='2.0' \
 FRAGPIPE_ENGINE_VERSION='24.0' \
 ./scripts/build-processor-images.sh
 ```
 
-The build script refuses to run without DIA-NN and FragPipe URLs. This is
-intentional: an image with a stub executable is useful for local API tests but
-must never be registered as a production processing node.
+The build script includes the default DIA-NN worker and refuses to run without
+the site-approved FragPipe URL.
 
 Before publishing an image, verify the resolved Compose configuration and
 start each agent against the target server:
@@ -36,7 +35,7 @@ start each agent against the target server:
 ```bash
 docker compose --profile engines --profile conversion config
 docker compose --profile engines --profile conversion up -d \
-  processor-diann processor-fragpipe processor-pwiz processor-skyline
+  processor processor-fragpipe processor-pwiz processor-skyline
 docker compose ps
 ```
 
@@ -51,9 +50,9 @@ The check intentionally fails if any image is absent or if an executable is a
 placeholder. The local development cache may therefore pass DIA-NN,
 ProteoWizard, and Skyline while correctly failing until FragPipe is built.
 
-The node must report healthy and advertise the expected `engine` and
-`engine_version`. Record the image digest and the external runtime checksum in
-the deployment release metadata. Use separate agent names when placing two
+The default node must report healthy and advertise engine `diann`, version
+`2.7.0`, and profile `diann:2.7.0`. Record the image digest and archive checksum
+in the deployment release metadata. Use separate agent names when placing two
 processors on one host.
 
 ## Fast-node layout

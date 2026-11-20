@@ -1,5 +1,7 @@
 # Windows DIA-NN processors with Nextflow
 
+> Current setup uses the 2.7.0 Nextflow container generated from **Admin → Agent setup**. See [diann-node-operations.md](diann-node-operations.md) for deployment steps and [diann-nextflow-operations.md](diann-nextflow-operations.md) for runtime behavior. The manual Conda/DIA-NN 2.2.0 layout below is retained as historical guidance for existing nodes.
+
 This deployment runs the MSConnect processor agent and Nextflow inside WSL2 on
 each Windows processor. Windows remains the host OS; the agent, Nextflow, and
 pinned DIA-NN Conda environments run in Linux. The server, watchers, and job

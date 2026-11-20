@@ -1101,6 +1101,8 @@ class DeploymentSetting(TimestampedModel):
 class ProcessingNode(TimestampedModel):
     name = models.CharField(max_length=128, unique=True)
     node_type = models.CharField(max_length=64, default="diann")
+    provisioning_status = models.CharField(max_length=16, choices=(("pending", "Pending"), ("ready", "Ready")), default="ready")
+    agent_token_hash = models.CharField(max_length=64, blank=True, db_index=True)
     status = models.CharField(max_length=32, choices=ProcessingNodeStatus.choices, default=ProcessingNodeStatus.OFFLINE)
     container_image = models.CharField(max_length=255, blank=True)
     endpoint_url = models.URLField(blank=True)
@@ -1349,6 +1351,8 @@ class AcquisitionAgent(TimestampedModel):
 
     name = models.CharField(max_length=128, unique=True)
     token_label = models.CharField(max_length=128, unique=True)
+    provisioning_status = models.CharField(max_length=16, choices=(("pending", "Pending"), ("ready", "Ready")), default="ready")
+    agent_token_hash = models.CharField(max_length=64, blank=True, db_index=True)
     ms_instrument = models.ForeignKey(
         Instrument,
         on_delete=models.PROTECT,

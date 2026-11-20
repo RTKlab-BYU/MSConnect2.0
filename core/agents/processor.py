@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +37,12 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
     parameters = pipeline.get("parameters") or {}
     if job_metadata.get("job_kind") == "experiment_rollup":
         parameters = {**parameters, "input_files": list(job_metadata.get("input_files") or [])}
-    elif job_metadata.get("analysis_batch_id") and job_metadata.get("job_kind") == "sample" and not parameters.get("library"):
+    elif (
+        job_metadata.get("analysis_batch_id")
+        and job_metadata.get("job_kind") == "sample"
+        and not job_metadata.get("diann_library_builder")
+        and not parameters.get("library")
+    ):
         parameters = {**parameters, "generate_speclib": False, "fasta_search": True, "out_library": ""}
         tags = dict(parameters.get("tags") or {})
         experimental = dict(tags.get("experimental") or {})
@@ -108,24 +114,44 @@ def prepare_job_execution(job_payload: dict, *, results_root: Path) -> PreparedJ
         version = str(parameters.get("diann_version") or "").strip()
         if not workflow or not version:
             raise ValueError("Nextflow DIA-NN pipelines require nextflow_workflow and diann_version.")
+        input_paths = parameters.get("input_files") or [raw_file_path]
+        input_paths = [str(path) for path in input_paths if str(path).strip()]
+        if not input_paths:
+            raise ValueError("Nextflow DIA-NN jobs require at least one input file.")
         command = [
             str(parameters.get("nextflow_executable") or "nextflow"), "run", workflow,
-            "-profile", str(parameters.get("nextflow_profile") or "conda"),
+            "-c", str(parameters.get("nextflow_config") or ""),
+            "-profile", str(parameters.get("nextflow_profile") or "local"),
             "--diann_version", version,
-            "--input", raw_file_path,
+            "--inputs_json", json.dumps(input_paths, separators=(",", ":")),
+            "--job_id", str(job_payload["id"]),
+            "--diann_options_json", json.dumps(parameters.get("options") or [], separators=(",", ":")),
             "--results_dir", str(results_dir),
         ]
+        if not command[command.index("-c") + 1]:
+            command[command.index("-c") : command.index("-c") + 2] = []
         if parameters.get("nextflow_version_catalog"):
             command.extend(["--version_catalog", str(parameters["nextflow_version_catalog"])])
         for key in ("fasta", "library", "cli_script"):
             value = parameters.get(key)
             if value:
                 command.extend([f"--{key}", _substitute_string(str(value), placeholders, field_name=key)])
+        analysis_settings = parameters.get("settings") if isinstance(parameters.get("settings"), dict) else {}
+        analysis_settings = analysis_settings or parameters
+        tags = analysis_settings.get("tags") or {}
+        performance = tags.get("performance") or {}
+        experimental = tags.get("experimental") or {}
+        default_threads = min(2, max(1, os.cpu_count() or 1))
+        threads = int(performance.get("threads") or experimental.get("threads") or parameters.get("threads") or default_threads)
+        command.extend(["--threads", str(max(1, threads))])
+        if job_metadata.get("diann_library_builder"):
+            command.append("--generate_speclib")
         command.extend(str(value) for value in (parameters.get("nextflow_args") or []))
         result_files = parameters.get("result_files") or {}
         artifact_files = [
             {"artifact_type": "diann_report", "path": str(results_dir / "report.parquet"), "format": "parquet"},
             {"artifact_type": "other", "path": str(results_dir / "diann.log"), "format": "log"},
+            {"artifact_type": "other", "path": str(results_dir / "diann-workflow-manifest.json"), "format": "json", "metadata": {"role": "diann_workflow_manifest"}},
             *list(parameters.get("artifact_files") or []),
         ]
         if parameters.get("fasta") and not parameters.get("library"):

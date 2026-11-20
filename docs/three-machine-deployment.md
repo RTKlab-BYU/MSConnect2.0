@@ -276,14 +276,14 @@ python manage.py run_watcher_agent --once --match-run-by-name
 From the processor host:
 
 ```sh
-python manage.py check_agent_runtime --role processor --engine processor --write-test
-python manage.py run_processor_agent --once --engine processor
+python manage.py check_agent_runtime --role processor --engine diann --write-test
+python manage.py run_processor_agent --once --engine diann
 ```
 
-For a processor host, use `--role processor`; use `MSCONNECT_COMPOSE_SERVICES` in
-the env file when the node should run a specific engine service (for example
-`processor-diann`) instead of the default processor service. The archive worker
-can be installed independently with `--role archive`.
+For a processor host, use `--role processor`; the default `processor` service is
+the pinned DIA-NN 2.7.0 + Nextflow worker. Other engines remain separate services
+under their Compose profiles. The archive worker can be installed independently
+with `--role archive`.
 
 Back on the server:
 

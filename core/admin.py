@@ -49,6 +49,7 @@ class AcquisitionAgentAdmin(admin.ModelAdmin):
     list_display = ("name", "token_label", "source_root", "source_root_status", "last_seen_at", "active")
     search_fields = ("name", "token_label", "source_root", "proposed_source_root")
     list_filter = ("source_root_status", "active")
+    exclude = ("agent_token_hash",)
 
 
 @admin.register(AcquisitionRoute)
@@ -258,6 +259,7 @@ class ProcessingNodeAdmin(admin.ModelAdmin):
     list_display = ("name", "node_type", "status", "container_image", "last_heartbeat_at")
     search_fields = ("name", "node_type", "container_image", "endpoint_url")
     list_filter = ("node_type", "status")
+    exclude = ("agent_token_hash",)
 
 
 @admin.register(ProcessingJob)

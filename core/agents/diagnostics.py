@@ -84,7 +84,6 @@ def run_agent_checks(*, role: str, engine: str = "", write_test: bool = False):
         checks["processor_shared_storage_root"] = _path_check(
             settings.PROCESSOR_SHARED_STORAGE_ROOT,
             require_read=True,
-            write_test=write_test,
             create=True,
         )
         checks["engine"] = {"ok": bool(engine), "engine": engine or settings.MSCONNECT_PROCESSOR_ENGINE}

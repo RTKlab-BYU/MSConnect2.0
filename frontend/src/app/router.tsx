@@ -13,6 +13,7 @@ const AdminUserAccessPage = lazy(() => import("@/features/admin/user-access-page
 const AdminLabsPage = lazy(() => import("@/features/admin/labs-page"));
 const AdminGlobalSettingsPage = lazy(() => import("@/features/admin/global-settings-page"));
 const AdminAssistantPage = lazy(() => import("@/features/admin/assistant-admin-page"));
+const AgentProvisioningPage = lazy(() => import("@/features/admin/agent-provisioning-page"));
 const InstrumentConfigurationsPage = lazy(() => import("@/features/admin/instrument-configurations-page"));
 const ProjectsPage = lazy(() => import("@/features/projects/projects-page"));
 const ProjectWorkspacePage = lazy(() => import("@/features/projects/project-workspace-page"));
@@ -125,6 +126,14 @@ export const router = createBrowserRouter(
           element: (
             <RoleGuard allow={["admin"]}>
               <Suspense fallback={<RouteFallback label="Loading AI agent settings" />}><AdminAssistantPage /></Suspense>
+            </RoleGuard>
+          ),
+        },
+        {
+          path: "admin/agents",
+          element: (
+            <RoleGuard allow={["admin"]}>
+              <Suspense fallback={<RouteFallback label="Loading agent setup" />}><AgentProvisioningPage /></Suspense>
             </RoleGuard>
           ),
         },
