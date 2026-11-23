@@ -5,6 +5,7 @@ import math
 import mimetypes
 import os
 import re
+import shlex
 import shutil
 import tempfile
 import uuid
@@ -2488,8 +2489,11 @@ class AgentProvisioningView(APIView):
                 "results": str(request.data.get("results_root") or "/mnt/msconnect/results").strip(),
                 "shared": str(request.data.get("shared_root") or "/mnt/msconnect/shared").strip(),
             }
-            if any(not value.startswith("/") for value in storage_roots.values()):
-                raise ValidationError({"storage": "Processor storage roots must be absolute Linux/WSL paths."})
+            if any(
+                not value.startswith("/") or ":" in value or "\n" in value or "\r" in value
+                for value in storage_roots.values()
+            ):
+                raise ValidationError({"storage": "Processor storage roots must be absolute Linux/WSL paths without colons or line breaks."})
             node = ProcessingNode.objects.create(
                 name=name,
                 node_type=engine,
@@ -2574,36 +2578,69 @@ $env:MSCONNECT_SPOOL_ROOT = "{spool_root}"
 '''
     else:
         roots = storage_roots or {"raw": "/mnt/msconnect/raw", "results": "/mnt/msconnect/results", "shared": "/mnt/msconnect/shared"}
+        quoted_roots = {key: shlex.quote(value) for key, value in roots.items()}
         setup = f'''#!/usr/bin/env bash
 set -euo pipefail
-command -v docker >/dev/null || {{ echo "Install Docker Desktop and enable WSL integration first." >&2; exit 1; }}
+command -v docker >/dev/null || {{ echo "Install Docker Desktop, enable WSL integration for Ubuntu, and rerun this block inside WSL." >&2; exit 1; }}
+if ! command -v git >/dev/null; then
+  command -v sudo >/dev/null && command -v apt-get >/dev/null || {{ echo "Install Git inside Ubuntu on WSL, then rerun this block." >&2; exit 1; }}
+  sudo apt-get update
+  sudo apt-get install -y git util-linux
+fi
+command -v findmnt >/dev/null || {{ echo "The WSL util-linux package is required; install it with sudo apt-get install -y util-linux." >&2; exit 1; }}
+docker info >/dev/null || {{ echo "Docker Desktop is not running or WSL integration is not enabled for this distribution." >&2; exit 1; }}
 docker compose version >/dev/null
-for path in "{roots['raw']}" "{roots['results']}" "{roots['shared']}"; do
-  test -d "$path" || {{ echo "Required file share is not mounted: $path" >&2; exit 1; }}
+
+# Create the expected directories, then ensure each is backed by a mounted
+# server share. Local empty folders are not a substitute for shared storage.
+for path in {quoted_roots['raw']} {quoted_roots['results']} {quoted_roots['shared']}; do
+  mkdir -p "$path"
+  fs_type="$(findmnt -n -o FSTYPE -T "$path" 2>/dev/null || true)"
+  case "$fs_type" in
+    cifs|nfs|nfs4|drvfs|9p) ;;
+    *) echo "Required server share is not mounted at $path (detected filesystem: ${{fs_type:-unknown}}). Mount the raw/results/shared shares in WSL, then rerun." >&2; exit 1 ;;
+  esac
 done
-if [[ ! -d "$HOME/MSConnect2" ]]; then git clone {repo} "$HOME/MSConnect2"; fi
-cd "$HOME/MSConnect2"
-cat > .env.diann-worker <<'MSCONNECT_ENV'
-MSCONNECT_API_BASE_URL={api_url}
-MSCONNECT_PROCESSOR_TOKEN={token}
-DIANN_AGENT_NAME={name}
+
+repo_dir="$HOME/MSConnect2"
+if [[ ! -d "$repo_dir/.git" ]]; then
+  if [[ -e "$repo_dir" ]]; then echo "$repo_dir exists but is not a Git checkout; move it aside and rerun." >&2; exit 1; fi
+  git clone --branch main --single-branch {shlex.quote(repo)} "$repo_dir"
+else
+  git -C "$repo_dir" remote get-url origin >/dev/null || {{ echo "$repo_dir has no Git origin; repair the checkout and rerun." >&2; exit 1; }}
+  git -C "$repo_dir" fetch origin main
+  git -C "$repo_dir" checkout main
+  git -C "$repo_dir" pull --ff-only origin main
+fi
+cd "$repo_dir"
+
+env_file="$HOME/.config/msconnect/diann-worker.env"
+install -d -m 700 "$(dirname "$env_file")"
+umask 077
+read -r -s -p "Paste the one-time processor key shown in MSConnect: " processor_token
+printf '\\n'
+cat > "$env_file" <<'MSCONNECT_ENV'
+MSCONNECT_API_BASE_URL={json.dumps(api_url)}
+DIANN_AGENT_NAME={json.dumps(name)}
 DIANN_ENGINE_VERSION=2.7.0
 DIANN_ENGINE_PROFILE=diann:2.7.0
-DIANN_SHA256=246ca8baf2e9f308854976f94b8761e452275a97b3632070e275a2b4401cb223
 MSCONNECT_DIANN_IMAGE=msconnect-processor-diann:2.7.0-nextflow
-RAW_STORAGE_HOST_PATH={roots['raw']}
-RESULTS_HOST_PATH={roots['results']}
-PROCESSOR_SHARED_HOST_PATH={roots['shared']}
+RAW_STORAGE_HOST_PATH={json.dumps(roots['raw'])}
+RESULTS_HOST_PATH={json.dumps(roots['results'])}
+PROCESSOR_SHARED_HOST_PATH={json.dumps(roots['shared'])}
 MSCONNECT_ENV
-docker compose --env-file .env.diann-worker -f docker-compose.diann-worker.yml build processor-diann
-echo "Image built and shares are present. Click Ready in MSConnect, then run the connection check and start command below."
+printf 'MSCONNECT_PROCESSOR_TOKEN=%s\\n' "$processor_token" >> "$env_file"
+unset processor_token
+chmod 600 "$env_file"
+
+compose=(docker compose --env-file "$env_file" -f docker-compose.diann-worker.yml)
+"${{compose[@]}}" build processor-diann
+"${{compose[@]}}" run --rm processor-diann python manage.py check_agent_runtime --role processor --engine {shlex.quote(engine or 'diann')} --write-test
+"${{compose[@]}}" up -d processor-diann
+"${{compose[@]}}" ps processor-diann
+echo "Processor setup is complete. It will restart with Docker Desktop after sign-in."
 '''
-        connect_check = f'''#!/usr/bin/env bash
-set -euo pipefail
-cd "$HOME/MSConnect2"
-docker compose --env-file .env.diann-worker -f docker-compose.diann-worker.yml run --rm processor-diann python manage.py check_agent_runtime --role processor --engine {engine} --write-test
-docker compose --env-file .env.diann-worker -f docker-compose.diann-worker.yml up -d processor-diann
-'''
+        connect_check = ""
     return {"api_url": api_url, "install_and_check": setup, "after_ready": connect_check}
 
 

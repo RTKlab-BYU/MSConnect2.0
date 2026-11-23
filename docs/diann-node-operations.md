@@ -143,7 +143,8 @@ a new identity and retire `processor-1` after the new node reports healthy.
 ## Add a remote Windows/WSL2 node
 
 1. Install WSL2 with Ubuntu and Docker Desktop. Enable Docker Desktop's WSL
-   integration for that Ubuntu distribution, then confirm in WSL:
+   integration for that Ubuntu distribution, then open Ubuntu from Windows and
+   confirm Docker is available there:
 
    ```sh
    docker version
@@ -152,28 +153,28 @@ a new identity and retire `processor-1` after the new node reports healthy.
 
 2. Mount the server's storage shares from WSL at stable paths. Use a
    root-owned CIFS credentials file with restrictive permissions; do not put
-   SMB credentials in the MSConnect worker env file. Check that the raw share
-   contains expected files, the shared path contains the approved references,
-   and the results share is writable.
+   SMB credentials in the MSConnect worker env file. The setup block creates
+   the mount directories if needed, but it cannot mount site shares without
+   their server/share names and credentials. Check that the raw share contains
+   expected files, the shared path contains approved references, and the
+   results share is writable.
 
 3. In MSConnect, open **Admin → Agent setup**, register a **DIA-NN processor
    (WSL2)**, and use a unique name such as `diann-wsl-01`. Enter the WSL mount
-   roots for raw, results, and shared references. Copy the one-time key and
-   install/check commands into that machine's private WSL session. Before the
-   generated commands run, make `$HOME/MSConnect2` a checkout of the same
-   release commit running on the server. The generated command reuses that
-   directory and builds the pinned image from it.
+   roots for raw, results, and shared references. Click **Ready to connect** to
+   activate the one-time key, then copy the single setup block shown by the
+   page.
 
-4. Run the generated install/check commands. They verify Docker and mount
-   paths and build the image. When they finish, click **Ready to connect** in
-   Agent setup. This activates that key in the API.
+4. Open Ubuntu (WSL2) on the processor, paste the copied block, and run it once.
+   It creates the expected mount directories, verifies the server shares are
+   mounted, clones or fast-forward updates `~/MSConnect2` from GitHub `main`,
+   writes the private worker env file, builds the pinned image, checks API
+   authentication and storage access, and starts the processor. If a check
+   fails, the script stops and prints what needs fixing; rerun the same block
+   after fixing it. Confirm that the node is healthy in **Nodes & compute** and
+   its engine/version are `diann` / `2.7.0`.
 
-5. Run the generated post-activation connection check and start command. It
-   checks API authentication and storage writes, then starts the worker. Confirm
-   that the node is healthy in **Nodes & compute** and that its engine/version
-   are `diann` / `2.7.0`.
-
-6. For a first operational check, queue one known DIA-NN job with an approved
+5. For a first operational check, queue one known DIA-NN job with an approved
    reference, watch `docker compose logs -f processor-diann`, and confirm the
    job completes with a report, log, workflow manifest, and imported results.
    The provisioned worker's Compose service is named `processor-diann` in its

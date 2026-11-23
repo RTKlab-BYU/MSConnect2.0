@@ -63,6 +63,7 @@ export default function AgentProvisioningPage() {
             <label className="grid gap-1 text-sm font-medium">Assigned MS instrument<select className="h-10 rounded-md border border-input bg-background px-3" value={instrumentId} onChange={(event) => setInstrumentId(event.target.value)}><option value="">Select an instrument</option>{instruments.map((item) => <option key={item.id} value={item.id}>{item.nickname} · {item.manufacturer} {item.model}</option>)}</select></label>
             <label className="grid gap-1 text-sm font-medium">Acquisition folder on that computer<Input value={sourceRoot} onChange={(event) => setSourceRoot(event.target.value)} placeholder="C:\\MSData\\VendorOutput" /></label>
           </> : <>
+            <p className="text-sm text-muted-foreground md:col-span-2">The setup block runs in Ubuntu on WSL2. Install WSL2 and Docker Desktop with Ubuntu integration first, and mount the server’s raw, results, and shared-reference folders in WSL. The block creates the expected directories, then checks that they are backed by mounted shares.</p>
             <label className="grid gap-1 text-sm font-medium">Processor engine<select className="h-10 rounded-md border border-input bg-background px-3" value={engine} onChange={(event) => setEngine(event.target.value)}><option value="diann">DIA-NN 2.7.0 through Nextflow</option></select></label>
             <div className="hidden md:block" />
             <label className="grid gap-1 text-sm font-medium">Raw file share mounted in WSL<Input value={rawRoot} onChange={(event) => setRawRoot(event.target.value)} /></label>
@@ -99,14 +100,25 @@ function ProvisioningSteps({ created, copied, onCopy, onReady, onClose, pending,
         <Button variant="secondary" onClick={() => onCopy(created.token)}>{copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}{copied ? "Copied" : "Copy key"}</Button>
       </div>
       <p className="text-sm text-warning">Save this key now. MSConnect stores only its hash; if it is lost, revoke this agent and create a replacement.</p>
-      <InstructionBlock title="1. Install and run local checks" value={created.instructions.install_and_check} onCopy={onCopy} />
-      <div className="flex flex-wrap items-center gap-3 border-y py-3">
-        <Button disabled={active || pending} onClick={onReady}><ShieldCheck className="h-4 w-4" />{active ? "Agent key activated" : pending ? "Activating…" : "Ready to connect"}</Button>
-        <span className="text-sm text-muted-foreground">After activation, the agent can authenticate and appear in the live node list.</span>
-      </div>
+      {created.role === "processor" ? <>
+        {!active ? <div className="grid gap-3 border-y py-3">
+          <p className="text-sm text-muted-foreground">On the processor node, open Ubuntu (WSL2) and leave it ready. Activate the key here first; then copy and run the single setup block below in that WSL terminal. It clones or updates the checkout, securely prompts for the key, builds the image, checks the API and storage, and starts the worker.</p>
+          <Button disabled={pending} className="w-fit" onClick={onReady}><ShieldCheck className="h-4 w-4" />{pending ? "Activating…" : "Ready to connect"}</Button>
+        </div> : <>
+          <InstructionBlock title="Copy and run once in Ubuntu on WSL2" value={created.instructions.install_and_check} onCopy={onCopy} />
+          <p className="text-sm text-muted-foreground">The worker starts automatically after the checks pass. Keep Docker Desktop set to start when the Windows user signs in.</p>
+          <Button variant="secondary" className="w-fit" onClick={onClose}>Finish setup</Button>
+        </>}
+      </> : <>
+        <InstructionBlock title="1. Install and run local checks" value={created.instructions.install_and_check} onCopy={onCopy} />
+        <div className="flex flex-wrap items-center gap-3 border-y py-3">
+          <Button disabled={active || pending} onClick={onReady}><ShieldCheck className="h-4 w-4" />{active ? "Agent key activated" : pending ? "Activating…" : "Ready to connect"}</Button>
+          <span className="text-sm text-muted-foreground">After activation, the agent can authenticate and appear in the live node list.</span>
+        </div>
+        {active ? <InstructionBlock title="2. Check the live API and start the agent" value={created.instructions.after_ready} onCopy={onCopy} /> : null}
+        {active ? <Button variant="secondary" className="w-fit" onClick={onClose}>Finish setup</Button> : null}
+      </>}
       {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
-      {active ? <InstructionBlock title="2. Check the live API and start the agent" value={created.instructions.after_ready} onCopy={onCopy} /> : null}
-      {active ? <Button variant="secondary" className="w-fit" onClick={onClose}>Finish setup</Button> : null}
     </CardContent>
   </Card>;
 }
