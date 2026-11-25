@@ -2604,13 +2604,38 @@ if ! command -v git >/dev/null; then
   sudo apt-get install -y git util-linux
 fi
 command -v findmnt >/dev/null || {{ echo "The WSL util-linux package is required; install it with sudo apt-get install -y util-linux." >&2; exit 1; }}
-docker info >/dev/null || {{ echo "Docker Desktop is not running or WSL integration is not enabled for this distribution." >&2; exit 1; }}
-docker compose version >/dev/null
+docker_ready=false
+for attempt in {{0..12}}; do
+  if docker info >/dev/null 2>&1; then
+    docker_ready=true
+    break
+  fi
+  if (( attempt < 12 )); then
+    echo "Docker Desktop is starting or not ready; checking again in 5 seconds (${{attempt}}/12)."
+    sleep 5
+  fi
+done
+if [[ "$docker_ready" != true ]]; then
+  echo "Docker Desktop did not become ready within 60 seconds. Open Docker Desktop, enable WSL integration for this Ubuntu distribution, then rerun this block." >&2
+  exit 1
+fi
+if ! docker compose version >/dev/null 2>&1; then
+  echo "Docker Compose is unavailable in this WSL distribution. Update Docker Desktop and enable WSL integration, then rerun this block." >&2
+  exit 1
+fi
 
 # Create the expected directories, then ensure each is backed by a mounted
 # server share. Local empty folders are not a substitute for shared storage.
 for path in {quoted_roots['raw']} {quoted_roots['results']} {quoted_roots['shared']}; do
-  mkdir -p "$path"
+  if [[ -e "$path" && ! -d "$path" ]]; then
+    echo "Configured storage path exists but is not a directory: $path" >&2
+    exit 1
+  fi
+  if [[ ! -d "$path" ]]; then
+    command -v sudo >/dev/null || {{ echo "Cannot create missing mount point $path: sudo is unavailable. Create it with an administrator account, then rerun." >&2; exit 1; }}
+    echo "Creating missing mount point with sudo: $path"
+    sudo mkdir -p -- "$path" || {{ echo "Could not create mount point $path. Check sudo access, then rerun." >&2; exit 1; }}
+  fi
   fs_type="$(findmnt -n -o FSTYPE -T "$path" 2>/dev/null || true)"
   case "$fs_type" in
     cifs|nfs|nfs4|drvfs|9p) ;;

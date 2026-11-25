@@ -28,6 +28,7 @@ export default function AgentProvisioningPage() {
   const [sharedRoot, setSharedRoot] = useState("/mnt/msconnect/shared");
   const [created, setCreated] = useState<AgentProvisioningCreated | null>(null);
   const [copied, setCopied] = useState<"key" | "setup" | null>(null);
+  const [copyError, setCopyError] = useState("");
   const agentsQuery = useQuery({ queryKey: ["agent-provisioning"], queryFn: fetchAgentProvisioning });
   const instrumentsQuery = useQuery({ queryKey: ["instruments", { page: 1, page_size: 500 }], queryFn: () => fetchInstruments({ page: 1, page_size: 500 }) });
   const instruments = (instrumentsQuery.data?.results ?? []).filter((item) => item.active && ["ms", "lcms"].includes(item.instrument_type));
@@ -46,9 +47,15 @@ export default function AgentProvisioningPage() {
       ]);
     },
   });
-  const resetForm = () => { setCreated(null); setCopied(null); setName(""); setCreateOpen(false); };
+  const resetForm = () => { setCreated(null); setCopied(null); setCopyError(""); setName(""); setCreateOpen(false); };
   const copyValue = async (value: string, target: "key" | "setup") => {
-    await navigator.clipboard.writeText(value);
+    setCopyError("");
+    const didCopy = await copyText(value);
+    if (!didCopy) {
+      setCopied(null);
+      setCopyError("Your browser blocked clipboard access. Select the key or setup text and press Ctrl+C (or Command+C on Mac).");
+      return;
+    }
     setCopied(target);
     window.setTimeout(() => setCopied((current) => current === target ? null : current), 1600);
   };
@@ -64,7 +71,7 @@ export default function AgentProvisioningPage() {
     </nav>
 
     {view === "compute" ? <ProcessingAdminPage embedded /> : <>
-    {created ? <ProvisioningSteps created={created} copied={copied} onCopy={copyValue} onClose={resetForm} /> : createOpen ? <Card>
+    {created ? <ProvisioningSteps created={created} copied={copied} copyError={copyError} onCopy={copyValue} onClose={resetForm} /> : createOpen ? <Card>
       <CardHeader><CardTitle>Add a computer</CardTitle><CardDescription>Choose Watcher for instrument data intake or Processor for analysis work.</CardDescription></CardHeader>
       <CardContent className="grid gap-4">
         <div className="grid gap-3 md:grid-cols-2">
@@ -104,7 +111,7 @@ export default function AgentProvisioningPage() {
   </div>;
 }
 
-function ProvisioningSteps({ created, copied, onCopy, onClose }: { created: AgentProvisioningCreated; copied: "key" | "setup" | null; onCopy: (value: string, target: "key" | "setup") => void; onClose: () => void }) {
+function ProvisioningSteps({ created, copied, copyError, onCopy, onClose }: { created: AgentProvisioningCreated; copied: "key" | "setup" | null; copyError: string; onCopy: (value: string, target: "key" | "setup") => void; onClose: () => void }) {
   const isProcessor = created.role === "processor";
   const commandTitle = isProcessor ? "Bash setup block · Ubuntu on WSL2" : "PowerShell setup block · MS acquisition computer";
   return <Card>
@@ -118,6 +125,7 @@ function ProvisioningSteps({ created, copied, onCopy, onClose }: { created: Agen
       </div>
       <p className="text-sm text-warning">The key is shown once and is stored only as a hash. Keep this page open until you have pasted it into the setup prompt.</p>
       <InstructionBlock title={commandTitle} value={created.instructions.install_and_check} copied={copied === "setup"} onCopy={() => onCopy(created.instructions.install_and_check, "setup")} />
+      {copyError ? <p role="alert" aria-live="assertive" className="text-sm text-destructive">{copyError}</p> : null}
       <div className="rounded-md border bg-secondary/20 p-3 text-sm text-muted-foreground">The key is active now. The setup block runs a connection check automatically; keep the Watcher PowerShell window open, or wait for the Processor setup to report that its service started.</div>
       <Button variant="secondary" className="w-fit" onClick={onClose}>Return to Nodes & compute</Button>
     </CardContent>
@@ -136,4 +144,34 @@ function formatAgentDate(value?: string | null) {
   if (!value) return "never";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "never" : date.toLocaleString();
+}
+
+async function copyText(value: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // Clipboard API is unavailable on plain HTTP origins in many browsers.
+  }
+
+  let fallback: HTMLTextAreaElement | null = null;
+  try {
+    fallback = document.createElement("textarea");
+    fallback.value = value;
+    fallback.setAttribute("readonly", "");
+    fallback.style.position = "fixed";
+    fallback.style.top = "0";
+    fallback.style.left = "-9999px";
+    document.body.appendChild(fallback);
+    fallback.focus();
+    fallback.select();
+    fallback.setSelectionRange(0, value.length);
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    fallback?.remove();
+  }
 }

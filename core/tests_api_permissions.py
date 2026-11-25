@@ -129,6 +129,11 @@ class ApiPermissionTests(TestCase):
             format="json",
         )
         self.assertEqual(created.status_code, 201, created.data)
+        setup_script = created.data["instructions"]["install_and_check"]
+        self.assertIn("for attempt in {0..12}; do", setup_script)
+        self.assertIn("sleep 5", setup_script)
+        self.assertIn("within 60 seconds", setup_script)
+        self.assertIn('sudo mkdir -p -- "$path"', setup_script)
         token = created.data["token"]
         node = ProcessingNode.objects.get(name="diann-wsl-test")
         self.assertEqual(node.agent_token_hash, hash_agent_token(token))
