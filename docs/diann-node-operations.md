@@ -135,8 +135,9 @@ computer's private env file.
 For a fresh node identity, create a processor in Admin → Agent setup and choose
 `diann-server-01`. Put the one-time key into the server `.env` as
 `MSCONNECT_PROCESSOR_TOKEN` and set `DIANN_AGENT_NAME=diann-server-01`. Keep the
-file mode `0600`, then click **Ready to connect** and start the `processor`
-service. On an existing deployment where `processor-1` is already registered,
+file mode `0600`, then start the `processor` service. The one-time key is active
+when the node is created, so its setup script can check the connection without
+an extra activation step. On an existing deployment where `processor-1` is already registered,
 either continue using its configured service token and existing name or create
 a new identity and retire `processor-1` after the new node reports healthy.
 
@@ -161,9 +162,8 @@ a new identity and retire `processor-1` after the new node reports healthy.
 
 3. In MSConnect, open **Admin → Agent setup**, register a **DIA-NN processor
    (WSL2)**, and use a unique name such as `diann-wsl-01`. Enter the WSL mount
-   roots for raw, results, and shared references. Click **Ready to connect** to
-   activate the one-time key, then copy the single setup block shown by the
-   page.
+   roots for raw, results, and shared references. Copy the Bash setup block
+   shown by the page. The one-time key is active immediately.
 
 4. Open Ubuntu (WSL2) on the processor, paste the copied block, and run it once.
    It creates the expected mount directories, verifies the server shares are

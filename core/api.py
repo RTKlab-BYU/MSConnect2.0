@@ -74,6 +74,7 @@ from msconnect.health import readiness_snapshot
 
 from .agent_auth import AgentTokenAuthentication
 from .agent_tokens import hash_agent_token, issue_agent_token
+from .assistant_credentials import encrypt_api_key, provider_key_configured
 from .models import (
     AcquisitionAgent,
     AcquisitionRoute,
@@ -85,6 +86,7 @@ from .models import (
     AnalysisBatchStatus,
     AnalysisExecutor,
     AnalysisPreset,
+    AssistantProviderCredential,
     DeploymentRelease,
     DeploymentSetting,
     DerivativeStatus,
@@ -2464,8 +2466,8 @@ class AgentProvisioningView(APIView):
                 ms_instrument=instrument,
                 source_root=source_root,
                 source_root_status=AcquisitionSourceRootStatus.APPROVED,
-                active=False,
-                provisioning_status="pending",
+                active=True,
+                provisioning_status="ready",
                 agent_token_hash=token_hash,
             )
             payload = {
@@ -2498,7 +2500,7 @@ class AgentProvisioningView(APIView):
                 name=name,
                 node_type=engine,
                 status=ProcessingNodeStatus.OFFLINE,
-                provisioning_status="pending",
+                provisioning_status="ready",
                 agent_token_hash=token_hash,
                 settings={"storage_roots": storage_roots},
                 metadata={"provisioned_by": request.user.get_username()},
@@ -2538,6 +2540,21 @@ class AgentProvisioningReadyView(APIView):
         raise ValidationError({"role": "Choose watcher or processor."})
 
 
+class AgentProvisioningDeleteView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def delete(self, request, role, agent_id):
+        _require_agent_admin(request.user)
+        if role == "watcher":
+            instance = get_object_or_404(AcquisitionAgent, pk=agent_id)
+        elif role == "processor":
+            instance = get_object_or_404(ProcessingNode, pk=agent_id)
+        else:
+            raise ValidationError({"role": "Choose watcher or processor."})
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 def _require_agent_admin(user):
     if not is_admin(user):
         raise PermissionDenied("Only a system administrator can provision machine agents.")
@@ -2549,13 +2566,13 @@ def _agent_setup_instructions(request, *, role, name, token, engine="", source_r
     repo = "https://github.com/RTKlab-BYU/MSConnect2.0.git"
     if role == "watcher":
         setup = f'''# Run from PowerShell on the MS acquisition computer.
+$ErrorActionPreference = "Stop"
 if (-not (Get-Command py -ErrorAction SilentlyContinue)) {{ winget install --id Python.Python.3.12 -e }}
 if (-not (Test-Path C:\\MSConnect2)) {{ git clone {repo} C:\\MSConnect2 }}
 Set-Location C:\\MSConnect2
 py -3.12 -m venv .venv
 .\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt
 $env:MSCONNECT_API_BASE_URL = "{api_url}"
-$env:MSCONNECT_AGENT_TOKEN = "{token}"
 $env:MSCONNECT_AGENT_NAME = "{name}"
 $env:MSCONNECT_ACQUISITION_SOURCE_ROOT = "{source_root}"
 $env:MSCONNECT_ALLOWED_SOURCE_ROOTS = "{source_root}"
@@ -2564,18 +2581,17 @@ $env:MSCONNECT_AGENT_STATE_DB = "C:\\MSConnect2\\data\\agent-state.sqlite3"
 New-Item -ItemType Directory -Force C:\\MSConnect2\\data | Out-Null
 if (-not (Test-Path $env:MSCONNECT_ACQUISITION_SOURCE_ROOT)) {{ throw "Acquisition source root is unavailable." }}
 New-Item -ItemType Directory -Force $env:MSCONNECT_SPOOL_ROOT | Out-Null
-Write-Host "Local Python, source path, spool path, and dependencies are ready. Click Ready in MSConnect, then run the connection check and start command below."
-'''
-        connect_check = f'''Set-Location C:\\MSConnect2
-$env:MSCONNECT_API_BASE_URL = "{api_url}"
-$env:MSCONNECT_AGENT_TOKEN = "{token}"
-$env:MSCONNECT_AGENT_NAME = "{name}"
-$env:MSCONNECT_ACQUISITION_SOURCE_ROOT = "{source_root}"
-$env:MSCONNECT_ALLOWED_SOURCE_ROOTS = "{source_root}"
-$env:MSCONNECT_SPOOL_ROOT = "{spool_root}"
+Write-Host "Setup is ready. Copy the one-time key from MSConnect and paste it at the hidden prompt."
+$secureKey = Read-Host "Paste the one-time Watcher key" -AsSecureString
+$keyPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
+try {{ $env:MSCONNECT_AGENT_TOKEN = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($keyPointer) }}
+finally {{ [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($keyPointer) }}
 .\\.venv\\Scripts\\python.exe manage.py check_agent_runtime --role watcher --json
+if ($LASTEXITCODE -ne 0) {{ throw "Watcher connection check failed. Review the message above, fix the issue, and rerun this block." }}
+Write-Host "Connection check passed. Starting the Watcher; leave this PowerShell window open."
 .\\.venv\\Scripts\\python.exe manage.py run_staged_upload_agent
 '''
+        connect_check = ""
     else:
         roots = storage_roots or {"raw": "/mnt/msconnect/raw", "results": "/mnt/msconnect/results", "shared": "/mnt/msconnect/shared"}
         quoted_roots = {key: shlex.quote(value) for key, value in roots.items()}
@@ -4779,10 +4795,7 @@ class AdminUserAccessView(APIView):
             )
 
         invite_url = _invitation_url(request, user)
-        email_sent = _send_account_email(user, subject="You are invited to MSConnect", url=invite_url)
-        response_data = {"user": _admin_user_access_payload(user), "email_sent": email_sent}
-        if not email_sent:
-            response_data["invite_url"] = invite_url
+        response_data = {"user": _admin_user_access_payload(user), "email_sent": False, "invite_url": invite_url}
         return Response(response_data, status=status.HTTP_201_CREATED)
 
     def patch(self, request, user_id):
@@ -4829,16 +4842,37 @@ class AdminUserVerificationView(APIView):
         if user.is_active and profile and profile.email_verified_at:
             raise ValidationError({"email": "This user's email is already verified."})
         if user.is_active:
-            url = _verification_url(request, user)
-            subject = "Verify your MSConnect account"
-        else:
-            url = _invitation_url(request, user)
-            subject = "Complete your MSConnect account setup"
-        email_sent = _send_account_email(user, subject=subject, url=url)
-        response_data = {"email_sent": email_sent}
-        if not email_sent:
-            response_data["account_url"] = url
-        return Response(response_data)
+            raise ValidationError({"email": "Email verification links are not enabled yet."})
+        return Response({"email_sent": False, "account_url": _invitation_url(request, user)})
+
+
+class AdminAssistantCredentialsView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can manage AI provider credentials.")
+        return Response({"providers": {
+            provider: {"configured": provider_key_configured(provider)}
+            for provider in ("openai", "anthropic")
+        }})
+
+    def post(self, request):
+        if not is_admin(request.user):
+            raise PermissionDenied("Only admins can manage AI provider credentials.")
+        provider = str(request.data.get("provider") or "").strip().lower()
+        if provider not in {"openai", "anthropic"}:
+            raise ValidationError({"provider": "Choose OpenAI or Anthropic."})
+        api_key = str(request.data.get("api_key") or "").strip()
+        clear = request.data.get("clear") is True
+        credential, _ = AssistantProviderCredential.objects.get_or_create(provider=provider)
+        if clear:
+            credential.encrypted_api_key = ""
+            credential.save(update_fields=["encrypted_api_key", "updated_at"])
+        elif api_key:
+            credential.encrypted_api_key = encrypt_api_key(api_key)
+            credential.save(update_fields=["encrypted_api_key", "updated_at"])
+        return Response({"provider": provider, "configured": provider_key_configured(provider)})
 
 
 def _admin_lab_directory_payload():
@@ -5017,11 +5051,9 @@ class AcceptInvitationView(APIView):
         user.set_password(data["password"])
         user.is_active = True
         user.save(update_fields=["password", "is_active"])
-        profile, _created = UserProfile.objects.get_or_create(user=user)
-        profile.email_verified_at = timezone.now()
-        profile.save(update_fields=["email_verified_at", "updated_at"])
+        UserProfile.objects.get_or_create(user=user)
         login(request, user)
-        return Response({"verified": True, "user_id": user.id})
+        return Response({"verified": False, "user_id": user.id})
 
 
 class ResendMyVerificationView(APIView):

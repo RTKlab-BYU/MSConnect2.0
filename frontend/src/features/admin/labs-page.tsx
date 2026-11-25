@@ -9,7 +9,7 @@ import { createAdminOrganization, fetchAdminLabDirectory, queryKeys } from "@/li
 
 const emptyRecords = { universities: [], facilities: [], labs: [] } as const;
 
-export default function AdminLabsPage() {
+export default function AdminLabsPage({ embedded = false }: { embedded?: boolean }) {
   const queryClient = useQueryClient();
   const directoryQuery = useQuery({ queryKey: queryKeys.adminLabDirectory(), queryFn: fetchAdminLabDirectory });
   const [universityName, setUniversityName] = useState("");
@@ -63,12 +63,12 @@ export default function AdminLabsPage() {
 
   return (
     <div className="mx-auto grid w-full max-w-6xl gap-5">
-      <header>
+      {!embedded ? <header>
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Administration</p>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight">Organization setup</h1>
         <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Set up the university, facility, and lab structure used to scope projects and user permissions.</p>
-      </header>
-      <AdminTabs />
+      </header> : null}
+      {!embedded ? <AdminTabs /> : null}
       {error ? <div role="alert" className="break-words rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
       {message ? <div role="status" aria-live="polite" className="rounded-md border bg-secondary/40 px-4 py-3 text-sm">{message}</div> : null}
 

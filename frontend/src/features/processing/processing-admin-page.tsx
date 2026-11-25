@@ -23,6 +23,7 @@ import {
 import { queryClient } from "@/lib/api/query-client";
 import type { ProcessingJob, ProcessingNode } from "@/lib/api/types";
 import { formatDate } from "@/lib/format";
+import { AdminTabs } from "@/features/admin/admin-tabs";
 
 const controlOptions = ["start", "pause", "resume", "drain", "restart", "stop", "upgrade", "reconfigure"] as const;
 const controlLabels: Record<(typeof controlOptions)[number], string> = {
@@ -36,7 +37,7 @@ const controlLabels: Record<(typeof controlOptions)[number], string> = {
   reconfigure: "Reconfigure",
 };
 
-export default function ProcessingAdminPage() {
+export default function ProcessingAdminPage({ embedded = false }: { embedded?: boolean }) {
   const [searchParams] = useSearchParams();
   const nodeSection = searchParams.get("type") === "watcher" ? "watcher" : "processor";
   const isWatcher = nodeSection === "watcher";
@@ -87,12 +88,12 @@ export default function ProcessingAdminPage() {
 
   return (
     <div className="grid gap-4">
-      <Breadcrumbs items={[{ label: "Administration", href: "/admin" }, { label: "Nodes & compute" }, { label: isWatcher ? "Watchers" : "Processors" }]} />
+      {!embedded ? <Breadcrumbs items={[{ label: "Administration", href: "/admin" }, { label: "Nodes & compute" }, { label: isWatcher ? "Watchers" : "Processors" }]} /> : null}
 
-      <PageHero
+      {!embedded ? <PageHero
         eyebrow="Admin control"
         title={isWatcher ? "Watcher administration" : "Processor administration"}
-        description={isWatcher ? "Acquisition watcher agents only: heartbeat, file discovery, and upload service health." : "Processing workers only: engine health, Slurm/cloud execution readiness, shared storage, diagnostics, and control requests."}
+        description={isWatcher ? "Instrument data watchers: heartbeat, file discovery, and upload service health." : "Analysis processors: engine health, Slurm/cloud execution readiness, shared storage, diagnostics, and control requests."}
         actions={
           <>
             <Button variant="secondary" onClick={refreshNodes}>
@@ -102,11 +103,13 @@ export default function ProcessingAdminPage() {
             <StatusBadge status={redNodes ? "failed" : yellowNodes ? "warning" : "complete"} />
           </>
         }
-      />
+      /> : null}
 
-      <nav aria-label="Node administration sections" className="flex w-fit gap-1 rounded-lg bg-muted p-1">
-        <NavLink to="/processing/admin?type=processor" aria-current={!isWatcher ? "page" : undefined} className={`rounded-md px-4 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${!isWatcher ? "bg-card font-semibold text-foreground shadow-sm" : "text-muted-foreground hover:bg-card/70 hover:text-foreground"}`}>Processors</NavLink>
-        <NavLink to="/processing/admin?type=watcher" aria-current={isWatcher ? "page" : undefined} className={`rounded-md px-4 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${isWatcher ? "bg-card font-semibold text-foreground shadow-sm" : "text-muted-foreground hover:bg-card/70 hover:text-foreground"}`}>Watchers</NavLink>
+      {!embedded ? <AdminTabs /> : null}
+
+      <nav aria-label="Node administration sections" className="flex w-fit gap-1 rounded-md border p-1">
+        <NavLink to="/admin/nodes?view=compute&type=processor" aria-current={!isWatcher ? "page" : undefined} className={`rounded-sm px-4 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${!isWatcher ? "bg-secondary font-semibold text-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}`}>Processors</NavLink>
+        <NavLink to="/admin/nodes?view=compute&type=watcher" aria-current={isWatcher ? "page" : undefined} className={`rounded-sm px-4 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${isWatcher ? "bg-secondary font-semibold text-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}`}>Watchers</NavLink>
       </nav>
 
       <section className={`grid gap-3 sm:grid-cols-2 ${isWatcher ? "xl:grid-cols-4" : "xl:grid-cols-6"}`}>
@@ -154,7 +157,7 @@ export default function ProcessingAdminPage() {
         </CardContent>
       </Card> : <Card>
         <CardHeader><CardTitle>Watcher responsibilities</CardTitle><CardDescription>Watchers discover new acquisition files and register them against expected project runs. They do not appear in processor health or engine-load summaries.</CardDescription></CardHeader>
-        <CardContent className="flex flex-wrap items-center justify-between gap-3"><p className="max-w-2xl text-sm text-muted-foreground">Per-project live watcher routes are shown in that project’s Acquisition page. This tab reports only globally registered watcher agents.</p><Button asChild variant="secondary"><Link to="/watcher">Open watcher activity</Link></Button></CardContent>
+        <CardContent className="flex flex-wrap items-center justify-between gap-3"><p className="max-w-2xl text-sm text-muted-foreground">Per-project live watcher routes are shown in that project’s Acquisition page. This list shows registered Watcher computers.</p><Button asChild variant="secondary"><Link to="/watcher">Open watcher activity</Link></Button></CardContent>
       </Card>}
 
       {!isWatcher ? <Card>

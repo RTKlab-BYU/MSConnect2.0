@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
+import { Copy } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,7 +8,6 @@ import { Input } from "@/components/ui/input";
 import { fetchAdminUserAccess, inviteAdminUser, queryKeys, resendAdminUserEmail, updateAdminUserAccess } from "@/lib/api/queries";
 import type { AdminUserRecord, AppRole, MembershipRole } from "@/lib/api/types";
 import { AdminTabs } from "@/features/admin/admin-tabs";
-import { Link } from "react-router-dom";
 
 const appRoles: Array<{ value: AppRole; label: string }> = [
   { value: "admin", label: "Administrator" },
@@ -34,11 +34,11 @@ function RoleSelect<T extends AppRole | MembershipRole>({ label, value, onChange
 
 function accountState(user: AdminUserRecord) {
   if (!user.is_active) return "Invitation pending";
-  if (!user.email_verified_at) return "Email unverified";
+  if (!user.email_verified_at) return "Active · email not verified";
   return "Active";
 }
 
-export default function AdminUserAccessPage() {
+export default function AdminUserAccessPage({ embedded = false }: { embedded?: boolean }) {
   const queryClient = useQueryClient();
   const accessQuery = useQuery({ queryKey: queryKeys.adminUserAccess(), queryFn: fetchAdminUserAccess });
   const [username, setUsername] = useState("");
@@ -51,6 +51,7 @@ export default function AdminUserAccessPage() {
   const [globalRole, setGlobalRole] = useState<AppRole>("researcher");
   const [membershipRole, setMembershipRole] = useState<MembershipRole>("researcher");
   const [membershipActive, setMembershipActive] = useState(true);
+  const [setupUrl, setSetupUrl] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
@@ -84,7 +85,8 @@ export default function AdminUserAccessPage() {
       setUsername("");
       setEmail("");
       setSelectedId(result.user.id);
-      setNotice(result.email_sent ? `Invitation sent to ${result.user.email}.` : "Invitation email could not be sent. Use the secure link below and check the email configuration.");
+      setSetupUrl(result.invite_url ?? "");
+      setNotice(`Account created for ${result.user.username}. Copy the setup link and share it with them.`);
       setError("");
     },
     onError: (err) => { setError(err instanceof Error ? err.message : "Could not create invitation."); setNotice(""); },
@@ -105,38 +107,33 @@ export default function AdminUserAccessPage() {
     onError: (err) => { setError(err instanceof Error ? err.message : "Could not update permissions."); setNotice(""); },
   });
 
-  const resendMutation = useMutation({
+  const linkMutation = useMutation({
     mutationFn: resendAdminUserEmail,
     onSuccess: (result) => {
-      setNotice(result.email_sent ? "Account email sent." : "Email could not be sent. Use the secure link below and check the email configuration.");
+      setSetupUrl(result.account_url ?? "");
+      setNotice("Copy the setup link and share it with the user.");
       setError("");
     },
     onError: (err) => { setError(err instanceof Error ? err.message : "Could not send account email."); setNotice(""); },
   });
 
-  const inviteResult = inviteMutation.data;
-  const resendResult = resendMutation.data;
-  const fallbackUrl = resendMutation.isSuccess ? resendResult?.account_url : inviteResult?.invite_url;
-
   return (
     <div className="mx-auto grid w-full max-w-6xl gap-5">
-      <header>
+      {!embedded ? <header>
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Administration</p>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight">User access</h1>
         <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Invite people into a lab, assign their application role, and manage email verification. Admin access here is for MSConnect; Django superuser access remains separately controlled.</p>
-      </header>
-      <AdminTabs />
-      <div className="rounded-md border bg-secondary/20 px-4 py-3 text-sm">
-        <span className="font-medium">Setup path:</span> create the organization under <Link className="font-semibold underline underline-offset-2" to="/admin/labs">Labs</Link>, invite the user here, then have them open the email and set a password. That step verifies their email too.
-      </div>
+      </header> : null}
+      {!embedded ? <AdminTabs /> : null}
+      <div className="rounded-md border bg-secondary/20 px-4 py-3 text-sm">Create an account, then copy its one-time setup link and share it directly. Email delivery and verification are not enabled yet.</div>
 
       {error ? <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
-      {notice ? <div role="status" aria-live="polite" className="rounded-md border bg-secondary/40 px-4 py-3 text-sm">{notice}{fallbackUrl ? <div className="mt-2 break-all"><a className="font-medium underline underline-offset-2" href={fallbackUrl}>Open secure account link</a></div> : null}</div> : null}
+      {notice ? <div role="status" aria-live="polite" className="rounded-md border bg-secondary/40 px-4 py-3 text-sm">{notice}{setupUrl ? <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]"><Input readOnly aria-label="Account setup link" value={setupUrl} /><Button variant="secondary" onClick={() => void navigator.clipboard.writeText(setupUrl)}><Copy className="h-4 w-4" />Copy link</Button></div> : null}</div> : null}
 
       <Card>
         <CardHeader>
           <CardTitle>Invite a user</CardTitle>
-          <CardDescription>The account stays inactive until the recipient opens the invitation and sets a password.</CardDescription>
+          <CardDescription>The account stays inactive until the user opens the link and sets a password. No email is sent.</CardDescription>
         </CardHeader>
         <CardContent>
           {labs.length === 0 && !accessQuery.isLoading ? <p className="text-sm text-muted-foreground">Create an active lab before inviting users.</p> : (
@@ -160,7 +157,7 @@ export default function AdminUserAccessPage() {
               <ul className="divide-y">
                 {users.map((user) => (
                   <li key={user.id}>
-                    <button type="button" onClick={() => setSelectedId(user.id)} aria-pressed={selectedId === user.id} className="grid w-full gap-1 px-5 py-3 text-left hover:bg-secondary/40 aria-pressed:bg-secondary/60 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                    <button type="button" onClick={() => { setSelectedId(user.id); setSetupUrl(""); setNotice(""); }} aria-pressed={selectedId === user.id} className="grid w-full gap-1 px-5 py-3 text-left hover:bg-secondary/40 aria-pressed:bg-secondary/60 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                       <span className="min-w-0"><span className="block truncate text-sm font-medium">{user.username}</span><span className="block truncate text-xs text-muted-foreground">{user.email || "No email"}</span></span>
                       <span className="text-xs text-muted-foreground">{accountState(user)} · {user.global_role}</span>
                     </button>
@@ -186,7 +183,7 @@ export default function AdminUserAccessPage() {
                 {labId && !selectedLabMembership ? <p className="text-xs text-muted-foreground">Saving will add this user to the selected lab.</p> : null}
                 <div className="flex flex-wrap gap-2">
                   <Button disabled={saveMutation.isPending || !labId} onClick={() => saveMutation.mutate()}>{saveMutation.isPending ? "Saving…" : "Save permissions"}</Button>
-                  {!selected.email_verified_at || !selected.is_active ? <Button variant="secondary" disabled={resendMutation.isPending} onClick={() => { resendMutation.reset(); resendMutation.mutate(selected.id); }}>{resendMutation.isPending ? "Sending…" : selected.is_active ? "Resend verification" : "Resend invitation"}</Button> : null}
+                  {!selected.is_active ? <Button variant="secondary" disabled={linkMutation.isPending} onClick={() => { linkMutation.reset(); linkMutation.mutate(selected.id); }}>{linkMutation.isPending ? "Creating link…" : "Create setup link"}</Button> : null}
                 </div>
               </div>
             )}

@@ -12,6 +12,7 @@ from rest_framework.exceptions import APIException, PermissionDenied, Validation
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .assistant_credentials import provider_api_key
 from .models import (
     AcquisitionWorklist,
     ProcessingJob,
@@ -32,8 +33,8 @@ class AssistantProviderError(APIException):
 
 def configured_models():
     providers = (
-        ("openai", settings.MSCONNECT_ASSISTANT_OPENAI_API_KEY, settings.MSCONNECT_ASSISTANT_OPENAI_MODELS),
-        ("anthropic", settings.MSCONNECT_ASSISTANT_ANTHROPIC_API_KEY, settings.MSCONNECT_ASSISTANT_ANTHROPIC_MODELS),
+        ("openai", provider_api_key("openai"), settings.MSCONNECT_ASSISTANT_OPENAI_MODELS),
+        ("anthropic", provider_api_key("anthropic"), settings.MSCONNECT_ASSISTANT_ANTHROPIC_MODELS),
     )
     return [
         {"provider": provider, "model": model}
@@ -90,6 +91,7 @@ def project_context(project):
 
 
 def _provider_reply(provider, model, messages, context):
+    api_key = provider_api_key(provider)
     system_text = (
         "You are the MSConnect research assistant. Help the signed-in researcher understand this project, its worklists, "
         "acquisition, processing, QC, and existing analysis outputs. Use only the supplied project snapshot and conversation. "
@@ -105,7 +107,7 @@ def _provider_reply(provider, model, messages, context):
         request = Request(
             settings.MSCONNECT_ASSISTANT_OPENAI_BASE_URL,
             data=json.dumps(body).encode(),
-            headers={"Authorization": f"Bearer {settings.MSCONNECT_ASSISTANT_OPENAI_API_KEY}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             method="POST",
         )
     elif provider == "anthropic":
@@ -119,7 +121,7 @@ def _provider_reply(provider, model, messages, context):
             settings.MSCONNECT_ASSISTANT_ANTHROPIC_BASE_URL,
             data=json.dumps(body).encode(),
             headers={
-                "x-api-key": settings.MSCONNECT_ASSISTANT_ANTHROPIC_API_KEY,
+                "x-api-key": api_key,
                 "anthropic-version": "2023-06-01",
                 "Content-Type": "application/json",
             },

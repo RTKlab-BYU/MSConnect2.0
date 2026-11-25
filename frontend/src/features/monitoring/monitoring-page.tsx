@@ -93,7 +93,7 @@ export default function MonitoringPage() {
         </Card>
 
         <div className="grid gap-4">
-          <NodeGroup title="Acquisition watchers" description="Heartbeat and latest scan/upload activity reported by each watcher." nodes={watchers} empty="No watcher agents are registered." />
+          <NodeGroup title="Watchers" description="Heartbeat and latest scan/upload activity reported by each Watcher computer." nodes={watchers} empty="No Watcher computers are registered." />
           <NodeGroup title="Connected processors" description="Live worker inventory, node health, current control metadata, and heartbeat." nodes={processors} empty="No processors are registered." />
         </div>
       </section>

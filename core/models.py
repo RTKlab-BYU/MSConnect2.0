@@ -1127,6 +1127,19 @@ class ProcessingNode(TimestampedModel):
         return self.name
 
 
+class AssistantProviderCredential(TimestampedModel):
+    """Encrypted provider key managed by administrators."""
+
+    provider = models.CharField(max_length=32, unique=True)
+    encrypted_api_key = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ("provider",)
+
+    def __str__(self) -> str:
+        return f"{self.provider} assistant credential"
+
+
 class ProcessingNodeEvent(TimestampedModel):
     node = models.ForeignKey(ProcessingNode, on_delete=models.CASCADE, related_name="events")
     event_type = models.CharField(max_length=64)

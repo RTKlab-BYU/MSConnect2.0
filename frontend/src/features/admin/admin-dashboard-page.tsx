@@ -17,6 +17,7 @@ import { useEffect, useState, type ChangeEvent } from "react";
 
 import { MetricCard, PageHero } from "@/components/layout/page-section";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
+import { AdminTabs } from "@/features/admin/admin-tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -57,7 +58,7 @@ const featureLinks = [
   {
     title: "Processor Admin",
     description: "Live processor hosts, IPs, engine health, storage roots, and admin controls.",
-    href: "/processing/admin?type=processor",
+    href: "/admin/nodes?view=compute&type=processor",
     icon: Server,
   },
   {
@@ -75,7 +76,7 @@ const featureLinks = [
   {
     title: "Watcher",
     description: "Direct upload sessions, raw-file storage registration, and file intake checks.",
-    href: "/processing/admin?type=watcher",
+    href: "/admin/nodes?view=compute&type=watcher",
     icon: FileUp,
   },
   {
@@ -91,7 +92,7 @@ const featureLinks = [
     icon: Settings2,
   },
   {
-    title: "AI Agent",
+    title: "AI assistant",
     description: "Provider readiness, enabled models, and server-side assistant configuration.",
     href: "/admin/assistant",
     icon: TerminalSquare,
@@ -342,20 +343,21 @@ export default function AdminDashboardPage() {
       <PageHero
         eyebrow="System administration"
         title="Admin dashboard"
-        description="System-wide operations across projects, watcher intake, raw storage, processing, QC, system readiness, and agent health."
+        description="System-wide operations across projects, watcher intake, raw storage, processing, QC, system readiness, and node health."
         actions={
           <>
             <StatusBadge status={healthBadgeStatus(systemStatus)} />
             <Button asChild variant="secondary">
-              <Link to="/processing/admin?type=processor">
+              <Link to="/admin/nodes?view=compute&type=processor">
                 <Server className="h-4 w-4" />
                 Processor admin
               </Link>
             </Button>
-            <Button asChild variant="secondary"><Link to="/admin/assistant"><TerminalSquare className="h-4 w-4" />AI agent</Link></Button>
+            <Button asChild variant="secondary"><Link to="/admin/assistant"><TerminalSquare className="h-4 w-4" />AI assistant</Link></Button>
           </>
         }
       />
+      <AdminTabs />
 
       <Card className={systemStatus === "red" ? "border-destructive/40 bg-destructive/10" : systemStatus === "yellow" ? "border-amber-300 bg-amber-50/70" : ""}>
         <CardHeader>
@@ -523,7 +525,7 @@ export default function AdminDashboardPage() {
         <CardContent className="grid gap-4 xl:grid-cols-[360px_1fr]">
           <div className="grid gap-3">
             <ReadinessStep title="Web" detail="/healthz proves Django is serving; /readyz checks database and storage roots." />
-            <ReadinessStep title="Agents" detail="check_agent_runtime validates DNS, TCP, bearer token role, API ping, and shared storage." />
+            <ReadinessStep title="Node connections" detail="Runtime checks validate DNS, TCP, node key role, API ping, and shared storage." />
             <ReadinessStep title="Smoke" detail="Create a small fixture, let watcher import it, let processor complete it, then verify artifacts." />
           </div>
           <pre className="max-h-80 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100"><code>{readinessCommands.join("\n")}</code></pre>

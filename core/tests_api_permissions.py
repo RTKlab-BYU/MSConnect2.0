@@ -14,6 +14,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from core.agent_tokens import hash_agent_token
+from core.assistant_credentials import decrypt_api_key
 from core.models import (
     AcquisitionAgent,
     AcquisitionWorklist,
@@ -136,8 +137,11 @@ class ApiPermissionTests(TestCase):
 
         machine_client = APIClient()
         machine_client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
-        self.assertEqual(machine_client.get("/api/agents/ping/").status_code, 401)
+        first_ping = machine_client.get("/api/agents/ping/")
+        self.assertEqual(first_ping.status_code, 200, first_ping.data)
+        self.assertEqual(first_ping.data["agent_role"], "processor")
 
+        # Activation is automatic at creation; the legacy endpoint remains idempotent.
         ready = admin_client.post(f"/api/admin/agents/processor/{node.id}/ready/", {}, format="json")
         self.assertEqual(ready.status_code, 200, ready.data)
         ping = machine_client.get("/api/agents/ping/")
@@ -187,11 +191,14 @@ class ApiPermissionTests(TestCase):
         token = created.data["token"]
         agent = AcquisitionAgent.objects.get(name="watcher-computer-test")
         self.assertEqual(agent.agent_token_hash, hash_agent_token(token))
-        self.assertFalse(agent.active)
+        self.assertTrue(agent.active)
+        self.assertEqual(agent.provisioning_status, "ready")
 
         machine_client = APIClient()
         machine_client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
-        self.assertEqual(machine_client.get("/api/agents/ping/").status_code, 401)
+        first_ping = machine_client.get("/api/agents/ping/")
+        self.assertEqual(first_ping.status_code, 200, first_ping.data)
+        self.assertEqual(first_ping.data["agent_role"], "watcher")
         ready = admin_client.post(f"/api/admin/agents/watcher/{agent.id}/ready/", {}, format="json")
         self.assertEqual(ready.status_code, 200, ready.data)
         self.assertTrue(AcquisitionAgent.objects.get(pk=agent.id).active)
@@ -209,9 +216,9 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(response.data["email"], "")
         self.assertEqual(response.data["global_role"], UserRole.ADMIN)
 
-    def test_admin_can_invite_user_and_recipient_activates_with_verified_email(self):
+    def test_admin_can_invite_user_with_shareable_setup_link_without_email_verification(self):
         self.client.force_authenticate(user=self.admin)
-        with patch("core.api.send_mail", return_value=0):
+        with patch("core.api.send_mail") as send_mail_mock:
             response = self.client.post(
                 "/api/admin/user-access/",
                 {
@@ -227,6 +234,8 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(response.status_code, 201, response.data)
         self.assertFalse(response.data["user"]["is_active"])
         self.assertFalse(response.data["email_sent"])
+        self.assertIn("/app/accept-invite/", response.data["invite_url"])
+        send_mail_mock.assert_not_called()
         invited = User.objects.get(username="new-researcher")
         self.assertFalse(invited.has_usable_password())
         self.assertTrue(LabMembership.objects.filter(user=invited, lab=self.lab_a, active=True).exists())
@@ -242,7 +251,7 @@ class ApiPermissionTests(TestCase):
         invited.refresh_from_db()
         self.assertTrue(invited.is_active)
         self.assertTrue(invited.check_password("M5connect!SecurePass2026"))
-        self.assertIsNotNone(invited.profile.email_verified_at)
+        self.assertIsNone(invited.profile.email_verified_at)
 
     def test_only_admin_can_list_or_create_account_access(self):
         self.client.force_authenticate(user=self.researcher)
@@ -274,15 +283,44 @@ class ApiPermissionTests(TestCase):
         self.assertEqual(membership.role, UserRole.PI)
         self.assertTrue(membership.active)
 
-    def test_admin_can_resend_email_verification(self):
+    def test_admin_can_generate_a_setup_link_for_a_pending_account(self):
         self.client.force_authenticate(user=self.admin)
-        self.researcher.email = "researcher@example.org"
-        self.researcher.save(update_fields=["email"])
-        with patch("core.api.send_mail", return_value=1) as send_mail_mock:
-            response = self.client.post(f"/api/admin/user-access/{self.researcher.id}/resend-email/", {}, format="json")
+        pending = User.objects.create(username="pending-researcher", email="pending@example.org", is_active=False)
+        pending.set_unusable_password()
+        pending.save(update_fields=["password"])
+        with patch("core.api.send_mail") as send_mail_mock:
+            response = self.client.post(f"/api/admin/user-access/{pending.id}/resend-email/", {}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertTrue(response.data["email_sent"])
-        self.assertIn("/app/verify-email/", send_mail_mock.call_args.kwargs["message"])
+        self.assertFalse(response.data["email_sent"])
+        self.assertIn("/app/accept-invite/", response.data["account_url"])
+        send_mail_mock.assert_not_called()
+
+    def test_admin_can_delete_a_processor_node(self):
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=self.admin)
+        node = ProcessingNode.objects.create(name="delete-me-processor", node_type="diann")
+        ProcessingNodeEvent.objects.create(node=node, event_type="heartbeat")
+        response = admin_client.delete(f"/api/admin/agents/processor/{node.id}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(ProcessingNode.objects.filter(pk=node.id).exists())
+        self.assertFalse(ProcessingNodeEvent.objects.filter(node_id=node.id).exists())
+
+    def test_admin_can_save_encrypted_assistant_credentials(self):
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=self.admin)
+        response = admin_client.post(
+            "/api/admin/assistant-credentials/",
+            {"provider": "openai", "api_key": "private-test-provider-key"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["configured"])
+        from core.models import AssistantProviderCredential
+
+        credential = AssistantProviderCredential.objects.get(provider="openai")
+        self.assertNotIn("private-test-provider-key", credential.encrypted_api_key)
+        self.assertEqual(decrypt_api_key(credential.encrypted_api_key), "private-test-provider-key")
+        self.assertNotIn("private-test-provider-key", str(response.data))
 
     def test_email_verification_link_marks_account_verified(self):
         self.researcher.email = "researcher@example.org"

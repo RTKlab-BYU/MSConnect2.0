@@ -160,7 +160,7 @@ export default function ProcessingPage() {
             <StatusBadge status="running" />
             <StatusBadge status="retrying" />
             <Button asChild variant="secondary">
-              <Link to="/processing/admin">
+              <Link to="/admin/nodes?view=compute&type=processor">
                 <ShieldAlert className="h-4 w-4" />
                 Admin
               </Link>

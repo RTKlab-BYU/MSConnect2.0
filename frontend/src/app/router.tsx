@@ -9,8 +9,7 @@ import { isFacilityProfile } from "@/lib/instance-profile";
 const SignupPage = lazy(() => import("@/features/auth/signup-page"));
 const VerifyEmailPage = lazy(() => import("@/features/auth/verify-email-page"));
 const AcceptInvitationPage = lazy(() => import("@/features/auth/accept-invitation-page"));
-const AdminUserAccessPage = lazy(() => import("@/features/admin/user-access-page"));
-const AdminLabsPage = lazy(() => import("@/features/admin/labs-page"));
+const AdminSetupPage = lazy(() => import("@/features/admin/setup-page"));
 const AdminGlobalSettingsPage = lazy(() => import("@/features/admin/global-settings-page"));
 const AdminAssistantPage = lazy(() => import("@/features/admin/assistant-admin-page"));
 const AgentProvisioningPage = lazy(() => import("@/features/admin/agent-provisioning-page"));
@@ -29,7 +28,6 @@ const QcPage = lazy(() => import("@/features/qc/qc-page"));
 const HyePairPage = lazy(() => import("@/features/qc/hye-pair-page"));
 const MonitoringPage = lazy(() => import("@/features/monitoring/monitoring-page"));
 const ProcessingPage = lazy(() => import("@/features/processing/processing-page"));
-const ProcessingAdminPage = lazy(() => import("@/features/processing/processing-admin-page"));
 const SpectraPage = lazy(() => import("@/features/spectra/spectra-page"));
 const WatcherPage = lazy(() => import("@/features/watcher/watcher-page"));
 const UploadsPage = lazy(() => import("@/features/uploads/uploads-page"));
@@ -93,7 +91,7 @@ export const router = createBrowserRouter(
           path: "admin/users",
           element: (
             <RoleGuard allow={["admin"]}>
-              <Suspense fallback={<RouteFallback label="Loading user access" />}><AdminUserAccessPage /></Suspense>
+              <Navigate to="/admin/setup?view=users" replace />
             </RoleGuard>
           ),
         },
@@ -101,9 +99,13 @@ export const router = createBrowserRouter(
           path: "admin/labs",
           element: (
             <RoleGuard allow={["admin"]}>
-              <Suspense fallback={<RouteFallback label="Loading organization setup" />}><AdminLabsPage /></Suspense>
+              <Navigate to="/admin/setup?view=labs" replace />
             </RoleGuard>
           ),
+        },
+        {
+          path: "admin/setup",
+          element: <RoleGuard allow={["admin"]}><Suspense fallback={<RouteFallback label="Loading users and labs" />}><AdminSetupPage /></Suspense></RoleGuard>,
         },
         {
           path: "admin/lc-ms",
@@ -125,7 +127,7 @@ export const router = createBrowserRouter(
           path: "admin/assistant",
           element: (
             <RoleGuard allow={["admin"]}>
-              <Suspense fallback={<RouteFallback label="Loading AI agent settings" />}><AdminAssistantPage /></Suspense>
+              <Suspense fallback={<RouteFallback label="Loading AI assistant settings" />}><AdminAssistantPage /></Suspense>
             </RoleGuard>
           ),
         },
@@ -133,9 +135,13 @@ export const router = createBrowserRouter(
           path: "admin/agents",
           element: (
             <RoleGuard allow={["admin"]}>
-              <Suspense fallback={<RouteFallback label="Loading agent setup" />}><AgentProvisioningPage /></Suspense>
+              <Navigate to="/admin/nodes" replace />
             </RoleGuard>
           ),
+        },
+        {
+          path: "admin/nodes",
+          element: <RoleGuard allow={["admin"]}><Suspense fallback={<RouteFallback label="Loading nodes and compute" />}><AgentProvisioningPage /></Suspense></RoleGuard>,
         },
         {
           path: "intake",
@@ -219,9 +225,7 @@ export const router = createBrowserRouter(
           path: "processing/admin",
           element: (
             <RoleGuard allow={["admin", "pi"]}>
-              <Suspense fallback={<RouteFallback label="Loading processor admin" />}>
-                <ProcessingAdminPage />
-              </Suspense>
+              <Navigate to="/admin/nodes?view=compute" replace />
             </RoleGuard>
           ),
         },

@@ -1,13 +1,12 @@
 import { NavLink } from "react-router-dom";
 
 const sections = [
-  { to: "/admin/users", label: "Users" },
-  { to: "/admin/labs", label: "Labs" },
+  { to: "/admin", label: "Overview", end: true },
+  { to: "/admin/setup", label: "Users & labs" },
   { to: "/admin/lc-ms", label: "LC-MS setups" },
   { to: "/admin/settings", label: "Global settings" },
-  { to: "/processing/admin?type=processor", label: "Nodes & compute" },
-  { to: "/admin/agents", label: "Agent setup" },
-  { to: "/admin/assistant", label: "AI agent" },
+  { to: "/admin/nodes", label: "Nodes & compute" },
+  { to: "/admin/assistant", label: "AI assistant" },
 ];
 
 export function AdminTabs() {
@@ -17,6 +16,7 @@ export function AdminTabs() {
         <NavLink
           key={section.to}
           to={section.to}
+          end={"end" in section ? section.end : false}
           className={({ isActive }) => `shrink-0 px-3 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${isActive ? "bg-secondary font-semibold text-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}`}
         >
           {section.label}

@@ -156,6 +156,20 @@ export function resendAdminUserEmail(userId: number): Promise<AccountEmailResult
   return postResource(`/admin/user-access/${userId}/resend-email/`, {});
 }
 
+export function deleteProvisionedAgent(role: "watcher" | "processor", id: number): Promise<void> {
+  return deleteResource(`/admin/agents/${role}/${id}/`);
+}
+
+export type AssistantCredentialStatus = { providers: Record<"openai" | "anthropic", { configured: boolean }> };
+
+export function fetchAssistantCredentialStatus(): Promise<AssistantCredentialStatus> {
+  return getResource("/admin/assistant-credentials/");
+}
+
+export function saveAssistantCredential(payload: { provider: "openai" | "anthropic"; api_key?: string; clear?: boolean }): Promise<{ provider: string; configured: boolean }> {
+  return postResource("/admin/assistant-credentials/", payload);
+}
+
 export function resendMyVerification(): Promise<AccountEmailResult> {
   return postResource("/auth/resend-verification/", {});
 }

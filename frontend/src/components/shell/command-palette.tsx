@@ -64,7 +64,7 @@ export function CommandPalette() {
                     <Activity className="h-4 w-4" />
                     Processing
                   </Command.Item>
-                  <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/processing/admin")}>
+                  <Command.Item className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm" onSelect={() => go("/admin/nodes?view=compute&type=processor")}>
                     <Server className="h-4 w-4" />
                     Processor Admin
                   </Command.Item>

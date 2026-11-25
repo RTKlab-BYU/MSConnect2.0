@@ -61,7 +61,7 @@ export default function DashboardPage() {
           <Attention icon={failed ? AlertTriangle : CheckCircle2} label="Failed processing jobs" value={failed} href="/processing" />
           <Attention icon={unmatched ? AlertTriangle : CheckCircle2} label="Unmatched raw files" value={unmatched} href="/uploads" />
           <Attention icon={outOfSpec ? AlertTriangle : CheckCircle2} label="HYE pairs out of spec" value={outOfSpec} href="/qc/hye" />
-          {isOperator ? <div className="mt-2 grid grid-cols-2 gap-2"><Button asChild variant="secondary"><Link to="/monitoring"><Activity className="h-4 w-4" />Live monitoring</Link></Button><Button asChild variant="secondary"><Link to="/processing/admin"><Server className="h-4 w-4" />Processors</Link></Button></div> : null}
+          {isOperator ? <div className="mt-2 grid grid-cols-2 gap-2"><Button asChild variant="secondary"><Link to="/monitoring"><Activity className="h-4 w-4" />Live monitoring</Link></Button><Button asChild variant="secondary"><Link to="/admin/nodes?view=compute&type=processor"><Server className="h-4 w-4" />Processors</Link></Button></div> : null}
           <Button asChild variant="ghost" className="justify-start"><Link to="/qc/hye"><Microscope className="h-4 w-4" />Open QC workspaces</Link></Button>
         </CardContent>
       </Card>

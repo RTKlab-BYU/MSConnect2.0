@@ -101,7 +101,7 @@ export default function AdminGlobalSettingsPage() {
       {notice ? <div role="status" aria-live="polite" className="rounded-md border bg-secondary/40 px-4 py-3 text-sm">{notice}</div> : null}
 
       <Card>
-        <CardHeader><CardTitle>Email delivery & account setup</CardTitle><CardDescription>Invitation and verification links use the web server’s mail configuration. SMTP secrets are never shown in MSConnect.</CardDescription></CardHeader>
+        <CardHeader><CardTitle>Email delivery</CardTitle><CardDescription>Mail settings support notifications and existing verification flows. Admin-created account setup uses a shareable link and does not send email.</CardDescription></CardHeader>
         <CardContent className="grid gap-5 lg:grid-cols-[1fr_1fr]">
           {runtimeQuery.isLoading ? <p className="text-sm text-muted-foreground">Checking server configuration…</p> : runtimeQuery.isError ? <p role="alert" className="text-sm text-destructive">{runtimeQuery.error.message}</p> : (
             <div className="grid content-start gap-2 text-sm">

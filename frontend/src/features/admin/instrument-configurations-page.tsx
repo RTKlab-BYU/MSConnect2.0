@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { PageHero } from "@/components/layout/page-section";
 import { Breadcrumbs } from "@/components/ui/breadcrumb";
+import { AdminTabs } from "@/features/admin/admin-tabs";
 import {
   createInstrument,
   createInstrumentConfiguration,
@@ -163,13 +164,14 @@ export default function InstrumentConfigurationsPage() {
 
   return (
     <div className="mx-auto grid w-full max-w-6xl gap-4">
-      <Breadcrumbs items={[{ label: "Projects", href: "/projects" }, { label: "LC-MS setups" }]} />
+      <Breadcrumbs items={[{ label: "Administration", href: "/admin" }, { label: "LC-MS setups" }]} />
       <PageHero
         eyebrow="Facility operations"
         title="LC-MS setups"
         description="Register the facility’s instruments and maintain the LC method and MS pairing used by acquisition worklists. Each watcher stays attached to its configured MS; LC method changes are captured on each managed setup."
-        actions={<Button asChild variant="secondary"><Link to="/projects">Back to projects</Link></Button>}
+        actions={<Button asChild variant="secondary"><Link to="/admin">Administration overview</Link></Button>}
       />
+      <AdminTabs />
       {error ? <div role="alert" className="break-words rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
       {message ? <div role="status" className="rounded-md border bg-secondary/40 px-4 py-3 text-sm">{message}</div> : null}
 

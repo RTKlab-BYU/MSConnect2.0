@@ -29,7 +29,7 @@ export default function AcceptInvitationPage() {
   return (
     <main className="grid min-h-screen place-items-center bg-background p-4">
       <Card className="w-full max-w-lg">
-        <CardHeader><CardTitle>Finish account setup</CardTitle><CardDescription>Choose a password to activate your account and verify this email address.</CardDescription></CardHeader>
+        <CardHeader><CardTitle>Finish account setup</CardTitle><CardDescription>Choose a password to activate your account. Email verification will be added later.</CardDescription></CardHeader>
         <CardContent>
           <form className="grid gap-4" onSubmit={submit}>
             <label className="grid gap-1.5 text-sm font-medium">Password<Input type="password" autoComplete="new-password" minLength={12} required value={password} onChange={(event) => setPassword(event.target.value)} /><span className="text-xs font-normal text-muted-foreground">Use at least 12 characters. The server also checks its configured password rules.</span></label>
